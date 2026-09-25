@@ -1,0 +1,1184 @@
+/* Cosas · estilos
+   Un color plano de fondo y una «tinta» (blanco o casi negro) que se elige
+   según la luminancia del fondo: data-tono="oscuro" | "claro" en <html>.
+   La página de un grupo con color lleva su propio data-tono: las reglas de
+   tono se aplican al [data-tono] más cercano, no solo a la raíz. */
+
+:root {
+  --fondo: #2F6FED;
+
+  --arriba: env(safe-area-inset-top, 0px);
+  --abajo: env(safe-area-inset-bottom, 0px);
+  --izquierda: env(safe-area-inset-left, 0px);
+  --derecha: env(safe-area-inset-right, 0px);
+  --margen: 16px;
+  /* Altura de una barra inferior (píldora más su margen): lo que hay que dejar libre sobre ella. */
+  --alto-barra: calc(var(--abajo) + 16px + 56px);
+
+  /* Las actualiza app.js con la API visualViewport (teclado de iOS). */
+  --teclado: 0px;
+  --vv-arriba: 0px;
+}
+
+/* Tono oscuro (fondo oscuro, tinta blanca). Las superficies oscurecen el
+   fondo para que el texto blanco gane contraste sobre ellas. */
+:root,
+[data-tono="oscuro"] {
+  --tinta: #FFFFFF;
+  --tinta-suave: rgba(255, 255, 255, .82); /* Solo para placeholders, que van sobre --superficie. */
+  --contraste: #0A0A0A;
+  --superficie: rgba(0, 0, 0, .2);
+  --superficie-activa: rgba(0, 0, 0, .34);
+  --superficie-grupo: rgba(0, 0, 0, .42); /* La fila de un grupo: un tono claramente más oscuro. */
+  --superficie-anidada: rgba(0, 0, 0, .14); /* Las cosas de un grupo abierto: algo más ligera. */
+  --filete: rgba(255, 255, 255, .24);
+  --verde: #22C55E;
+  --verde-aviso: #16A34A;
+  color-scheme: dark;
+}
+
+/* Tono claro (fondo claro, tinta casi negra). Las superficies aclaran el fondo. */
+[data-tono="claro"] {
+  --tinta: #0A0A0A;
+  --tinta-suave: rgba(10, 10, 10, .8);
+  --contraste: #FFFFFF;
+  --superficie: rgba(255, 255, 255, .55);
+  --superficie-activa: rgba(255, 255, 255, .85);
+  --superficie-grupo: rgba(10, 10, 10, .08);
+  --superficie-anidada: rgba(255, 255, 255, .4);
+  --filete: rgba(10, 10, 10, .16);
+  --verde-aviso: #22C55E;
+  color-scheme: light;
+  color-scheme: only light;
+}
+
+/* Fondo tan oscuro que «más oscuro» no se aprecia (negro): la fila del grupo se aclara. */
+[data-fondo="profundo"] { --superficie-grupo: rgba(255, 255, 255, .13); }
+
+*, *::before, *::after { box-sizing: border-box; }
+
+[hidden] { display: none !important; }
+
+html {
+  height: 100%;
+  background: var(--fondo);
+  color: var(--tinta);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 100%;
+  line-height: 1.4;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+  /* Sin zoom por doble toque en ninguna parte (iOS); el de pellizco sigue disponible. */
+  touch-action: manipulation;
+  transition: background-color .25s ease;
+}
+
+body {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--fondo);
+  transition: background-color .25s ease;
+}
+
+.app { position: absolute; inset: 0; }
+
+/* App instalada en iOS: la barra de estado (hora, batería) se pinta siempre en blanco y
+   no se puede cambiar. Sobre un fondo claro se le pone detrás un velo de su misma altura
+   (en apaisado --arriba vale 0 y no se dibuja nada). */
+:root[data-ios-instalada][data-tono="claro"] body::before {
+  content: "";
+  position: fixed;
+  z-index: 20;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--arriba);
+  background: rgba(0, 0, 0, .35);
+  pointer-events: none;
+}
+
+svg {
+  display: block;
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+button, input {
+  font: inherit;
+  color: inherit;
+  touch-action: manipulation;
+}
+
+button {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+:focus-visible {
+  outline: 3px solid var(--tinta);
+  outline-offset: 3px;
+}
+
+::selection { background: var(--tinta); color: var(--fondo); }
+
+/* ---------- Vistas ---------- */
+
+.vista {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: calc(var(--arriba) + 12px) calc(var(--derecha) + var(--margen)) 0 calc(var(--izquierda) + var(--margen));
+}
+
+.vista.entrando { animation: aparecer .2s ease-out both; }
+
+.arranque-directo .vista { visibility: hidden; }
+
+@keyframes aparecer {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- Botones redondos ---------- */
+
+.redondo,
+.borrar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--superficie);
+  box-shadow: inset 0 0 0 1px var(--filete);
+  color: var(--tinta);
+  transition: background-color .15s ease, transform .12s ease;
+}
+
+.redondo { width: 48px; height: 48px; }
+
+/* Justo tras cambiar de vista (app.js), el segundo toque de un doble toque no acciona
+   el botón que acaba de aparecer en la misma esquina. */
+:root[data-cambiando] .redondo { pointer-events: none; }
+
+.redondo:active,
+.borrar:active,
+.hecho:active,
+.micro:active,
+.enviar:active { transform: scale(.92); }
+
+.redondo:active,
+.borrar:active,
+.boton-ancho:active { background: var(--superficie-activa); }
+
+@media (hover: hover) {
+  .redondo:hover,
+  .borrar:hover,
+  .boton-ancho:hover { background: var(--superficie-activa); }
+}
+
+/* ---------- Vista principal ---------- */
+
+.vista-inicio { overflow: hidden; }
+
+.esquinas {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  /* iOS desplaza la ventana visual al abrir el teclado: los botones la siguen, como el aviso. */
+  transform: translateY(var(--vv-arriba));
+  transition: transform .18s ease-out;
+}
+
+.barra {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 0 calc(var(--derecha) + var(--margen)) calc(var(--abajo) + 16px) calc(var(--izquierda) + var(--margen));
+  transform: translateY(calc(var(--teclado) * -1));
+  transition: transform .18s ease-out, padding-bottom .18s ease-out;
+}
+
+/* Con el teclado abierto el indicador de inicio queda tapado: basta un margen corto. */
+:root[data-teclado] { --alto-barra: calc(10px + 56px); }
+:root[data-teclado] .barra { padding-bottom: 10px; }
+
+.pildora {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 640px;
+  height: 56px;
+  margin: 0 auto;
+  padding: 0 6px 0 22px;
+  border-radius: 28px;
+  background: var(--superficie);
+  box-shadow: inset 0 0 0 1px var(--filete);
+  transition: box-shadow .15s ease;
+}
+
+.pildora:focus-within,
+.pildora.escuchando { box-shadow: inset 0 0 0 2px var(--tinta); }
+
+.campo {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--tinta);
+  caret-color: var(--tinta);
+  font-size: 17px;
+  text-overflow: ellipsis;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Mientras se dicta se enseña el final del texto (app.js lo desplaza): los puntos suspensivos lo taparían. */
+.pildora.escuchando .campo { text-overflow: clip; }
+
+.campo::placeholder,
+.campo-texto::placeholder {
+  color: var(--tinta-suave);
+  opacity: 1;
+}
+
+/* El final de la barra es un solo hueco: micrófono con el campo vacío, enviar con texto. */
+.ranura {
+  flex: none;
+  display: grid;
+  width: 44px;
+  height: 44px;
+}
+
+.micro,
+.enviar {
+  grid-area: 1 / 1;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  transition: opacity .15s ease, transform .15s ease, visibility 0s, color .15s ease;
+}
+
+.enviar {
+  background: var(--tinta);
+  color: var(--fondo);
+}
+
+.enviar svg { stroke-width: 2.4; }
+
+/* En reposo el micrófono es solo su icono. Escuchando, tras el icono aparece un disco relleno
+   que late despacio: late el disco, no el botón, y la zona de toque no se mueve. */
+.micro {
+  position: relative;
+  color: var(--tinta);
+}
+
+.micro::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--tinta);
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+
+.micro svg { position: relative; }
+
+.micro[aria-pressed="true"] { color: var(--fondo); }
+
+.micro[aria-pressed="true"]::before {
+  opacity: 1;
+  animation: latir 1.6s ease-in-out infinite;
+}
+
+@keyframes latir {
+  50% { transform: scale(.88); }
+}
+
+/* Botón del hueco que no toca: desactivado = invisible y fuera del tabulador. */
+.micro:disabled,
+.enviar:disabled,
+.confirmar:disabled {
+  visibility: hidden;
+  opacity: 0;
+  transform: scale(.6);
+  transition: opacity .15s ease, transform .15s ease, visibility 0s linear .15s;
+}
+
+/* ---------- Barras «Crear grupo de cosas» (lista) y «Añadir cosas» (página de un grupo) ---------- */
+
+/* Las filas pasan por debajo de estas barras: la píldora es opaca (el color de la app bajo su superficie)
+   y, encima, un degradado corto funde las filas que llegan hasta ella. */
+.barra-grupo {
+  padding-top: 14px;
+  background: linear-gradient(to bottom, transparent, var(--fondo) 14px);
+}
+
+.barra-grupo .pildora {
+  background-image: linear-gradient(var(--superficie), var(--superficie)), linear-gradient(var(--fondo), var(--fondo));
+}
+
+/* En reposo la píldora entera es el botón: sin relleno interior. */
+.barra-grupo:not(.editando) .pildora { padding: 0; }
+
+.boton-pildora {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 16px;
+  border-radius: 28px;
+  color: var(--tinta);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.2;
+  transition: background-color .15s ease, transform .12s ease;
+}
+
+.boton-pildora:active { background: var(--superficie-activa); transform: scale(.98); }
+
+@media (hover: hover) {
+  .boton-pildora:hover { background: var(--superficie-activa); }
+}
+
+/* «Crear»: píldora compacta y rellena, como el botón de enviar; solo con texto en el campo. */
+.confirmar {
+  flex: none;
+  height: 44px;
+  padding: 0 18px;
+  border-radius: 22px;
+  background: var(--tinta);
+  color: var(--fondo);
+  font-size: 16px;
+  font-weight: 700;
+  transition: opacity .15s ease, transform .15s ease, visibility 0s;
+}
+
+.confirmar:active { transform: scale(.94); }
+
+/* ---------- Cabecera de lista y ajustes ---------- */
+
+.cabecera {
+  flex: none;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Hasta dos líneas (caben en los 48px de la cabecera): «Cosas de Nombre y Dos Apellidos». */
+.titulo {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  margin: 0;
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -.01em;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.titulo:focus { outline: none; }
+
+.desplazable {
+  flex: 1;
+  min-height: 0;
+  margin: 8px calc((var(--derecha) + var(--margen)) * -1) 0 calc((var(--izquierda) + var(--margen)) * -1);
+  padding: 16px calc(var(--derecha) + var(--margen)) calc(var(--abajo) + 32px) calc(var(--izquierda) + var(--margen));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--filete) transparent;
+  /* El contenido se desvanece al pasar bajo la cabecera. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+}
+
+/* La lista y la página de un grupo dejan sitio a su barra (también cuando el teclado la sube): la última
+   fila nunca queda debajo. El relleno cambia al ritmo de la barra; las filas (contain) no se remaquetan. */
+#zona-lista,
+#zona-grupo {
+  padding-bottom: calc(var(--alto-barra) + 16px + var(--teclado));
+  transition: padding-bottom .18s ease-out;
+}
+
+/* ---------- Lista ---------- */
+
+.lista {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+
+.fila {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 8px;
+  padding: 8px;
+  border-radius: 30px;
+  background: var(--superficie);
+  box-shadow: inset 0 0 0 1px var(--filete);
+  /* Cada fila se maqueta por separado: marcar o borrar una no recalcula las demás. */
+  contain: layout style;
+}
+
+.nueva { animation: aparecer .2s ease-out both; }
+
+.saliendo {
+  opacity: 0;
+  transform: scale(.96);
+  pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease;
+}
+
+/* En listas cortas, además, el hueco se pliega con suavidad. */
+.saliendo.plegada {
+  overflow: hidden;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  transition: height .22s ease, margin .22s ease, padding .22s ease, opacity .16s ease, transform .22s ease;
+}
+
+/* Al marcar una cosa, las filas que cambian de sitio se deslizan: app.js las mide y las anima (Web Animations). */
+
+.texto {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  transition: opacity .18s ease;
+}
+
+.fila.hecha .texto {
+  opacity: .65;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+
+/* Check pendiente: gris neutro sobre superficie clara, se lee gris en cualquier fondo. */
+.hecho {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #F1F3F5;
+  box-shadow: inset 0 0 0 1px rgba(10, 10, 10, .1);
+  color: #6C757D; /* 4,2:1 sobre su superficie: gris, pero por encima del 3:1 de un icono. */
+  transition: background-color .18s ease, color .18s ease, transform .12s ease;
+}
+
+.hecho svg { stroke-width: 2.6; }
+
+.hecho[aria-pressed="true"] {
+  background: var(--verde);
+  box-shadow: none;
+  color: #FFFFFF;
+}
+
+.borrar { width: 44px; height: 44px; }
+
+.borrar svg { width: 22px; height: 22px; stroke-width: 1.8; }
+
+.mas svg,
+.quitar svg { stroke-width: 2.4; }
+
+/* ---------- Grupos en la lista ---------- */
+
+.grupo-fila { margin: 0 0 8px; }
+
+.fila-grupo {
+  margin: 0;
+  background: var(--superficie-grupo);
+}
+
+/* El nombre es un enlace a la página del grupo: como el texto de cualquier fila, pero
+   ocupa toda la altura de la fila para que sea cómodo de tocar. */
+.fila-grupo .texto {
+  align-self: stretch;
+  display: flex;
+}
+
+.enlace-grupo {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  color: inherit;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.enlace-grupo:focus-visible { outline-offset: 2px; border-radius: 6px; }
+
+/* El ojo: gris neutro como el check en reposo; abierto, con aspecto pulsado. Con color,
+   el disco se rellena con el color del grupo y el icono toma la tinta que contrasta. */
+.ojo {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #F1F3F5;
+  box-shadow: inset 0 0 0 1px rgba(10, 10, 10, .1);
+  color: #6C757D;
+  transition: background-color .18s ease, color .18s ease, transform .12s ease;
+}
+
+.ojo svg { grid-area: 1 / 1; stroke-width: 2.2; }
+
+.ojo:active { transform: scale(.92); }
+
+.ojo[aria-expanded="true"] {
+  background: #DDE1E5;
+  box-shadow: inset 0 2px 5px rgba(10, 10, 10, .22);
+  color: #495057;
+}
+
+.ojo.con-color {
+  background: var(--color-grupo);
+  box-shadow: inset 0 0 0 1px rgba(10, 10, 10, .12);
+  color: var(--tinta-grupo);
+}
+
+.ojo.con-color[aria-expanded="true"] { box-shadow: inset 0 2px 5px rgba(10, 10, 10, .35), inset 0 0 0 1px rgba(10, 10, 10, .12); }
+
+/* Las cosas del grupo, anidadas bajo su fila. */
+.pliegue { position: relative; }
+
+.pliegue.plegando {
+  overflow: hidden;
+  transition: height .22s ease, opacity .18s ease;
+}
+
+.pliegue.oculto { opacity: 0; }
+
+.anidada {
+  margin: 0;
+  padding: 8px 0 0 16px;
+  list-style: none;
+}
+
+.anidada .fila { background: var(--superficie-anidada); }
+
+.anidada .fila:last-child { margin-bottom: 0; }
+
+.nota {
+  margin: 12px 0 0;
+  font-size: 15px;
+}
+
+.grupo-vacio { margin: 10px 0 2px 64px; }
+
+.vacio {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0 40px;
+  font-size: 17px;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* ---------- Ajustes ---------- */
+
+.ajustes {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 8px 4px 72px;
+}
+
+.grupo { margin: 0 0 40px; }
+
+/* Los textos secundarios van sobre el fondo con la tinta entera: atenuarla los dejaría
+   por debajo de 4,5:1 (en el azul por defecto el blanco puro ya da 4,55:1). La
+   jerarquía la marcan el tamaño, el peso y el espaciado. */
+.subtitulo {
+  margin: 0 0 18px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+
+.etiqueta {
+  display: block;
+  margin: 0 0 12px;
+  font-size: 17px;
+  font-weight: 500;
+}
+
+.muestras {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  justify-items: center;
+  gap: 18px 0;
+  padding: 4px 0;
+}
+
+
+.muestra {
+  position: relative;
+  display: block;
+  width: 44px;
+  height: 44px;
+  cursor: pointer;
+}
+
+.muestra input,
+.selector-color {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.muestra-color {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--muestra);
+  box-shadow: inset 0 0 0 1.5px var(--filete);
+  color: #FFFFFF;
+  transition: box-shadow .15s ease, transform .12s ease;
+}
+
+.muestra.tinta-oscura .muestra-color { color: #0A0A0A; }
+
+/* «Sin color»: un anillo vacío tachado; al elegirlo, el check ocupa el sitio de la raya. */
+.muestra.sin-color .muestra-color {
+  color: var(--tinta);
+  box-shadow: inset 0 0 0 1.5px var(--tinta);
+}
+
+.muestra.sin-color .muestra-color::before {
+  content: "";
+  position: absolute;
+  width: 2px;
+  height: 26px;
+  border-radius: 1px;
+  background: var(--tinta);
+  transform: rotate(45deg);
+  transition: opacity .15s ease;
+}
+
+.muestra.sin-color input:checked + .muestra-color::before { opacity: 0; }
+
+.muestra.sin-color .muestra-color { position: relative; }
+
+.muestra.sin-color input:checked + .muestra-color {
+  box-shadow: inset 0 0 0 1.5px var(--tinta), 0 0 0 3px var(--fondo), 0 0 0 5.5px var(--tinta);
+}
+
+.muestra-color svg {
+  width: 22px;
+  height: 22px;
+  stroke-width: 2.6;
+  opacity: 0;
+  transform: scale(.6);
+  transition: opacity .15s ease, transform .15s ease;
+}
+
+.muestra input:checked + .muestra-color,
+.personalizado.activo .rueda {
+  box-shadow: inset 0 0 0 1.5px var(--filete), 0 0 0 3px var(--fondo), 0 0 0 5.5px var(--tinta);
+}
+
+.muestra input:checked + .muestra-color svg { opacity: 1; transform: none; }
+
+.muestra input:active + .muestra-color { transform: scale(.92); }
+
+.muestra input:focus-visible + .muestra-color,
+.rueda:has(:focus-visible) {
+  outline: 3px solid var(--tinta);
+  outline-offset: 8px;
+}
+
+/* Navegadores sin :has(): el anillo de foco se muestra con cualquier foco. */
+@supports not selector(:has(*)) {
+  .rueda:focus-within {
+    outline: 3px solid var(--tinta);
+    outline-offset: 8px;
+  }
+}
+
+.personalizado {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 56px;
+  margin-top: 22px;
+  padding-right: calc((100% / 6 - 44px) / 2);
+  cursor: pointer;
+}
+
+.personalizado .etiqueta { margin: 0; }
+
+/* Pantallas muy estrechas: cuatro columnas de muestras. */
+@media (max-width: 359px) {
+  .muestras { grid-template-columns: repeat(4, 1fr); }
+  .personalizado { padding-right: calc((100% / 4 - 44px) / 2); }
+}
+
+/* Rueda de color: el <input type="color"> real va encima, transparente. */
+.rueda {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: conic-gradient(#EF5B5B, #F2B705, #2E8B57, #1BA39C, #2F6FED, #7A4FD6, #E85D9E, #EF5B5B);
+  box-shadow: inset 0 0 0 1.5px var(--filete);
+  transition: box-shadow .15s ease;
+}
+
+.datos { margin: 0; }
+
+.datos .etiqueta { margin-top: 20px; }
+
+.datos .etiqueta:first-child { margin-top: 0; }
+
+.campo-texto {
+  display: block;
+  width: 100%;
+  height: 54px;
+  margin: 0;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 18px;
+  outline: none;
+  background: var(--superficie);
+  box-shadow: inset 0 0 0 1px var(--filete);
+  color: var(--tinta);
+  caret-color: var(--tinta);
+  font-size: 17px;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: box-shadow .15s ease;
+}
+
+.campo-texto:focus { box-shadow: inset 0 0 0 2px var(--tinta); }
+
+/* El autorrelleno del navegador no debe repintar el campo con su color propio. */
+.campo-texto:-webkit-autofill,
+.campo-texto:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--tinta);
+  transition: background-color 99999s ease-out, box-shadow .15s ease;
+}
+
+.aviso,
+.ayuda {
+  margin: 10px 2px 0;
+  font-size: 14px;
+}
+
+.ayuda { margin-top: 14px; }
+
+.boton-ancho {
+  display: block;
+  width: 100%;
+  min-height: 54px;
+  padding: 8px 24px;
+  border-radius: 27px;
+  background: var(--superficie);
+  box-shadow: inset 0 0 0 1px var(--filete);
+  color: var(--tinta);
+  font-size: 17px;
+  font-weight: 600;
+  transition: background-color .15s ease, transform .12s ease;
+}
+
+.boton-ancho:active { transform: scale(.98); }
+
+/* Sin botón (la app ya está instalada), la ayuda es el texto del apartado. */
+.boton-ancho[hidden] + .ayuda {
+  margin: 0;
+  font-size: 17px;
+}
+
+.pie {
+  margin: 56px 0 0;
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ---------- Página de un grupo ---------- */
+
+/* Con color propio, la vista lo pinta entera (html y body siguen con el color de la app) y
+   toma su propia tinta: «color» se hereda ya calculado, así que hay que volver a declararlo aquí. */
+.vista-grupo,
+#hoja-grupo {
+  background: var(--fondo);
+  color: var(--tinta);
+}
+
+#zona-grupo {
+  display: flex;
+  flex-direction: column;
+}
+
+.cuerpo-grupo {
+  flex: 1 0 auto;
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+/* Grupo vacío con el desplegable cerrado: «Este grupo está vacío.» en el centro del cuerpo. */
+.cuerpo-grupo.centrado {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.cuerpo-grupo.centrado .nota { text-align: center; }
+
+/* El desplegable «Añadir cosas» se abre hacia arriba desde la barra: un panel con la superficie de la app
+   (la barra, debajo, ya es opaca) que se desplaza por dentro y ocupa como mucho algo más de media pantalla. */
+.candidatas {
+  max-height: 55vh;
+  max-height: 55dvh;
+  max-width: 640px;
+  margin: 0 auto 8px;
+  padding: 8px 8px 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--filete) transparent;
+  border-radius: 28px;
+  background: var(--superficie);
+  box-shadow: inset 0 0 0 1px var(--filete);
+  transform-origin: 50% 100%; /* Al cerrarse (.saliendo) se encoge hacia la píldora. */
+}
+
+.candidata { padding-left: 20px; }
+
+/* La nota recibe el foco al abrir el desplegable sin cosas que añadir (como un título). */
+.candidatas .nota {
+  margin: 0;
+  padding: 12px 22px 20px;
+}
+
+.candidatas .nota:focus { outline: none; }
+
+/* La hoja de edición hereda tono y color de la vista del grupo (app.js los copia al abrirla). */
+#hoja-grupo .datos { margin-top: 4px; }
+
+#hoja-grupo .muestras { margin-bottom: 26px; }
+
+/* ---------- Hoja de pasos (añadir a la pantalla de inicio) ---------- */
+
+.hoja {
+  position: fixed;
+  z-index: 15;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.hoja-velo {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, .5);
+  animation: velar .2s ease-out both;
+}
+
+/* Del color de la app, como todo lo demás; el filete la separa del fondo oscurecido. */
+.hoja-panel {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  max-height: calc(100% - var(--arriba) - 24px);
+  margin: 0 auto;
+  padding: 20px calc(var(--derecha) + 20px) calc(var(--abajo) + 28px) calc(var(--izquierda) + 20px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 28px 28px 0 0;
+  background: var(--fondo);
+  box-shadow: 0 0 0 1px var(--filete);
+  animation: subir .26s cubic-bezier(.2, .8, .2, 1) both;
+}
+
+@keyframes velar {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes subir {
+  from { transform: translateY(100%); }
+  to { transform: none; }
+}
+
+.hoja-cabecera {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
+.hoja-titulo {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -.01em;
+}
+
+.hoja-titulo:focus { outline: none; }
+
+.pasos {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: paso;
+}
+
+.paso {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 60px;
+  padding: 10px 2px;
+  font-size: 17px;
+  counter-increment: paso;
+}
+
+.paso + .paso { box-shadow: inset 0 1px 0 var(--filete); }
+
+.paso::before {
+  content: counter(paso);
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--superficie);
+  box-shadow: inset 0 0 0 1px var(--filete);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.paso span {
+  flex: 1;
+  min-width: 0;
+}
+
+.paso svg { flex: none; }
+
+.puntos { stroke-width: 3; }
+
+/* ---------- Aviso (toast) ---------- */
+
+.toast {
+  --reposo: 10px;
+  --ancho-maximo: calc(100vw - 32px - var(--izquierda) - var(--derecha));
+  --bajo-los-botones: calc(var(--arriba) + 12px + 48px + 10px + var(--vv-arriba));
+  position: fixed;
+  z-index: 10;
+  left: 50%;
+  bottom: calc(var(--abajo) + 24px + var(--teclado));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: var(--ancho-maximo);
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 22px;
+  background: var(--tinta);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .18);
+  color: var(--contraste);
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, var(--reposo));
+  transition: opacity .18s ease, transform .18s ease;
+}
+
+/* En la lista y en la página de un grupo va por encima de su barra. */
+:root[data-vista="lista"] .toast,
+:root[data-vista="grupo"] .toast { bottom: calc(var(--alto-barra) + 12px + var(--teclado)); }
+
+/* En la pantalla principal va arriba, entre los dos botones: nunca lo tapa el teclado. */
+:root[data-vista="inicio"] .toast {
+  --reposo: -10px;
+  top: calc(var(--arriba) + 14px + var(--vv-arriba));
+  bottom: auto;
+  max-width: calc(100vw - 2 * (var(--margen) + 48px + 12px) - var(--izquierda) - var(--derecha));
+}
+
+.toast.con-icono { padding-left: 14px; }
+
+/* Avisos de solo texto (errores, «Aplicación añadida»): nunca se recortan. Pueden ocupar dos líneas
+   y, en la pantalla principal, bajan bajo los botones para disponer de todo el ancho.
+   (Con left: 50% el ancho automático sería media pantalla: de ahí max-content.) */
+.toast.solo-texto {
+  width: max-content;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  white-space: normal;
+  text-align: center;
+}
+
+.toast.solo-texto .toast-texto { overflow: visible; }
+
+:root[data-vista="inicio"] .toast.solo-texto {
+  top: var(--bajo-los-botones);
+  max-width: var(--ancho-maximo);
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.toast-icono {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--verde-aviso);
+  stroke-width: 3;
+}
+
+.toast-texto {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toast-accion {
+  align-self: stretch;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0 -18px 0 6px;
+  padding: 0 18px 0 14px;
+  border-left: 1px solid rgba(128, 128, 128, .35);
+  border-radius: 0 22px 22px 0;
+  color: inherit;
+  font-weight: 700;
+  pointer-events: auto;
+}
+
+.toast-accion:focus-visible {
+  outline-color: var(--contraste);
+  outline-offset: -5px;
+}
+
+/* ---------- Pantallas estrechísimas (móvil con el zoom de página al 150-200 %) ---------- */
+
+@media (max-width: 300px) {
+  /* Entre los dos botones ya no cabe «Guardado»: el aviso baja bajo ellos. */
+  :root[data-vista="inicio"] .toast {
+    top: var(--bajo-los-botones);
+    max-width: var(--ancho-maximo);
+  }
+
+  /* El título aprovecha la columna vacía de la derecha; en la página de un grupo la ocupa el lápiz. */
+  .cabecera { grid-template-columns: 48px minmax(0, 1fr); }
+  .vista-grupo .cabecera { grid-template-columns: 48px minmax(0, 1fr) 48px; }
+  .titulo { text-align: left; }
+
+  /* Aviso más compacto: «Deshacer» siempre entero y dentro de la píldora. */
+  .toast { gap: 6px; padding: 0 12px; }
+  .toast.con-icono { padding-left: 10px; }
+  .toast-accion { flex: none; margin: 0 -12px 0 2px; padding: 0 12px 0 10px; }
+
+  .muestras { grid-template-columns: repeat(3, 1fr); }
+  .personalizado { padding-right: calc((100% / 3 - 44px) / 2); }
+}
+
+/* Vacío = invisible y sin tamaño. Va al final de los avisos para ganar a las variantes. */
+.toast:empty {
+  min-height: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.sin-js {
+  position: fixed;
+  inset: auto 0 45%;
+  margin: 0;
+  padding: 0 32px;
+  text-align: center;
+}
+
+/* ---------- Pantallas bajas (móvil apaisado) ---------- */
+
+@media (max-height: 420px) {
+  :root { --alto-barra: calc(var(--abajo) + 10px + 56px); }
+  .barra { padding-bottom: calc(var(--abajo) + 10px); }
+  .grupo { margin-bottom: 28px; }
+}
+
+/* ---------- Menos movimiento ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    transition-delay: 0s !important;
+  }
+
+  /* El micrófono que escucha se queda relleno, sin latido. */
+  .micro[aria-pressed="true"]::before { animation: none; }
+}

@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="es" data-tono="oscuro" data-vista="inicio">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <title>Cosas</title>
+  <meta name="description" content="Apunta las cosas que tienes que hacer. Sencilla, rápida y sin conexión.">
+  <meta name="theme-color" content="#2F6FED">
+  <meta name="color-scheme" content="light dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Cosas">
+  <meta name="application-name" content="Cosas">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script>
+    /* Aplica el color guardado antes del primer pintado (sin destello del color por defecto). */
+    (function () {
+      var raiz = document.documentElement;
+      if (/^#(lista|ajustes|grupo\/.+)$/.test(location.hash)) raiz.classList.add('arranque-directo');
+      /* App instalada en iOS: styles.css oscurece la barra de estado si el fondo es claro. */
+      if (window.navigator.standalone === true) raiz.setAttribute('data-ios-instalada', '');
+      try {
+        var datos = JSON.parse(localStorage.getItem('cosas:v1') || 'null');
+        var esColor = function (v) { return typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v); };
+        var color = datos && datos.ajustes && datos.ajustes.colorFondo;
+        /* Carga directa de la página de un grupo con color: ese color es el que se va a ver. */
+        var enlace = /^#grupo\/(.+)$/.exec(location.hash);
+        if (enlace && datos && Array.isArray(datos.grupos)) {
+          var id = enlace[1];
+          try { id = decodeURIComponent(id); } catch (e) { /* Se prueba tal cual. */ }
+          for (var i = 0; i < datos.grupos.length; i += 1) {
+            var g = datos.grupos[i];
+            if (g && g.id === id && esColor(g.color)) { color = g.color; break; }
+          }
+        }
+        if (!esColor(color)) return;
+        var canal = function (i) {
+          var v = parseInt(color.substr(i, 2), 16) / 255;
+          return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+        };
+        var l = 0.2126 * canal(1) + 0.7152 * canal(3) + 0.0722 * canal(5) + 0.05;
+        raiz.style.setProperty('--fondo', color);
+        raiz.setAttribute('data-tono', 1.05 / l >= l / 0.0530353 ? 'oscuro' : 'claro');
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', color);
+      } catch (e) { /* Sin almacenamiento o datos corruptos: se queda el color por defecto. */ }
+    })();
+  </script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main class="app">
+
+    <!-- Vista principal: solo tres elementos -->
+    <section id="vista-inicio" class="vista vista-inicio" aria-label="Inicio">
+      <div class="esquinas">
+        <button type="button" class="redondo" id="abrir-lista" aria-label="Ver lista de cosas">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 7h14M5 12h14M5 17h14"/></svg>
+        </button>
+        <button type="button" class="redondo" id="abrir-ajustes" aria-label="Ajustes">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+
+      <form id="formulario" class="barra" autocomplete="off" novalidate>
+        <div class="pildora">
+          <input id="campo" class="campo" type="text" name="cosa"
+                 placeholder="Escribe una cosa…" aria-label="Escribe una cosa"
+                 enterkeyhint="done" autocomplete="off" autocapitalize="sentences"
+                 autocorrect="on" spellcheck="true" maxlength="500">
+          <!-- Micrófono y enviar comparten hueco: nunca se ven los dos a la vez. El micrófono
+               solo aparece si el navegador sabe reconocer la voz (lo decide app.js). -->
+          <div class="ranura">
+            <button type="button" class="micro" id="dictar" aria-label="Dictar" aria-pressed="false" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"/></svg>
+            </button>
+            <button type="submit" class="enviar" id="enviar" aria-label="Guardar" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>
+            </button>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <!-- Vista de la lista. Ningún id puede llamarse como una vista («lista», «ajustes»): al cargar
+         con #lista el navegador lo tomaría por el ancla del fragmento y le quitaría el foco al título. -->
+    <section id="vista-lista" class="vista" aria-labelledby="titulo-lista" hidden inert>
+      <header class="cabecera">
+        <button type="button" class="redondo" data-volver aria-label="Volver">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 12H5M11.5 18.5 5 12l6.5-6.5"/></svg>
+        </button>
+        <h1 id="titulo-lista" class="titulo" tabindex="-1">Cosas</h1>
+      </header>
+      <div class="desplazable" id="zona-lista">
+        <ul id="lista-cosas" class="lista" role="list"></ul>
+        <p id="vacio" class="vacio" hidden>No tienes cosas apuntadas.</p>
+      </div>
+      <!-- Barra para crear grupos: la misma píldora que la barra de escribir. En reposo es un botón;
+           al pulsarlo se convierte en un campo con «Crear» al final. -->
+      <form id="formulario-grupo" class="barra barra-grupo" autocomplete="off" novalidate>
+        <div class="pildora">
+          <button type="button" class="boton-pildora" id="crear-grupo" aria-label="Crear grupo de cosas">Crear grupo de cosas</button>
+          <input id="campo-grupo" class="campo" type="text" name="grupo"
+                 placeholder="Nombre del grupo" aria-label="Nombre del grupo"
+                 enterkeyhint="done" autocomplete="off" autocapitalize="sentences"
+                 autocorrect="on" spellcheck="true" maxlength="60" hidden>
+          <button type="submit" class="confirmar" id="confirmar-grupo" disabled hidden>Crear</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Vista de un grupo (#grupo/ID): su color, si lo tiene, pinta el fondo y decide el tono. -->
+    <section id="vista-grupo" class="vista vista-grupo" aria-labelledby="titulo-grupo" hidden inert>
+      <header class="cabecera">
+        <button type="button" class="redondo" data-volver aria-label="Volver">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 12H5M11.5 18.5 5 12l6.5-6.5"/></svg>
+        </button>
+        <h1 id="titulo-grupo" class="titulo" tabindex="-1"></h1>
+        <button type="button" class="redondo" id="editar-grupo" aria-label="Editar grupo">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3zM13.5 8.5l2 2"/></svg>
+        </button>
+      </header>
+      <div class="desplazable" id="zona-grupo">
+        <div class="cuerpo-grupo" id="cuerpo-grupo">
+          <ul id="lista-grupo" class="lista" role="list"></ul>
+          <p id="grupo-vacio" class="nota" hidden>Este grupo está vacío.</p>
+        </div>
+      </div>
+      <!-- Barra «Añadir cosas»: la misma píldora que la de crear grupos. Al pulsarla, las cosas que faltan
+           se despliegan hacia arriba, sobre la píldora (el panel va antes en el documento por eso). -->
+      <div id="barra-anadir" class="barra barra-grupo">
+        <div id="candidatas" class="candidatas" hidden>
+          <ul id="lista-candidatas" class="lista" role="list"></ul>
+          <p id="sin-candidatas" class="nota" tabindex="-1" hidden>No hay más cosas que añadir.</p>
+        </div>
+        <div class="pildora">
+          <button type="button" class="boton-pildora" id="anadir-cosas" aria-expanded="false" aria-controls="candidatas">Añadir cosas</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Vista de ajustes -->
+    <section id="vista-ajustes" class="vista" aria-labelledby="titulo-ajustes" hidden inert>
+      <header class="cabecera">
+        <button type="button" class="redondo" data-volver aria-label="Volver">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 12H5M11.5 18.5 5 12l6.5-6.5"/></svg>
+        </button>
+        <h1 id="titulo-ajustes" class="titulo" tabindex="-1">Ajustes</h1>
+      </header>
+      <div class="desplazable">
+        <div class="ajustes">
+          <section class="grupo" aria-labelledby="titulo-apariencia">
+            <h2 id="titulo-apariencia" class="subtitulo">Apariencia</h2>
+            <p id="etiqueta-color" class="etiqueta">Color de fondo</p>
+            <div id="muestras" class="muestras" role="radiogroup" aria-labelledby="etiqueta-color"></div>
+            <label class="personalizado" id="personalizado">
+              <span class="etiqueta">Color personalizado</span>
+              <span class="rueda">
+                <input type="color" id="color-personalizado" class="selector-color" value="#2f6fed">
+              </span>
+            </label>
+          </section>
+
+          <section class="grupo" aria-labelledby="titulo-datos">
+            <h2 id="titulo-datos" class="subtitulo">Datos personales</h2>
+            <form id="datos" class="datos" novalidate>
+              <label class="etiqueta" for="nombre">Nombre</label>
+              <input id="nombre" class="campo-texto" type="text" name="name"
+                     autocomplete="name" autocapitalize="words" maxlength="60" enterkeyhint="done">
+              <label class="etiqueta" for="correo">Correo electrónico</label>
+              <input id="correo" class="campo-texto" type="email" name="email"
+                     autocomplete="email" inputmode="email" autocapitalize="none"
+                     spellcheck="false" maxlength="120" enterkeyhint="done"
+                     aria-describedby="aviso-correo ayuda-datos">
+              <p id="aviso-correo" class="aviso" hidden>Parece que el correo no está completo.</p>
+              <p id="ayuda-datos" class="ayuda">Tus datos se guardan solo en este dispositivo. <span id="ayuda-dictado">El dictado usa el servicio de voz de tu móvil, que puede enviar el audio a Google o Apple.</span></p>
+            </form>
+          </section>
+
+          <section class="grupo" aria-labelledby="titulo-aplicacion">
+            <h2 id="titulo-aplicacion" class="subtitulo">Aplicación</h2>
+            <button type="button" class="boton-ancho" id="instalar" aria-describedby="ayuda-instalar">Convertir en aplicación</button>
+            <p id="ayuda-instalar" class="ayuda"></p>
+          </section>
+
+          <p class="pie">Cosas 1.2</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Hoja con los pasos para añadir la app a la pantalla de inicio cuando el navegador no deja
+       hacerlo desde un botón (iPhone y iPad siempre). Va fuera de <main>: mientras está abierta,
+       el resto de la página queda inerte. -->
+  <div id="hoja" class="hoja" hidden>
+    <div class="hoja-velo" id="velo-hoja"></div>
+    <section class="hoja-panel" role="dialog" aria-modal="true" aria-labelledby="titulo-hoja">
+      <header class="hoja-cabecera">
+        <h2 id="titulo-hoja" class="hoja-titulo" tabindex="-1">Añadir a la pantalla de inicio</h2>
+        <button type="button" class="redondo" id="cerrar-hoja" aria-label="Cerrar">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <div id="pasos-ios" hidden>
+        <ol class="pasos" role="list">
+          <li class="paso"><span>Pulsa Compartir</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 15V3M8 6.5 12 3l4 3.5M8.5 10H7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2h-1.5"/></svg></li>
+          <li class="paso"><span>Elige «Añadir a pantalla de inicio»</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M12 8.5v7M8.5 12h7"/></svg></li>
+          <li class="paso"><span>Pulsa «Añadir»</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 7 10 16.5 5 12"/></svg></li>
+        </ol>
+        <!-- Según la versión de iOS, Safari guarda «Compartir» dentro de su menú. -->
+        <p class="ayuda">Si no ves Compartir, búscalo en el menú de Safari, junto a la barra de direcciones.</p>
+        <p class="ayuda">Si no ves la opción, abre esta página en Safari.</p>
+        <p id="aviso-datos-ios" class="ayuda" hidden>La aplicación empezará vacía: lo que ya has apuntado se queda en Safari.</p>
+      </div>
+      <div id="pasos-genericos" hidden>
+        <ol class="pasos" role="list">
+          <li class="paso"><span>Abre el menú del navegador (⋮)</span>
+            <svg class="puntos" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5h.01M12 12h.01M12 19h.01"/></svg></li>
+          <li class="paso"><span>Elige «Instalar aplicación» o «Añadir a pantalla de inicio»</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M12 8.5v7M8.5 12h7"/></svg></li>
+          <li class="paso"><span>Confirma</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 7 10 16.5 5 12"/></svg></li>
+        </ol>
+        <p class="ayuda">Si en el menú pone «Abrir Cosas», ya la tienes instalada.</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- Hoja para editar un grupo (nombre y color). Misma hoja que la de pasos: fuera de <main>. -->
+  <div id="hoja-grupo" class="hoja" hidden>
+    <div class="hoja-velo" id="velo-hoja-grupo"></div>
+    <section class="hoja-panel" role="dialog" aria-modal="true" aria-labelledby="titulo-hoja-grupo">
+      <header class="hoja-cabecera">
+        <h2 id="titulo-hoja-grupo" class="hoja-titulo" tabindex="-1">Editar grupo</h2>
+        <button type="button" class="redondo" id="cerrar-hoja-grupo" aria-label="Cerrar">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <form id="formulario-edicion" class="datos" novalidate>
+        <label class="etiqueta" for="nombre-grupo">Nombre</label>
+        <input id="nombre-grupo" class="campo-texto" type="text" name="grupo" aria-label="Nombre del grupo"
+               autocomplete="off" autocapitalize="sentences" maxlength="60" enterkeyhint="done">
+        <p id="etiqueta-color-grupo" class="etiqueta">Color</p>
+        <div id="muestras-grupo" class="muestras" role="radiogroup" aria-labelledby="etiqueta-color-grupo"></div>
+        <button type="submit" class="boton-ancho" id="guardar-grupo">Guardar</button>
+      </form>
+    </section>
+  </div>
+
+  <!-- Aviso breve (Guardado / Eliminado). Vacío = invisible y sin tamaño. -->
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <noscript><p class="sin-js">Cosas necesita JavaScript para funcionar.</p></noscript>
+
+  <template id="plantilla-fila">
+    <li class="fila">
+      <button type="button" class="hecho" data-accion="alternar" aria-pressed="false" aria-label="Marcar como hecha">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 7 10 16.5 5 12"/></svg>
+      </button>
+      <p class="texto"></p>
+      <button type="button" class="borrar" data-accion="eliminar" aria-label="Eliminar">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9.5 7V5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2M6.5 7l.8 11.2a2 2 0 0 0 2 1.8h5.4a2 2 0 0 0 2-1.8L17.5 7M10 11v5M14 11v5"/></svg>
+      </button>
+    </li>
+  </template>
+
+  <!-- Un grupo en la lista: ojo, nombre (enlace a su página), papelera y, plegadas, sus cosas. -->
+  <template id="plantilla-grupo">
+    <li class="grupo-fila">
+      <div class="fila fila-grupo">
+        <button type="button" class="ojo" data-accion="ver" aria-expanded="false" aria-label="Ver cosas del grupo">
+          <svg class="ojo-abierto" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg class="ojo-cerrado" viewBox="0 0 24 24" aria-hidden="true" focusable="false" hidden><path d="M3 3l18 18M10.6 5.7A11 11 0 0 1 12 5.5c6.5 0 10 6.5 10 6.5a17.6 17.6 0 0 1-3.3 4.1M6.6 6.6A16.8 16.8 0 0 0 2 12s3.5 6.5 10 6.5a10 10 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+        </button>
+        <p class="texto"><a class="enlace-grupo" href="#"></a></p>
+        <button type="button" class="borrar" data-accion="eliminar-grupo" aria-label="Eliminar grupo">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9.5 7V5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2M6.5 7l.8 11.2a2 2 0 0 0 2 1.8h5.4a2 2 0 0 0 2-1.8L17.5 7M10 11v5M14 11v5"/></svg>
+        </button>
+      </div>
+      <div class="pliegue" hidden>
+        <ul class="anidada" role="list"></ul>
+        <p class="nota grupo-vacio" hidden>Este grupo está vacío.</p>
+      </div>
+    </li>
+  </template>
+
+  <!-- Una cosa en la página de su grupo: check y «Quitar del grupo». -->
+  <template id="plantilla-miembro">
+    <li class="fila">
+      <button type="button" class="hecho" data-accion="alternar" aria-pressed="false" aria-label="Marcar como hecha">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 7 10 16.5 5 12"/></svg>
+      </button>
+      <p class="texto"></p>
+      <button type="button" class="borrar quitar" data-accion="quitar" aria-label="Quitar del grupo">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14"/></svg>
+      </button>
+    </li>
+  </template>
+
+  <!-- Una cosa que se puede añadir al grupo (desplegable «Añadir cosas»). -->
+  <template id="plantilla-candidata">
+    <li class="fila candidata">
+      <p class="texto"></p>
+      <button type="button" class="borrar mas" data-accion="anadir" aria-label="Añadir al grupo">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </li>
+  </template>
+
+  <template id="plantilla-muestra">
+    <label class="muestra">
+      <input type="radio" name="color-fondo">
+      <span class="muestra-color" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false"><path d="M19 7 10 16.5 5 12"/></svg>
+      </span>
+    </label>
+  </template>
+
+  <template id="plantilla-toast">
+    <svg class="toast-icono" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 7 10 16.5 5 12"/></svg>
+    <span class="toast-texto"></span>
+    <button type="button" class="toast-accion"></button>
+  </template>
+</body>
+</html>

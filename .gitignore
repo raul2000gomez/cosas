@@ -1,0 +1,5 @@
+# Estado local de la herramienta de Netlify (rutas de este PC).
+.netlify/
+# Restos de Python.
+__pycache__/
+*.pyc
