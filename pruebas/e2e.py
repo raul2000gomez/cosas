@@ -17,6 +17,7 @@ Sale con código distinto de cero si alguna prueba falla.
 import argparse
 import json
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -33,7 +34,7 @@ from playwright.sync_api import sync_playwright
 
 RAIZ = Path(__file__).resolve().parent.parent
 APP = RAIZ / "app"
-NODE = Path("C:/Program Files/nodejs/node.exe")
+NODE = Path(shutil.which("node") or "C:/Program Files/nodejs/node.exe")
 DISPOSITIVOS = ["iPhone 13", "Pixel 7"]
 CLAVE = "cosas:v1"
 CLAVE_RESPALDO = "cosas:grupos"  # Respaldo de grupos, pertenencia y hechaEn (1.2): lo que una 1.1 aún abierta no sabe guardar.
@@ -419,6 +420,11 @@ def boton_ajustes(pagina):
     return pagina.get_by_role("button", name="Ajustes", exact=True)
 
 
+def accesos(pagina):
+    """La fila de accesos «Cosas con» y «Cosas de» de la pantalla principal."""
+    return pagina.locator("#accesos")
+
+
 def campo(pagina):
     return pagina.get_by_placeholder("Escribe una cosa…", exact=True)
 
@@ -513,7 +519,7 @@ def muestrear(pagina, puntos):
 
 JS_AUDITORIA_INICIO = r"""
 () => {
-  const permitidos = ['#abrir-lista', '#abrir-ajustes', '#formulario'].map((s) => document.querySelector(s));
+  const permitidos = ['#abrir-lista', '#abrir-ajustes', '#accesos', '#formulario'].map((s) => document.querySelector(s));
   const alfa = (c) => {
     const m = /rgba?\(([^)]+)\)/.exec(c);
     if (!m) return c === 'transparent' ? 0 : 1;
@@ -550,18 +556,29 @@ JS_AUDITORIA_INICIO = r"""
 """
 
 
-@prueba("inicio: exactamente 3 elementos visibles y nada más")
+# Lo único con texto en la pantalla principal: los dos accesos a las listas compartidas.
+RAICES_INICIO = ["abrir-ajustes", "abrir-lista", "accesos", "formulario"]
+TEXTO_INICIO = "Cosas con Cosas de"
+
+
+def texto_inicio(auditoria):
+    """El texto visible de la pantalla principal, con los espacios normalizados."""
+    return re.sub(r"\s+", " ", auditoria["texto"]).strip()
+
+
+@prueba("inicio: exactamente 4 elementos visibles (dos botones, los accesos y la barra) y nada más")
 def t_inicio_tres_elementos(e):
     p = e.pagina()
     esperar_vista(p, "inicio")
     comprobar(boton_lista(p).is_visible(), "El botón de lista no es visible")
     comprobar(boton_ajustes(p).is_visible(), "El botón de ajustes no es visible")
+    comprobar(accesos(p).is_visible(), "Los accesos «Cosas con» y «Cosas de» no son visibles")
     comprobar(campo(p).is_visible(), "La barra para escribir no es visible")
     comprobar(not boton_guardar(p).is_visible(), "El botón Guardar se ve con el campo vacío")
     auditoria = p.evaluate(JS_AUDITORIA_INICIO)
     igual(auditoria["intrusos"], [], "Elementos visibles que sobran en la pantalla principal")
-    igual(auditoria["raices"], ["abrir-ajustes", "abrir-lista", "formulario"], "Elementos visibles de inicio")
-    igual(auditoria["texto"], "", "Texto visible en la pantalla principal (no debe haber títulos ni contadores)")
+    igual(auditoria["raices"], RAICES_INICIO, "Elementos visibles de inicio")
+    igual(texto_inicio(auditoria), TEXTO_INICIO, "Texto visible en la pantalla principal (solo los accesos: ni títulos ni contadores)")
     # Con cosas guardadas sigue sin haber contadores ni insignias.
     anotar(p, "Una cosa")
     esperar_toast(p, "Guardado")
@@ -569,7 +586,50 @@ def t_inicio_tres_elementos(e):
     p.wait_for_timeout(300)
     auditoria = p.evaluate(JS_AUDITORIA_INICIO)
     igual(auditoria["intrusos"], [], "Elementos que sobran tras guardar una cosa")
-    igual(auditoria["texto"], "", "Texto visible tras guardar (contador/insignia)")
+    igual(texto_inicio(auditoria), TEXTO_INICIO, "Texto visible tras guardar (contador/insignia)")
+
+
+@prueba("inicio: accesos «Cosas con» y «Cosas de» bajo los botones, centrados, a cosas.es y de vuelta a la app")
+def t_inicio_accesos(e):
+    p = e.pagina()
+    esperar_vista(p, "inicio")
+    ancho = e.ancho
+    lista, pildora = boton_lista(p).bounding_box(), p.locator("#formulario .pildora").bounding_box()
+    nav = accesos(p).bounding_box()
+    comprobar(nav["y"] >= lista["y"] + lista["height"] + 8, f"Los accesos no están bajo los botones: {nav} / {lista}")
+    comprobar(nav["y"] + nav["height"] < pildora["y"], f"Los accesos pisan la barra: {nav} / {pildora}")
+    enlaces = p.locator("#accesos a")
+    igual(enlaces.count(), 2, "Número de accesos")
+    igual([enlaces.nth(i).inner_text().strip() for i in range(2)], ["Cosas con", "Cosas de"], "Texto de los accesos")
+    igual([enlaces.nth(i).get_attribute("href") for i in range(2)],
+          ["https://cosas.es/con/?desde=app", "https://cosas.es/de/?desde=app"], "Destino de los accesos (con ?desde=app, para que la flecha vuelva a la app)")
+    cajas = [enlaces.nth(i).bounding_box() for i in range(2)]
+    for texto, caja in zip(("Cosas con", "Cosas de"), cajas):
+        comprobar(caja["height"] >= 44 and caja["width"] >= 44, f"«{texto}» no llega a 44px de alto o ancho: {caja}")
+        comprobar(caja["y"] + caja["height"] <= pildora["y"], f"«{texto}» pisa la barra")
+    comprobar(abs(cajas[0]["y"] - cajas[1]["y"]) <= 1, "Los dos accesos no están a la misma altura")
+    comprobar(cajas[0]["x"] + cajas[0]["width"] <= cajas[1]["x"], "Los accesos se solapan")
+    centro = (cajas[0]["x"] + cajas[1]["x"] + cajas[1]["width"]) / 2
+    comprobar(abs(centro - ancho / 2) <= 1.5, f"Los accesos no están centrados: centro={centro}")
+    datos = enlaces.first.evaluate("""(a) => { const cs = getComputedStyle(a), svg = a.querySelector('svg');
+        return { radio: cs.borderTopLeftRadius, fondo: cs.backgroundColor, trazo: getComputedStyle(svg).stroke, color: cs.color,
+                 anchoSvg: svg.getBoundingClientRect().width, subrayado: cs.textDecorationLine }; }""")
+    comprobar(parseFloat_css(datos["radio"]) >= 22, f"Los accesos no tienen forma de píldora: radio {datos['radio']}")
+    alfa = re.findall(r"[\d.]+", datos["fondo"])
+    comprobar(len(alfa) == 4 and 0 < float(alfa[3]) < 1, f"La superficie de los accesos no es translúcida: {datos['fondo']}")
+    igual((datos["trazo"], datos["subrayado"]), (datos["color"], "none"), "Icono en currentColor y sin subrayado")
+    comprobar(datos["anchoSvg"] >= 16, "El icono del acceso no se ve")
+    # El tabulador llega antes al campo (tercer elemento) y después a los accesos.
+    for _ in range(3):
+        p.keyboard.press("Tab")
+    igual(p.evaluate("() => document.activeElement.id"), "campo", "Tercer elemento al tabular")
+    while p.evaluate("() => document.activeElement.closest('#formulario') !== null"):
+        p.keyboard.press("Tab")
+    igual(p.evaluate("() => document.activeElement.textContent.trim()"), "Cosas con", "Tras la barra, el tabulador llega a los accesos")
+
+
+def parseFloat_css(valor):
+    return float(re.findall(r"[\d.]+", valor)[0])
 
 
 @prueba("inicio: posición de los 3 elementos (cajas)")
@@ -1655,13 +1715,15 @@ def t_sin_scroll_horizontal(e):
         contexto.close()
 
 
-@prueba("apaisado: los 3 elementos caben y ajustes/lista se pueden recorrer")
+@prueba("apaisado: los elementos de inicio caben y ajustes/lista se pueden recorrer")
 def t_apaisado(e):
     ancho, alto = e.alto, e.ancho
     contexto = e.contexto(viewport={"width": ancho, "height": alto})
     p = sembrar(e, estado_con([cosa(i, f"Cosa {i}") for i in range(1, 13)]), contexto=contexto)
     lista, ajustes, pildora = boton_lista(p).bounding_box(), boton_ajustes(p).bounding_box(), p.locator("#formulario .pildora").bounding_box()
     comprobar(lista["y"] + lista["height"] <= pildora["y"], f"En apaisado la barra pisa los botones: {lista} {pildora}")
+    nav = accesos(p).bounding_box()
+    comprobar(lista["y"] + lista["height"] <= nav["y"] and nav["y"] + nav["height"] <= pildora["y"], f"En apaisado los accesos pisan los botones o la barra: {nav}")
     comprobar(ajustes["x"] + ajustes["width"] <= ancho and pildora["y"] + pildora["height"] <= alto, "En apaisado algo se sale de la pantalla")
     comprobar_sin_desborde(p, "inicio apaisado")
     abrir_lista(p)
@@ -1771,7 +1833,7 @@ JS_CAJAS_AVISO = r"""
   return {
     aviso: caja(aviso), boton: boton ? caja(boton) : null,
     textoRecortado: (JS_RECORTADO)(texto),
-    vecinos: ['#abrir-lista', '#abrir-ajustes', '#formulario > div'].map((s) => document.querySelector(s))
+    vecinos: ['#abrir-lista', '#abrir-ajustes', '#accesos', '#formulario > div'].map((s) => document.querySelector(s))
       .filter((el) => el.checkVisibility()).map(caja),
   };
 }
@@ -2158,7 +2220,7 @@ def t_dictado_hueco(e):
     campo_barra(p).fill("")
     esperar_barra(p, dict(BARRA_EN_REPOSO, focoEnCampo=True), "Barra al vaciar el campo")
     auditoria = p.evaluate(JS_AUDITORIA_INICIO)
-    igual((auditoria["intrusos"], auditoria["raices"], auditoria["texto"]), ([], ["abrir-ajustes", "abrir-lista", "formulario"], ""), "Pantalla principal con micrófono")
+    igual((auditoria["intrusos"], auditoria["raices"], texto_inicio(auditoria)), ([], RAICES_INICIO, TEXTO_INICIO), "Pantalla principal con micrófono")
 
 
 @prueba("dictado: sin reconocimiento de voz en el navegador no hay micrófono y todo sigue como antes")
@@ -2171,7 +2233,7 @@ def t_dictado_sin_soporte(e):
     comprobar(not boton_micro(p).is_visible(), "El micrófono se ve en un navegador que no sabe reconocer la voz")
     comprobar(not boton_guardar(p).is_visible(), "El botón Guardar se ve con el campo vacío")
     auditoria = p.evaluate(JS_AUDITORIA_INICIO)
-    igual((auditoria["intrusos"], auditoria["raices"], auditoria["texto"]), ([], ["abrir-ajustes", "abrir-lista", "formulario"], ""), "Pantalla principal sin micrófono")
+    igual((auditoria["intrusos"], auditoria["raices"], texto_inicio(auditoria)), ([], RAICES_INICIO, TEXTO_INICIO), "Pantalla principal sin micrófono")
     for _ in range(3):
         p.keyboard.press("Tab")
     igual(p.evaluate("() => document.activeElement.id"), "campo", "Tercer elemento al tabular")
@@ -2201,7 +2263,7 @@ def t_dictado_empieza(e):
     esperar_barra(p, BARRA_ESCUCHANDO, "Barra mientras escucha")
     comprobar(p.evaluate("() => !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)"), "Al dictar el foco está en un campo de texto (se abriría el teclado)")
     auditoria = p.evaluate(JS_AUDITORIA_INICIO)
-    igual((auditoria["intrusos"], auditoria["raices"]), ([], ["abrir-ajustes", "abrir-lista", "formulario"]), "Pantalla principal mientras escucha")
+    igual((auditoria["intrusos"], auditoria["raices"]), ([], RAICES_INICIO), "Pantalla principal mientras escucha")
     # Termina sin haber oído nada: todo vuelve al reposo y no queda nada vivo.
     p.evaluate("() => window.__dictado.fin()")
     esperar_barra(p, BARRA_EN_REPOSO, "Barra tras terminar sin texto")
@@ -2596,7 +2658,7 @@ def t_dictado_no_disponible(e):
     esperar_sin_toast(p, ms=4000)
     p.wait_for_timeout(300)  # El aviso ya invisible se vacía un instante después.
     auditoria = p.evaluate(JS_AUDITORIA_INICIO)
-    igual((auditoria["intrusos"], auditoria["raices"], auditoria["texto"]), ([], ["abrir-ajustes", "abrir-lista", "formulario"], ""), "Pantalla principal tras retirar el micrófono")
+    igual((auditoria["intrusos"], auditoria["raices"], texto_inicio(auditoria)), ([], RAICES_INICIO, TEXTO_INICIO), "Pantalla principal tras retirar el micrófono")
     # Todo lo demás sigue como en un navegador sin dictado: se escribe (o se dicta con el teclado) y se guarda.
     for _ in range(4):
         p.keyboard.press("Tab")
@@ -4966,7 +5028,11 @@ def t_estatico(e):
     comprobar(css.index("100vh") < css.index("100dvh"), "100vh debe ir antes que 100dvh (alternativa)")
     html = (APP / "index.html").read_text(encoding="utf-8")
     comprobar(not re.search(r"<[^>]+\son[a-z]+\s*=", html), "index.html tiene manejadores de eventos en línea")
-    comprobar(not re.search(r"(src|href)\s*=\s*[\"'](https?:)?//", html), "index.html carga recursos externos")
+    # Los <a> son navegación (los accesos a cosas.es), no recursos que se carguen: no cuentan.
+    sin_enlaces = re.sub(r"<a\s[^>]*>", "", html)
+    comprobar(not re.search(r"(src|href)\s*=\s*[\"'](https?:)?//", sin_enlaces), "index.html carga recursos externos")
+    externos = [d for d in re.findall(r"<a\s[^>]*href\s*=\s*[\"']([^\"']+)", html) if re.match(r"https?:", d)]
+    comprobar(externos and all(d.startswith("https://cosas.es/") for d in externos), f"Los enlaces externos de index.html deben ir a cosas.es: {externos}")
     comprobar("..." not in re.sub(r"<script.*?</script>", "", html, flags=re.S), "index.html usa tres puntos en vez de «…»")
     sw = (APP / "sw.js").read_text(encoding="utf-8")
     cabecera = "\n".join(sw.splitlines()[:12])

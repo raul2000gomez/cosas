@@ -6,7 +6,9 @@ Publicada en https://cosas-app.netlify.app
 
 ## Carpetas
 
-- `app/` — la app. Es lo único que se publica.
+- `app/` — la app. Es lo único que se publica. En la pantalla de inicio, bajo los botones, van los
+  accesos «Cosas con» y «Cosas de» a las listas compartidas de cosas.es (`?desde=app` hace que la
+  flecha de esas páginas vuelva a la app).
 - `pruebas/e2e.py` — pruebas de extremo a extremo con Playwright (iPhone 13 y Pixel 7 emulados).
 - `herramientas/sellar_version.py` — sella la versión de la caché en `app/sw.js`.
 - `herramientas/generar_iconos.py` — genera los iconos PNG.

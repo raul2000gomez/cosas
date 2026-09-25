@@ -210,6 +210,57 @@ button {
   transition: transform .18s ease-out;
 }
 
+/* ---------- Accesos a «Cosas con» y «Cosas de» ---------- */
+
+/* Dos píldoras centradas bajo los botones de las esquinas. En el documento van después de la
+   barra (el tabulador llega antes al campo), así que se colocan arriba con position: absolute.
+   Con el teclado de iOS siguen a la ventana visual, como los botones. */
+.accesos {
+  position: absolute;
+  top: calc(var(--arriba) + 12px + 48px + 14px);
+  left: calc(var(--izquierda) + var(--margen));
+  right: calc(var(--derecha) + var(--margen));
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  transform: translateY(var(--vv-arriba));
+  transition: transform .18s ease-out;
+}
+
+.acceso {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 18px 0 14px;
+  border-radius: 22px;
+  background: var(--superficie);
+  box-shadow: inset 0 0 0 1px var(--filete);
+  color: var(--tinta);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  text-decoration: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  transition: background-color .15s ease, transform .12s ease;
+}
+
+.acceso:active {
+  background: var(--superficie-activa);
+  transform: scale(.96);
+}
+
+@media (hover: hover) {
+  .acceso:hover { background: var(--superficie-activa); }
+}
+
+.acceso svg {
+  width: 20px;
+  height: 20px;
+}
+
 .barra {
   position: absolute;
   left: 0;
@@ -1031,7 +1082,8 @@ button {
 .toast {
   --reposo: 10px;
   --ancho-maximo: calc(100vw - 32px - var(--izquierda) - var(--derecha));
-  --bajo-los-botones: calc(var(--arriba) + 12px + 48px + 10px + var(--vv-arriba));
+  /* Bajo los botones y bajo los accesos «Cosas con» / «Cosas de» que hay debajo de ellos. */
+  --bajo-los-botones: calc(var(--arriba) + 12px + 48px + 14px + 44px + 10px + var(--vv-arriba));
   position: fixed;
   z-index: 10;
   left: 50%;
@@ -1126,11 +1178,15 @@ button {
 /* ---------- Pantallas estrechísimas (móvil con el zoom de página al 150-200 %) ---------- */
 
 @media (max-width: 300px) {
-  /* Entre los dos botones ya no cabe «Guardado»: el aviso baja bajo ellos. */
+  /* Entre los dos botones ya no cabe «Guardado»: el aviso baja bajo ellos (y bajo los accesos). */
   :root[data-vista="inicio"] .toast {
     top: var(--bajo-los-botones);
     max-width: var(--ancho-maximo);
   }
+
+  /* Los accesos, más compactos, siguen cabiendo en una fila. */
+  .accesos { gap: 8px; }
+  .acceso { padding: 0 10px 0 8px; gap: 6px; font-size: 14px; }
 
   /* El título aprovecha la columna vacía de la derecha; en la página de un grupo la ocupa el lápiz. */
   .cabecera { grid-template-columns: 48px minmax(0, 1fr); }
@@ -1159,6 +1215,12 @@ button {
   margin: 0;
   padding: 0 32px;
   text-align: center;
+}
+
+/* Con el zoom de página al 200 % (unos 195 px) no caben las dos palabras: solo los iconos. */
+@media (max-width: 240px) {
+  .acceso { width: 44px; padding: 0; justify-content: center; gap: 0; }
+  .acceso span { display: none; }
 }
 
 /* ---------- Pantallas bajas (móvil apaisado) ---------- */

@@ -85,6 +85,21 @@
           </div>
         </div>
       </form>
+
+      <!-- Accesos a «Cosas con» (una lista con otra persona) y «Cosas de» (un grupo alrededor de un
+           tema), las listas compartidas de cosas.es. Van tras la barra en el documento para que el
+           tabulador siga llegando al campo en tercer lugar; styles.css los coloca bajo los botones.
+           Con ?desde=app, la flecha de arriba a la izquierda de esas páginas vuelve a esta pantalla. -->
+      <nav class="accesos" id="accesos" aria-label="Listas compartidas">
+        <a class="acceso" href="https://cosas.es/con/?desde=app">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></svg>
+          <span>Cosas con</span>
+        </a>
+        <a class="acceso" href="https://cosas.es/de/?desde=app">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="8" height="8" rx="2.5"/><rect x="13" y="3" width="8" height="8" rx="2.5"/><rect x="3" y="13" width="8" height="8" rx="2.5"/><rect x="13" y="13" width="8" height="8" rx="2.5"/></svg>
+          <span>Cosas de</span>
+        </a>
+      </nav>
     </section>
 
     <!-- Vista de la lista. Ningún id puede llamarse como una vista («lista», «ajustes»): al cargar
