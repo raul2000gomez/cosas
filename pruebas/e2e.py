@@ -589,7 +589,7 @@ def t_inicio_tres_elementos(e):
     igual(texto_inicio(auditoria), TEXTO_INICIO, "Texto visible tras guardar (contador/insignia)")
 
 
-@prueba("inicio: accesos «Cosas con» y «Cosas de» bajo los botones, centrados, a cosas.es y de vuelta a la app")
+@prueba("inicio: accesos «Cosas con» y «Cosas de» bajo los botones, centrados, a cosas.info y de vuelta a la app")
 def t_inicio_accesos(e):
     p = e.pagina()
     esperar_vista(p, "inicio")
@@ -602,7 +602,7 @@ def t_inicio_accesos(e):
     igual(enlaces.count(), 2, "Número de accesos")
     igual([enlaces.nth(i).inner_text().strip() for i in range(2)], ["Cosas con", "Cosas de"], "Texto de los accesos")
     igual([enlaces.nth(i).get_attribute("href") for i in range(2)],
-          ["https://cosas.es/con/?desde=app", "https://cosas.es/de/?desde=app"], "Destino de los accesos (con ?desde=app, para que la flecha vuelva a la app)")
+          ["https://cosas.info/con/?desde=app", "https://cosas.info/de/?desde=app"], "Destino de los accesos (con ?desde=app, para que la flecha vuelva a la app)")
     cajas = [enlaces.nth(i).bounding_box() for i in range(2)]
     for texto, caja in zip(("Cosas con", "Cosas de"), cajas):
         comprobar(caja["height"] >= 44 and caja["width"] >= 44, f"«{texto}» no llega a 44px de alto o ancho: {caja}")
@@ -5028,11 +5028,11 @@ def t_estatico(e):
     comprobar(css.index("100vh") < css.index("100dvh"), "100vh debe ir antes que 100dvh (alternativa)")
     html = (APP / "index.html").read_text(encoding="utf-8")
     comprobar(not re.search(r"<[^>]+\son[a-z]+\s*=", html), "index.html tiene manejadores de eventos en línea")
-    # Los <a> son navegación (los accesos a cosas.es), no recursos que se carguen: no cuentan.
+    # Los <a> son navegación (los accesos a cosas.info), no recursos que se carguen: no cuentan.
     sin_enlaces = re.sub(r"<a\s[^>]*>", "", html)
     comprobar(not re.search(r"(src|href)\s*=\s*[\"'](https?:)?//", sin_enlaces), "index.html carga recursos externos")
     externos = [d for d in re.findall(r"<a\s[^>]*href\s*=\s*[\"']([^\"']+)", html) if re.match(r"https?:", d)]
-    comprobar(externos and all(d.startswith("https://cosas.es/") for d in externos), f"Los enlaces externos de index.html deben ir a cosas.es: {externos}")
+    comprobar(externos and all(d.startswith("https://cosas.info/") for d in externos), f"Los enlaces externos de index.html deben ir a cosas.info: {externos}")
     comprobar("..." not in re.sub(r"<script.*?</script>", "", html, flags=re.S), "index.html usa tres puntos en vez de «…»")
     sw = (APP / "sw.js").read_text(encoding="utf-8")
     cabecera = "\n".join(sw.splitlines()[:12])
