@@ -1,0 +1,5 @@
+# Netlify publica la carpeta app/ tal cual, sin build. Este archivo manda sobre lo que diga el
+# panel de Netlify: si el sitio está conectado al repositorio, cada cambio en main publica app/.
+[build]
+  publish = "app"
+  command = ""

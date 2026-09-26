@@ -17,4 +17,5 @@ Publicada en https://cosas-app.netlify.app
 
 1. `python herramientas/sellar_version.py` (sin esto, los móviles con la app instalada no reciben la versión nueva).
 2. `python pruebas/e2e.py` (tiene que salir todo PASS).
-3. `netlify deploy --prod --dir app`
+3. `git push` (el sitio de Netlify está conectado al repositorio y publica `app/` con cada cambio
+   en `main`, según `netlify.toml`). A mano también vale: `netlify deploy --prod --dir app`.
