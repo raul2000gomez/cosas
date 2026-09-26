@@ -19,3 +19,7 @@ Publicada en https://cosas-app.netlify.app
 2. `python pruebas/e2e.py` (tiene que salir todo PASS).
 3. `git push` (el sitio de Netlify está conectado al repositorio y publica `app/` con cada cambio
    en `main`, según `netlify.toml`). A mano también vale: `netlify deploy --prod --dir app`.
+
+Ojo: si el repositorio es privado, el plan gratuito de Netlify solo construye los commits cuyo
+autor sea el dueño de la cuenta (en GitHub, `raul2000gomez`); cualquier otro autor se queda en
+«Build blocked: Unrecognized Git contributor» y no se publica. Por eso el repositorio es público.
