@@ -70,11 +70,6 @@
   };
   const titulos = { lista: $('#titulo-lista'), ajustes: $('#titulo-ajustes'), grupo: $('#titulo-grupo') };
   const abridores = { lista: $('#abrir-lista'), ajustes: $('#abrir-ajustes') };
-  const formulario = $('#formulario');
-  const pildora = $('#formulario .pildora');
-  const campo = $('#campo');
-  const botonMicro = $('#dictar');
-  const botonEnviar = $('#enviar');
   const zonaLista = $('#zona-lista');
   const listaEl = $('#lista-cosas');
   const vacio = $('#vacio');
@@ -123,6 +118,24 @@
   const plantillaMuestra = $('#plantilla-muestra');
   const plantillaToast = $('#plantilla-toast');
   const menosMovimiento = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+  /** Una barra de escribir: campo, micrófono y enviar (los dos últimos comparten hueco). */
+  function barraDeEscribir(formulario) {
+    const campoBarra = formulario.querySelector('.campo');
+    return {
+      formulario,
+      pildora: formulario.querySelector('.pildora'),
+      campo: campoBarra,
+      micro: formulario.querySelector('.micro'),
+      enviar: formulario.querySelector('.enviar'),
+      marcador: campoBarra.placeholder,
+    };
+  }
+
+  // La de la pantalla principal y la de la página de un grupo (lo que se apunta ahí entra en el grupo).
+  const escrituraInicio = barraDeEscribir($('#formulario'));
+  const escrituraGrupo = barraDeEscribir($('#formulario-en-grupo'));
+  const escrituras = [escrituraInicio, escrituraGrupo];
 
   // ---------- Color y contraste ----------
 
@@ -320,8 +333,11 @@
     }
   }
 
+  let nube = null; // Con sesión, la conexión con la nube (nube.js): se le avisa de cada cambio.
+
   /** Guarda el estado; devuelve false si el almacenamiento falla (modo privado, cuota…). */
   function guardarEstado() {
+    if (nube) nube.cambio(); // Aunque aquí no se pueda guardar, la nube sí puede llevárselo.
     try {
       window.localStorage.setItem(CLAVE, JSON.stringify(estado));
     } catch (error) {
@@ -482,12 +498,14 @@
     const anterior = vistaActual;
     vistaActual = nombre;
 
-    if (anterior === 'inicio' && nombre !== 'inicio') campo.blur();
+    if (anterior === 'inicio' && nombre !== 'inicio') escrituraInicio.campo.blur();
     if (anterior === 'lista') cancelarEdicionGrupo();
     if (anterior === 'lista' && nombre === 'grupo') desplazamientoLista = zonaLista.scrollTop; // Se lee antes de ocultarla.
     if (anterior === 'grupo') cerrarCandidatas();
     if (accionAviso) ocultarAviso();
     cancelarDictado();
+    // Lo que quedó a medio escribir en la página de un grupo era para ese grupo: no pasa a otro.
+    if (anterior === 'grupo') vaciarBarra(escrituraGrupo);
     cerrarHoja(false); // El foco lo coloca la vista que llega.
     cerrarHojaGrupo(false);
 
@@ -654,28 +672,34 @@
     mostrarVista(destino.vista, { animar: false, enfocar: destino.vista !== 'inicio' });
   }
 
-  // ---------- Vista principal ----------
+  // ---------- Barras de escribir (pantalla principal y página de un grupo) ----------
 
   /**
    * El hueco del final de la barra: micrófono con el campo vacío (o mientras escucha) y
    * enviar en cuanto hay texto. Nunca los dos a la vez; desactivado = invisible (CSS).
    */
-  function actualizarBarra() {
-    const escuchando = reconocimiento !== null;
-    const conTexto = campo.value.trim() !== '';
-    const focoEnMicro = document.activeElement === botonMicro;
-    const focoDeTeclado = focoEnMicro && conFocoVisible(botonMicro);
-    botonEnviar.disabled = escuchando || !conTexto;
-    botonMicro.disabled = conTexto && !escuchando;
-    botonMicro.setAttribute('aria-pressed', String(escuchando));
-    botonMicro.setAttribute('aria-label', escuchando ? 'Detener dictado' : 'Dictar');
-    pildora.classList.toggle('escuchando', escuchando);
-    campo.placeholder = escuchando ? 'Te escucho…' : marcadorCampo;
+  function actualizarBarra(barra) {
+    const escuchando = reconocimiento !== null && dictando === barra;
+    const conTexto = barra.campo.value.trim() !== '';
+    const focoEnMicro = document.activeElement === barra.micro;
+    const focoDeTeclado = focoEnMicro && conFocoVisible(barra.micro);
+    barra.enviar.disabled = escuchando || !conTexto;
+    barra.micro.disabled = conTexto && !escuchando;
+    barra.micro.setAttribute('aria-pressed', String(escuchando));
+    barra.micro.setAttribute('aria-label', escuchando ? 'Detener dictado' : 'Dictar');
+    barra.pildora.classList.toggle('escuchando', escuchando);
+    barra.campo.placeholder = escuchando ? 'Te escucho…' : barra.marcador;
     if (!focoEnMicro || escuchando) return;
     // Al acabar de dictar, el foco puesto con el dedo (Android) se suelta: la barra en reposo no se
     // queda resaltada. El puesto con el teclado se conserva y, sin micrófono, pasa a «Guardar».
-    if (!focoDeTeclado) botonMicro.blur();
-    else if (botonMicro.disabled) botonEnviar.focus({ preventScroll: true });
+    if (!focoDeTeclado) barra.micro.blur();
+    else if (barra.micro.disabled) barra.enviar.focus({ preventScroll: true });
+  }
+
+  function vaciarBarra(barra) {
+    if (barra.campo.value === '') return;
+    barra.campo.value = '';
+    actualizarBarra(barra);
   }
 
   /** ¿Tiene el foco por el teclado? (Safari anterior a 15.4 no conoce :focus-visible.) */
@@ -687,26 +711,30 @@
     }
   }
 
-  function alEscribir() {
+  function alEscribir(barra) {
     cancelarDictado(); // Quien teclea ya no dicta; lo reconocido hasta ahora se queda en el campo.
-    actualizarBarra();
+    actualizarBarra(barra);
   }
 
-  function alEnviar(evento) {
+  function alEnviar(evento, barra) {
     evento.preventDefault();
     // «Guardar» acaba de ocupar el sitio del micrófono que escuchaba: ese toque (o Intro) era un «detener».
     if (!reconocimiento && performance.now() - finDictado < GUARDA_FIN_DICTADO) return;
     cancelarDictado();
-    const texto = textoLimpio(campo.value, MAX_TEXTO);
+    const texto = textoLimpio(barra.campo.value, MAX_TEXTO);
     if (!texto) return;
+    // En la página de un grupo, la cosa nace dentro de él.
+    const grupo = barra === escrituraGrupo ? grupoMostrado() : null;
+    if (barra === escrituraGrupo && !grupo) return;
 
-    estado.cosas.unshift({ id: nuevoId(), texto, hecha: false, creada: marcaDeTiempo(ultimaCreacion()), hechaEn: null, grupo: null });
+    estado.cosas.unshift({ id: nuevoId(), texto, hecha: false, creada: marcaDeTiempo(ultimaCreacion()), hechaEn: null, grupo: grupo ? grupo.id : null });
     const correcto = guardarEstado();
 
-    campo.value = '';
+    barra.campo.value = '';
     ultimoEnvio = performance.now();
-    actualizarBarra();
-    campo.blur(); // Cierra el teclado.
+    actualizarBarra(barra);
+    barra.campo.blur(); // Cierra el teclado.
+    if (grupo) sincronizarGrupo();
     avisarGuardado(correcto);
     pedirPersistencia();
   }
@@ -714,8 +742,8 @@
   // ---------- Dictado ----------
 
   const Reconocimiento = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const marcadorCampo = campo.placeholder;
   let reconocimiento = null; // Como mucho hay uno vivo.
+  let dictando = null; // La barra en la que escribe.
   let parandoDictado = false; // Ya se le ha pedido stop(): solo queda esperar su «end».
   let inicioDictado = -Infinity;
   let finDictado = -Infinity; // Último dictado que acabó por su cuenta (final, error o corte por espera).
@@ -731,9 +759,9 @@
   /** Lo que se va entendiendo se escribe en vivo; al terminar queda el texto definitivo. */
   function alResultadoDictado(evento) {
     const trozos = Array.from(evento.results, (resultado) => resultado[0].transcript);
-    campo.value = textoDictado(trozos.join(' '));
+    dictando.campo.value = textoDictado(trozos.join(' '));
     // El campo no tiene el foco y no sigue al texto por sí solo: se enseña lo último que se ha entendido.
-    campo.scrollLeft = campo.scrollWidth;
+    dictando.campo.scrollLeft = dictando.campo.scrollWidth;
   }
 
   function alErrorDictado(evento) {
@@ -754,8 +782,10 @@
       return;
     }
     avisar('Aquí no se puede dictar: usa el micrófono del teclado', { duracion: DURACION_DESHACER });
-    if (document.activeElement === botonMicro) campo.focus({ preventScroll: true }); // El foco no se queda en un botón que desaparece.
-    botonMicro.hidden = true;
+    for (const barra of escrituras) {
+      if (document.activeElement === barra.micro) barra.campo.focus({ preventScroll: true }); // El foco no se queda en un botón que desaparece.
+      barra.micro.hidden = true;
+    }
     ayudaDictado.hidden = true;
   }
 
@@ -763,7 +793,9 @@
   function soltarDictado(abortar) {
     if (!reconocimiento) return;
     const usado = reconocimiento;
+    const barra = dictando;
     reconocimiento = null;
+    dictando = null;
     parandoDictado = false;
     clearTimeout(temporizadorDictado);
     usado.removeEventListener('result', alResultadoDictado);
@@ -775,8 +807,8 @@
       } catch (error) { /* Ya había terminado. */ }
     }
     // Lo dictado se revisa desde el principio (si el corte viene de teclear, el cursor manda).
-    if (document.activeElement !== campo) campo.scrollLeft = 0;
-    actualizarBarra();
+    if (document.activeElement !== barra.campo) barra.campo.scrollLeft = 0;
+    actualizarBarra(barra);
   }
 
   /**
@@ -798,10 +830,11 @@
     soltarDictado(true);
   }
 
-  function empezarDictado() {
-    campo.blur(); // Dictar no abre el teclado (y lo cierra si estaba abierto).
+  function empezarDictado(barra) {
+    barra.campo.blur(); // Dictar no abre el teclado (y lo cierra si estaba abierto).
     try {
       reconocimiento = new Reconocimiento();
+      dictando = barra;
       reconocimiento.lang = 'es-ES';
       reconocimiento.interimResults = true;
       reconocimiento.continuous = false;
@@ -817,16 +850,16 @@
       return;
     }
     inicioDictado = performance.now();
-    actualizarBarra();
+    actualizarBarra(barra);
   }
 
-  function alPulsarMicro() {
+  function alPulsarMicro(barra) {
     const ahora = performance.now();
     if (!reconocimiento) {
       // El micrófono en reposo acaba de aparecer bajo el dedo (tras guardar, o tras un dictado que se
       // quedó sin texto): el segundo toque de un doble toque no empieza a dictar.
       if (ahora - ultimoEnvio < GUARDA_DOBLE_TOQUE || ahora - finDictado < GUARDA_DOBLE_TOQUE) return;
-      empezarDictado();
+      empezarDictado(barra);
       return;
     }
     // El segundo toque de un doble toque no es un «detener»; y quien insiste mientras para no alarga la espera.
@@ -1175,7 +1208,15 @@
     return true;
   }
 
-  /** Devuelve a su sitio y estado originales todo lo eliminado con el aviso a la vista. */
+  /** Devuelve a su grupo una cosa quitada de él (si sigue suelta y el grupo existe). */
+  function devolverAlGrupo(id, grupo) {
+    const cosa = estado.cosas.find((candidata) => candidata.id === id);
+    if (!cosa || cosa.grupo !== null || !grupoPorId(grupo)) return false;
+    cosa.grupo = grupo;
+    return true;
+  }
+
+  /** Devuelve a su sitio y estado originales todo lo eliminado (o quitado de su grupo) con el aviso a la vista. */
   function deshacerEliminado() {
     const pendientes = eliminados;
     ocultarAviso();
@@ -1183,14 +1224,17 @@
     let repuesto = null;
     // Del último borrado al primero: cada cosa vuelve a encontrar su grupo ya repuesto.
     for (const borrado of [...pendientes].reverse()) {
-      const ok = borrado.grupo ? reponerGrupo(borrado.grupo, borrado.miembros) : reponerCosa(borrado.cosa);
+      let ok;
+      if (borrado.grupo) ok = reponerGrupo(borrado.grupo, borrado.miembros);
+      else if (borrado.quitada) ok = devolverAlGrupo(borrado.quitada, borrado.deGrupo);
+      else ok = reponerCosa(borrado.cosa);
       if (ok) repuesto = borrado;
     }
     if (!repuesto) return;
 
     guardarEstado();
     sincronizar();
-    const fila = repuesto.grupo ? filasDeGrupo.get(repuesto.grupo.id) : filasPorId.get(repuesto.cosa.id);
+    const fila = repuesto.grupo ? filasDeGrupo.get(repuesto.grupo.id) : filasPorId.get(repuesto.quitada || repuesto.cosa.id);
     const boton = fila && fila.querySelector(repuesto.grupo ? '.ojo' : '.hecho');
     if (boton) boton.focus({ preventScroll: true });
   }
@@ -1427,18 +1471,31 @@
     cerrarCandidatas(true);
   }
 
-  /** Cambia el grupo de una cosa desde la página: su fila se va y aparece donde le toca. */
+  /** Cambia el grupo de una cosa desde la página: su fila se va y aparece donde le toca. Devuelve si la ha movido. */
   function moverCosa(id, grupoDestino, respaldo) {
     const cosa = estado.cosas.find((candidata) => candidata.id === id);
     const fila = filasPorId.get(id);
-    if (!cosa || !fila || cosa.grupo === grupoDestino) return;
+    if (!cosa || !fila || cosa.grupo === grupoDestino) return false;
     cosa.grupo = grupoDestino;
     ultimoMovimiento = performance.now();
-    if (!guardarEstado()) avisarFallo();
+    const correcto = guardarEstado();
+    if (!correcto) avisarFallo();
     filasPorId.delete(id);
     enfocarVecina(fila, respaldo);
     retirarFila(fila);
     sincronizarGrupo();
+    return correcto;
+  }
+
+  /** «−»: la cosa vuelve al nivel superior de la lista, con «Deshacer» mientras se ve el aviso. */
+  function quitarDelGrupo(id) {
+    const grupo = grupoEnPagina;
+    if (!moverCosa(id, null, botonAnadir)) return;
+    eliminados.push({ quitada: id, deGrupo: grupo });
+    avisar('Quitado del grupo', {
+      accion: { texto: 'Deshacer', alPulsar: deshacerEliminado },
+      duracion: DURACION_DESHACER,
+    });
   }
 
   function alPulsarEnGrupo(evento) {
@@ -1459,7 +1516,7 @@
     // Al añadir o quitar, la fila vecina sube y su botón queda bajo el dedo: el segundo toque no se la lleva.
     if (ahora - ultimoMovimiento < GUARDA_DOBLE_TOQUE) return;
     if (accion === 'anadir') moverCosa(fila.dataset.id, grupoEnPagina, botonAnadir);
-    else if (accion === 'quitar') moverCosa(fila.dataset.id, null, botonAnadir);
+    else if (accion === 'quitar') quitarDelGrupo(fila.dataset.id);
   }
 
   // ---------- Hoja de edición del grupo ----------
@@ -1592,11 +1649,63 @@
     botonSesion.textContent = cuenta ? 'Cerrar sesión' : 'Iniciar sesión';
     botonSesion.href = rutaDeCosasInfo(`cuenta/?desde=app&accion=${cuenta ? 'salir' : 'entrar'}`);
     if (!cuenta) {
-      ayudaSesion.textContent = 'Inicia sesión con Google para tener tus listas de Cosas con y Cosas de en todos tus dispositivos.';
+      ayudaSesion.textContent = 'Inicia sesión con Google para tener tus cosas, tus grupos y tus listas de Cosas con y Cosas de en todos tus dispositivos. Sin sesión, todo se queda en este dispositivo.';
     } else {
       const quien = cuenta.nombre && cuenta.correo ? `${cuenta.nombre} (${cuenta.correo})` : cuenta.nombre || cuenta.correo;
-      ayudaSesion.textContent = `Has iniciado sesión como ${quien}: tus listas de Cosas con y Cosas de te siguen a cualquier dispositivo.`;
+      ayudaSesion.textContent = `Has iniciado sesión como ${quien}: tus cosas, tus grupos, tu nombre y tu color te siguen a cualquier dispositivo, igual que tus listas de Cosas con y Cosas de.`;
     }
+  }
+
+  // ---------- Nube (tus cosas en todos tus dispositivos) ----------
+
+  let cargandoNube = false;
+  let intentosNube = 0;
+
+  /**
+   * Con sesión, nube.js sube y trae las cosas, los grupos y los ajustes (Firestore, con la misma cuenta
+   * de Google). Solo en la app publicada (https): netlify.toml sirve ahí la configuración de Firebase de
+   * cosas.info. Sin conexión no se puede cargar: se reintenta al volver la conexión.
+   */
+  function cargarNube() {
+    if (nube || cargandoNube || window.location.protocol !== 'https:' || !leerCuenta()) return;
+    cargandoNube = true;
+    import('./nube.js')
+      .then((modulo) => modulo.conectar({ leer: () => estado, aplicar: aplicarDeLaNube, estado: marcarNube }, intentosNube))
+      .then((conexion) => {
+        nube = conexion;
+      })
+      .catch(() => {
+        intentosNube += 1;
+      })
+      .finally(() => {
+        cargandoNube = false;
+      });
+  }
+
+  /** Estado de la sincronización ('' sin sesión): solo para quien depure (data-nube en <html>). */
+  function marcarNube(texto) {
+    if (texto) raiz.dataset.nube = texto;
+    else raiz.removeAttribute('data-nube');
+  }
+
+  /** Llegan cambios de otro dispositivo: se guardan y se repinta lo que se ve, sin perder el sitio. */
+  function aplicarDeLaNube(bruto) {
+    estado = normalizarEstado(bruto);
+    guardarEstado();
+    aplicarColor(estado.ajustes.colorFondo);
+    actualizarTituloLista();
+    if (vistaActual === 'ajustes') sincronizarAjustes();
+    if (vistaActual === 'grupo') {
+      const grupo = grupoMostrado();
+      if (!grupo) {
+        irALaLista(); // Lo han borrado en otro dispositivo.
+        return;
+      }
+      titulos.grupo.textContent = grupo.nombre;
+      pintarColorGrupo(grupo);
+      actualizarTema();
+    }
+    sincronizar(true);
   }
 
   /** «Hecho»/Intro en el teclado: guarda (al perder el foco) y cierra el teclado. */
@@ -1785,6 +1894,7 @@
   function recargarEstado() {
     estado = leerEstado();
     consolidarRescate();
+    if (nube) nube.cambio();
     if (accionAviso) ocultarAviso();
     aplicarColor(estado.ajustes.colorFondo);
     actualizarTituloLista();
@@ -1798,7 +1908,10 @@
 
   function alCambiarAlmacenamiento(evento) {
     if (evento.key === null || evento.key === CLAVE) recargarEstado();
-    if (evento.key === null || evento.key === CLAVE_CUENTA) pintarSesion();
+    if (evento.key === null || evento.key === CLAVE_CUENTA) {
+      pintarSesion();
+      cargarNube(); // Se acaba de entrar con Google en otra pestaña.
+    }
   }
 
   function registrarServiceWorker() {
@@ -1831,18 +1944,20 @@
     prepararAccesos();
     pintarSesion();
     construirMuestras(muestras, 'color-fondo', PALETA);
-    botonMicro.hidden = !Reconocimiento;
     ayudaDictado.hidden = !Reconocimiento;
-    actualizarBarra();
     pintarInstalacion();
 
     abridores.lista.addEventListener('click', () => abrirVista('lista', abridores.lista));
     abridores.ajustes.addEventListener('click', () => abrirVista('ajustes', abridores.ajustes));
     for (const boton of document.querySelectorAll('[data-volver]')) boton.addEventListener('click', volver);
 
-    formulario.addEventListener('submit', alEnviar);
-    campo.addEventListener('input', alEscribir);
-    botonMicro.addEventListener('click', alPulsarMicro);
+    for (const barra of escrituras) {
+      barra.micro.hidden = !Reconocimiento;
+      actualizarBarra(barra);
+      barra.formulario.addEventListener('submit', (evento) => alEnviar(evento, barra));
+      barra.campo.addEventListener('input', () => alEscribir(barra));
+      barra.micro.addEventListener('click', () => alPulsarMicro(barra));
+    }
     listaEl.addEventListener('click', alPulsarLista);
     listaEl.addEventListener('keydown', alTeclearEnLista);
     toast.addEventListener('click', alPulsarAviso);
@@ -1882,6 +1997,7 @@
     window.addEventListener('appinstalled', marcarInstalada);
 
     window.addEventListener('storage', alCambiarAlmacenamiento);
+    window.addEventListener('online', cargarNube);
     window.addEventListener('pageshow', (evento) => { if (evento.persisted) recargarEstado(); });
     window.addEventListener('pagehide', guardarDatosPersonales);
     window.addEventListener('pagehide', cancelarDictado);
@@ -1892,6 +2008,7 @@
     iniciarTeclado();
     iniciarNavegacion();
     registrarServiceWorker();
+    cargarNube();
   }
 
   iniciar();

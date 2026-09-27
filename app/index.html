@@ -150,7 +150,8 @@
         </div>
       </div>
       <!-- Barra «Añadir cosas»: la misma píldora que la de crear grupos. Al pulsarla, las cosas que faltan
-           se despliegan hacia arriba, sobre la píldora (el panel va antes en el documento por eso). -->
+           se despliegan hacia arriba, sobre la píldora (el panel va antes en el documento por eso). Debajo,
+           la barra de escribir de la pantalla principal, con su micrófono: lo que se apunta ahí entra en el grupo. -->
       <div id="barra-anadir" class="barra barra-grupo">
         <div id="candidatas" class="candidatas" hidden>
           <ul id="lista-candidatas" class="lista" role="list"></ul>
@@ -159,6 +160,22 @@
         <div class="pildora">
           <button type="button" class="boton-pildora" id="anadir-cosas" aria-expanded="false" aria-controls="candidatas">Añadir cosas</button>
         </div>
+        <form id="formulario-en-grupo" class="escribir-en-grupo" autocomplete="off" novalidate>
+          <div class="pildora">
+            <input id="campo-en-grupo" class="campo" type="text" name="cosa"
+                   placeholder="Escribe una cosa…" aria-label="Escribe una cosa en este grupo"
+                   enterkeyhint="done" autocomplete="off" autocapitalize="sentences"
+                   autocorrect="on" spellcheck="true" maxlength="500">
+            <div class="ranura">
+              <button type="button" class="micro" id="dictar-en-grupo" aria-label="Dictar" aria-pressed="false" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"/></svg>
+              </button>
+              <button type="submit" class="enviar" id="enviar-en-grupo" aria-label="Guardar" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>
+              </button>
+            </div>
+          </div>
+        </form>
       </div>
     </section>
 
@@ -193,9 +210,10 @@
             </form>
             <!-- La sesión (Google) es la de Cosas con y Cosas de: la página cuenta/, en este mismo
                  dominio (netlify.toml la trae de cosas.info), la inicia o la cierra y vuelve aquí.
+                 Con sesión, nube.js lleva también las cosas, los grupos y estos ajustes a la nube.
                  app.js cambia el texto y la acción según haya sesión o no. -->
             <a class="boton-ancho" id="sesion" href="cuenta/?desde=app&amp;accion=entrar" aria-describedby="ayuda-datos">Iniciar sesión</a>
-            <p id="ayuda-datos" class="ayuda"><span id="ayuda-sesion">Inicia sesión con Google para tener tus listas de Cosas con y Cosas de en todos tus dispositivos.</span> Tu nombre se guarda solo en este dispositivo. <span id="ayuda-dictado">El dictado usa el servicio de voz de tu móvil, que puede enviar el audio a Google o Apple.</span></p>
+            <p id="ayuda-datos" class="ayuda"><span id="ayuda-sesion">Inicia sesión con Google para tener tus cosas, tus grupos y tus listas de Cosas con y Cosas de en todos tus dispositivos. Sin sesión, todo se queda en este dispositivo.</span> <span id="ayuda-dictado">El dictado usa el servicio de voz de tu móvil, que puede enviar el audio a Google o Apple.</span></p>
           </section>
 
           <section class="grupo" aria-labelledby="titulo-aplicacion">

@@ -12,8 +12,10 @@
   --izquierda: env(safe-area-inset-left, 0px);
   --derecha: env(safe-area-inset-right, 0px);
   --margen: 16px;
-  /* Altura de una barra inferior (píldora más su margen): lo que hay que dejar libre sobre ella. */
-  --alto-barra: calc(var(--abajo) + 16px + 56px);
+  /* Altura de una barra inferior (píldora más su margen): lo que hay que dejar libre sobre ella. En la
+     página de un grupo la barra lleva una segunda píldora, la de escribir (--extra-barra). */
+  --extra-barra: 0px;
+  --alto-barra: calc(var(--abajo) + 16px + 56px + var(--extra-barra));
 
   /* Las actualiza app.js con la API visualViewport (teclado de iOS). */
   --teclado: 0px;
@@ -273,7 +275,7 @@ button {
 }
 
 /* Con el teclado abierto el indicador de inicio queda tapado: basta un margen corto. */
-:root[data-teclado] { --alto-barra: calc(10px + 56px); }
+:root[data-teclado] { --alto-barra: calc(10px + 56px + var(--extra-barra)); }
 :root[data-teclado] .barra { padding-bottom: 10px; }
 
 .pildora {
@@ -414,6 +416,15 @@ button {
 }
 
 .boton-pildora:active { background: var(--superficie-activa); transform: scale(.98); }
+
+/* Página de un grupo: bajo «Añadir cosas», la barra de escribir de la pantalla principal (campo con
+   micrófono y enviar). Es lo que queda pegado abajo; «Añadir cosas» y su desplegable, encima. */
+:root[data-vista="grupo"] { --extra-barra: calc(10px + 56px); }
+
+#barra-anadir .escribir-en-grupo .pildora {
+  margin: 10px auto 0;
+  padding: 0 6px 0 22px;
+}
 
 @media (hover: hover) {
   .boton-pildora:hover { background: var(--superficie-activa); }
@@ -956,6 +967,9 @@ a.boton-ancho {
 .candidatas {
   max-height: 55vh;
   max-height: 55dvh;
+  /* Nunca pisa la cabecera (arriba + 12px + 48px, más 8px de aire), aunque las dos píldoras de abajo coman
+     sitio (móvil apaisado, teclado): lo que queda sobre «Añadir cosas» y su margen de 8px. */
+  max-height: min(55dvh, calc(100dvh - var(--arriba) - 76px - var(--alto-barra) - var(--teclado)));
   max-width: 640px;
   margin: 0 auto 8px;
   padding: 8px 8px 0;
@@ -1240,7 +1254,7 @@ a.boton-ancho {
 /* ---------- Pantallas bajas (móvil apaisado) ---------- */
 
 @media (max-height: 420px) {
-  :root { --alto-barra: calc(var(--abajo) + 10px + 56px); }
+  :root { --alto-barra: calc(var(--abajo) + 10px + 56px + var(--extra-barra)); }
   .barra { padding-bottom: calc(var(--abajo) + 10px); }
   .grupo { margin-bottom: 28px; }
 }

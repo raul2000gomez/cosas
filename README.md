@@ -17,6 +17,18 @@ Publicada en https://cosas-app.netlify.app
   sesión, el botón es **Cerrar sesión**. La app solo lee la cuenta que esa página deja en
   `localStorage` (`cosascon:cuenta`). `netlify.toml` también sirve `/__/` desde firebaseapp.com para
   que entrar con Google por redirección funcione en la app instalada.
+- `app/nube.js` — con sesión, **tus cosas en todos tus dispositivos**: las cosas, los grupos, el color
+  y el nombre se guardan también en Firestore (proyecto `cosas-info`, el de cosas.info), en
+  `personales/{uid}/elementos` (un documento por cosa, por grupo y para los ajustes; las reglas están
+  en `firestore.rules` del repositorio `Web`). `localStorage` sigue mandando y la app funciona igual
+  sin conexión: `nube.js` reconcilia documento a documento con la última versión en la que coincidían
+  los dos lados (`cosas:nube`): lo que cambió solo en la nube se trae, lo que cambió solo aquí se sube
+  y, si cambió en los dos, gana este dispositivo (los ajustes de la cuenta mandan la primera vez que se
+  entra en un dispositivo). La primera vez se juntan las cosas de los dos lados. El ojo de cada grupo
+  (abierto o cerrado) no viaja. `app.js` solo carga `nube.js` (y Firebase, de gstatic) con sesión y en
+  https (la app publicada: la configuración es la `firebase-config.js` de cosas.info que sirve
+  `netlify.toml`); `data-nube` en `<html>` dice cómo va (`conectando`, `guardando`, `al-dia`, `error`).
+  Sin sesión, todo se queda en el dispositivo, como siempre.
 - `pruebas/e2e.py` — pruebas de extremo a extremo con Playwright (iPhone 13 y Pixel 7 emulados).
 - `herramientas/sellar_version.py` — sella la versión de la caché en `app/sw.js`.
 - `herramientas/generar_iconos.py` — genera los iconos PNG.

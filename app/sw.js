@@ -2,7 +2,7 @@
 'use strict';
 
 // Sello de versión: lo actualiza herramientas/sellar_version.py; ejecútalo antes de publicar cualquier cambio.
-const VERSION_CACHE = 'cosas-v1.2.0-3bbac7dd';
+const VERSION_CACHE = 'cosas-v1.2.0-1acf38eb';
 const PREFIJO_CACHE = 'cosas-';
 const PORTADA = './index.html';
 // Rutas propias del alojamiento (Netlify), no de la app: ni se sirven ni se guardan desde aquí.
@@ -16,6 +16,7 @@ const RECURSOS = [
   './index.html',
   './styles.css',
   './app.js',
+  './nube.js', // Solo se carga con sesión, pero sin conexión también tiene que estar.
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

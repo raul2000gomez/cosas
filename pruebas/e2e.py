@@ -21,6 +21,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -48,8 +49,8 @@ PALETA = [
 ]
 # Lo único que la app dice sobre la privacidad del dictado: el audio puede salir del móvil (Google en Android, Apple en iOS).
 AYUDA_DICTADO = "El dictado usa el servicio de voz de tu móvil, que puede enviar el audio a Google o Apple."
-AYUDA_SESION = "Inicia sesión con Google para tener tus listas de Cosas con y Cosas de en todos tus dispositivos."
-AYUDA_NOMBRE = "Tu nombre se guarda solo en este dispositivo."
+AYUDA_SESION = ("Inicia sesión con Google para tener tus cosas, tus grupos y tus listas de Cosas con y Cosas de en todos tus dispositivos. "
+                "Sin sesión, todo se queda en este dispositivo.")
 CLAVE_CUENTA = "cosascon:cuenta"  # La cuenta de Google con la que se entró en Cosas con / Cosas de / Tu cuenta.
 DETALLE = False
 
@@ -429,7 +430,8 @@ def accesos(pagina):
 
 
 def campo(pagina):
-    return pagina.get_by_placeholder("Escribe una cosa…", exact=True)
+    """El campo de la pantalla principal (la página de un grupo tiene otro con el mismo marcador)."""
+    return pagina.locator("#campo")
 
 
 def boton_guardar(pagina):
@@ -1161,7 +1163,7 @@ def t_ajustes_estructura(e):
     igual(p.locator("#vista-ajustes h1").text_content().strip(), "Ajustes", "Título de ajustes")
     comprobar(p.get_by_role("button", name="Volver", exact=True).is_visible(), "Falta el botón Volver en ajustes")
     igual([h.strip() for h in p.locator("#vista-ajustes h2").all_text_contents()], ["Apariencia", "Datos personales", "Aplicación"], "Secciones de ajustes")
-    for texto in ("Color de fondo", "Color personalizado", f"{AYUDA_SESION} {AYUDA_NOMBRE} {AYUDA_DICTADO}", "Cosas 1.2"):
+    for texto in ("Color de fondo", "Color personalizado", f"{AYUDA_SESION} {AYUDA_DICTADO}", "Cosas 1.2"):
         comprobar(p.get_by_text(texto, exact=True).count() == 1, f"Falta el texto «{texto}» en ajustes")
     grupo = p.get_by_role("radiogroup")
     igual(grupo.count(), 1, "Número de radiogroup")
@@ -1444,7 +1446,7 @@ def t_datos_sobreviven(e):
 
 @prueba("sesión: sin cuenta «Iniciar sesión»; con cuenta (cosascon:cuenta) «Cerrar sesión» y quién; valores raros se ignoran")
 def t_sesion(e):
-    con_cuenta = "tus listas de Cosas con y Cosas de te siguen a cualquier dispositivo."
+    con_cuenta = "tus cosas, tus grupos, tu nombre y tu color te siguen a cualquier dispositivo, igual que tus listas de Cosas con y Cosas de."
     casos = [
         (None, "Iniciar sesión", "entrar", AYUDA_SESION),
         (json.dumps({"nombre": "Raúl García", "correo": "raul@example.com"}), "Cerrar sesión", "salir",
@@ -2279,6 +2281,7 @@ def t_dictado_sin_soporte(e):
     esperar_vista(p, "inicio")
     igual(p.evaluate("() => [typeof window.SpeechRecognition, typeof window.webkitSpeechRecognition]"), ["undefined", "undefined"], "Reconocimiento anulado por la prueba")
     comprobar(not boton_micro(p).is_visible(), "El micrófono se ve en un navegador que no sabe reconocer la voz")
+    igual(p.evaluate("() => document.querySelector('#dictar-en-grupo').hidden"), True, "El micrófono de la página de un grupo existe sin reconocimiento de voz")
     comprobar(not boton_guardar(p).is_visible(), "El botón Guardar se ve con el campo vacío")
     auditoria = p.evaluate(JS_AUDITORIA_INICIO)
     igual((auditoria["intrusos"], auditoria["raices"], texto_inicio(auditoria)), ([], RAICES_INICIO, TEXTO_INICIO), "Pantalla principal sin micrófono")
@@ -2297,7 +2300,7 @@ def t_dictado_sin_soporte(e):
     igual(cosas_guardadas(p), ["Sin dictado"], "Cosas guardadas sin dictado")
     comprobar(not boton_micro(p).is_visible(), "El micrófono aparece tras guardar")
     abrir_ajustes(p)
-    comprobar(p.get_by_text(AYUDA_NOMBRE).is_visible(), "Falta la ayuda de datos")
+    comprobar(p.get_by_text(AYUDA_SESION).is_visible(), "Falta la ayuda de datos")
     igual(p.get_by_text(AYUDA_DICTADO).count(), 1, "La frase del dictado existe (oculta) en Ajustes")
     comprobar(not p.get_by_text(AYUDA_DICTADO).is_visible(), "Se habla del dictado donde no lo hay")
 
@@ -2715,8 +2718,9 @@ def t_dictado_no_disponible(e):
     esperar_toast(p, "Guardado")
     comprobar(not boton_micro(p).is_visible(), "El micrófono reaparece tras guardar")
     abrir_ajustes(p)
-    comprobar(p.get_by_text(AYUDA_NOMBRE).is_visible(), "Falta la ayuda de datos")
+    comprobar(p.get_by_text(AYUDA_SESION).is_visible(), "Falta la ayuda de datos")
     comprobar(not p.get_by_text(AYUDA_DICTADO).is_visible(), "Ajustes sigue hablando de un dictado que aquí no existe")
+    igual(p.evaluate("() => document.querySelector('#dictar-en-grupo').hidden"), True, "El micrófono de la página de un grupo sigue ahí")
     p.context.close()
     # En Safari (dictado desactivado en los ajustes de iOS) y en la app instalada en Android el micrófono se queda: se puede reintentar.
     for guiones, agente in (([], UA_IPHONE), ([JS_MODO_APLICACION], UA_ANDROID)):
@@ -3554,7 +3558,8 @@ JS_BARRA_ANADIR = r"""
 () => {
   const caja = (el) => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, d: r.right, b: r.bottom, ancho: r.width, alto: r.height }; };
   const panel = document.querySelector('#candidatas'), zona = document.querySelector('#zona-grupo');
-  return { pildora: caja(document.querySelector('#barra-anadir .pildora')), cabecera: caja(document.querySelector('#vista-grupo header')),
+  return { pildora: caja(document.querySelector('#barra-anadir > .pildora')), escribir: caja(document.querySelector('#formulario-en-grupo .pildora')),
+           cabecera: caja(document.querySelector('#vista-grupo header')),
            panel: panel.checkVisibility() ? caja(panel) : null, desplazable: panel.scrollHeight > panel.clientHeight + 0.5,
            desplazamiento: panel.scrollTop, desplazamientoZona: zona.scrollTop, alto: innerHeight,
            primerMas: document.activeElement === document.querySelector('#lista-candidatas > li .mas') };
@@ -4467,7 +4472,8 @@ def t_pagina_grupo_anadir(e):
     boton = boton_anadir(p)
     caja, m = boton.bounding_box(), barra_anadir(p)
     cuerpo = p.locator("#zona-grupo").bounding_box()
-    comprobar(0 <= e.alto - (caja["y"] + caja["height"]) <= 48 and caja["height"] >= 44, f"«Añadir cosas» no es una barra pegada abajo: {caja}")
+    comprobar(caja["height"] >= 44 and 0 <= m["escribir"]["y"] - (caja["y"] + caja["height"]) <= 16 and 0 <= e.alto - m["escribir"]["b"] <= 48,
+              f"«Añadir cosas» no va justo encima de la barra de escribir, pegada abajo: {caja} / {m['escribir']}")
     comprobar(abs(caja["width"] - min(e.ancho - 32, 640)) <= 1, f"«Añadir cosas» no es una píldora ancha: {caja}")
     igual(boton.evaluate("(b) => parseFloat(getComputedStyle(b).borderTopLeftRadius) >= b.getBoundingClientRect().height / 2 - 0.5"), True, "«Añadir cosas» no es una píldora")
     vacio = p.get_by_text("Este grupo está vacío.", exact=True).bounding_box()
@@ -4530,7 +4536,7 @@ def t_pagina_grupo_anadir(e):
     igual(leer_estado(p)["grupos"][1]["nombre"], "Otro", "El otro grupo se conserva")
 
 
-@prueba("página de grupo: «−» devuelve la cosa al nivel superior (sin aviso, con animación corta) y el grupo vacío vuelve a centrar su nota")
+@prueba("página de grupo: «−» devuelve la cosa al nivel superior (animación corta, aviso con «Deshacer», que la devuelve al grupo, también varias) y el grupo vacío vuelve a centrar su nota")
 def t_quitar_del_grupo(e):
     p = sembrar(e, estado_con([cosa(3, "Tres", grupo="g-4"), cosa(2, "Dos", hecha=True, grupo="g-4"), cosa(1, "Una")], grupos=[grupo(4, "Grupo")]), ruta="#grupo/g-4")
     esperar_vista(p, "grupo")
@@ -4541,9 +4547,34 @@ def t_quitar_del_grupo(e):
     igual(next(c["grupo"] for c in leer_estado(p)["cosas"] if c["texto"] == "Tres"), None, "La cosa quitada sigue en el grupo en el almacenamiento")
     esperar(p, "() => document.querySelectorAll('#lista-grupo > li').length === 1", ms=1500, que="la fila quitada desaparece")
     comprobar(time.monotonic() - inicio < 1.5, "La animación de quitar no es corta")
-    p.wait_for_timeout(200)
-    comprobar(not toast(p)["visible"], "Quitar del grupo enseña un aviso")
+    aviso = esperar_toast(p, "Quitado del grupo")
+    igual((aviso["boton"], aviso["icono"]), ("Deshacer", False), "Aviso al quitar del grupo")
     igual(p.evaluate("() => document.activeElement.getAttribute('aria-label')"), "Quitar del grupo", "El foco no pasa al «−» vecino")
+    m = barra_anadir(p)
+    comprobar(aviso["y"] + aviso["alto"] <= m["pildora"]["y"], f"El aviso tapa la barra: {aviso} / {m['pildora']}")
+    # «Deshacer» la devuelve al grupo, en su sitio, y el foco va a su check.
+    p.get_by_role("button", name="Deshacer", exact=True).tap()
+    esperar_pagina_grupo(p, "tras deshacer", miembros=["Tres", "Dos"])
+    igual(next(c["grupo"] for c in leer_estado(p)["cosas"] if c["texto"] == "Tres"), "g-4", "Tras deshacer, la cosa no vuelve al grupo en el almacenamiento")
+    igual(p.evaluate("() => [document.activeElement.getAttribute('aria-label'), document.activeElement.closest('li').querySelector('.texto').textContent]"),
+          ["Marcar como hecha", "Tres"], "Tras deshacer, el foco no va al check de la cosa devuelta")
+    esperar_sin_toast(p, ms=1500)
+    # Varias seguidas (con el aviso a la vista) se deshacen juntas.
+    quitar_de(p, "Tres").tap()
+    p.wait_for_timeout(400)
+    quitar_de(p, "Dos").tap()
+    esperar_pagina_grupo(p, "tras quitar las dos", miembros=[], vacio=True)
+    p.get_by_role("button", name="Deshacer", exact=True).tap()
+    esperar_pagina_grupo(p, "tras deshacer las dos", miembros=["Tres", "Dos"], vacio=False)
+    igual(sorted(c["texto"] for c in leer_estado(p)["cosas"] if c.get("grupo") == "g-4"), ["Dos", "Tres"], "Deshacer varias no las devuelve todas")
+    # Pasado el aviso ya no hay nada que deshacer: la cosa se queda fuera.
+    p.wait_for_timeout(400)
+    quitar_de(p, "Tres").tap()
+    esperar_toast(p, "Quitado del grupo")
+    esperar_sin_toast(p, ms=6000)
+    p.wait_for_timeout(300)  # El aviso ya invisible se vacía un instante después.
+    igual(p.get_by_role("button", name="Deshacer", exact=True).count(), 0, "«Deshacer» sigue ahí sin aviso")
+    igual(pagina_grupo(p)["miembros"], ["Dos"], "Cosas del grupo cuando el aviso se va")
     # Doble toque: solo se quita una.
     p2 = sembrar(e, estado_con([cosa(3, "C", grupo="g-4"), cosa(2, "B", grupo="g-4"), cosa(1, "A", grupo="g-4")], grupos=[grupo(4, "Grupo")]), ruta="#grupo/g-4")
     esperar_vista(p2, "grupo")
@@ -4569,11 +4600,12 @@ def t_quitar_del_grupo(e):
 def t_barra_anadir(e):
     p = sembrar(e, estado_con([cosa(i, f"Cosa número {i}", hecha=i % 4 == 0) for i in range(1, 61)], grupos=[grupo(100, "Grupo")]), ruta="#grupo/g-100")
     esperar_vista(p, "grupo")
-    boton, pildora = boton_anadir(p), p.locator("#barra-anadir .pildora")
+    boton, pildora = boton_anadir(p), p.locator("#barra-anadir > .pildora")
     m = barra_anadir(p)
     caja, caja_boton = m["pildora"], boton.bounding_box()
     comprobar(abs(caja["ancho"] - caja_boton["width"]) <= 1 and abs(caja["alto"] - caja_boton["height"]) <= 1, f"El botón no es la píldora entera: {caja} vs {caja_boton}")
-    comprobar(0 <= e.alto - caja["b"] <= 48 and caja["alto"] >= 44, f"La barra no está pegada abajo: {caja}")
+    comprobar(caja["alto"] >= 44 and 0 <= m["escribir"]["y"] - caja["b"] <= 16 and 0 <= e.alto - m["escribir"]["b"] <= 48,
+              f"«Añadir cosas» no va justo encima de la barra de escribir, pegada abajo: {caja} / {m['escribir']}")
     comprobar(abs((caja["x"] + caja["d"]) / 2 - e.ancho / 2) <= 1, "La barra no está centrada")
     igual(boton.evaluate("(b) => [b.textContent.trim(), b.getAttribute('aria-expanded'), b.getAttribute('aria-controls'), b.type]"), ["Añadir cosas", "false", "candidatas", "button"], "Botón «Añadir cosas»")
     igual(m["panel"], None, "El desplegable se ve antes de abrirlo")
@@ -4581,6 +4613,9 @@ def t_barra_anadir(e):
     aspecto = "(el) => { const cs = getComputedStyle(el), r = el.getBoundingClientRect(); return [cs.borderTopLeftRadius, cs.backgroundColor, cs.backgroundImage, cs.boxShadow, r.height, r.width, r.x, r.bottom]; }"
     contenedor = "(el) => { const cs = getComputedStyle(el); return [cs.position, cs.bottom, cs.paddingTop, cs.paddingBottom, cs.paddingLeft, cs.backgroundImage]; }"
     barra_pagina = [pildora.evaluate(aspecto), p.locator("#barra-anadir").evaluate(contenedor)]
+    escalon = m["escribir"]["b"] - caja["b"]  # «Añadir cosas» queda sobre la barra de escribir: su píldora y su margen.
+    igual(round(escalon), 66, "Escalón entre «Añadir cosas» y la barra de escribir")
+    barra_pagina[0][-1] += escalon
     p.get_by_role("button", name="Volver", exact=True).tap()
     esperar_vista(p, "lista")
     p.wait_for_timeout(300)  # Fin de la animación de entrada de la vista.
@@ -4680,7 +4715,8 @@ def t_cuerpo_grupo_con_barra(e):
         m = barra_anadir(p)
         primera = p.locator("#lista-grupo > li").first.bounding_box()
         comprobar(m["cabecera"]["b"] <= primera["y"] <= m["cabecera"]["b"] + 40, f"[{etiqueta}] La primera cosa no empieza justo bajo la cabecera: {primera} / {m['cabecera']}")
-        comprobar(0 <= alto - m["pildora"]["b"] <= 48, f"[{etiqueta}] La barra no está pegada abajo: {m['pildora']}")
+        comprobar(0 <= alto - m["escribir"]["b"] <= 48 and 0 <= m["escribir"]["y"] - m["pildora"]["b"] <= 16,
+                  f"[{etiqueta}] La barra de escribir no está pegada abajo con «Añadir cosas» justo encima: {m['pildora']} / {m['escribir']}")
         p.evaluate("() => { const z = document.querySelector('#zona-grupo'); z.scrollTop = z.scrollHeight; }")
         p.wait_for_timeout(150)
         ultima = p.locator("#lista-grupo > li").last.bounding_box()
@@ -4907,8 +4943,9 @@ def t_color_grupo_efectos(e):
 JS_CONTRASTE_DESPLEGABLE = "() => {" + JS_UTIL + r"""
   const fila = document.querySelector('#lista-candidatas > li'), panel = document.querySelector('#candidatas');
   return {
-    texto: { 'texto de una candidata': contrasteTexto(fila.querySelector('.texto')), 'botón Añadir cosas': contrasteTexto(document.querySelector('#anadir-cosas')) },
-    iconos: { '«+»': contrasteIcono(fila.querySelector('.mas svg')) },
+    texto: { 'texto de una candidata': contrasteTexto(fila.querySelector('.texto')), 'botón Añadir cosas': contrasteTexto(document.querySelector('#anadir-cosas')),
+             'texto del campo de escribir del grupo': contrasteTexto(document.querySelector('#campo-en-grupo')) },
+    iconos: { '«+»': contrasteIcono(fila.querySelector('.mas svg')), 'placeholder del campo del grupo': contrasteTexto(document.querySelector('#campo-en-grupo'), '::placeholder') },
     tono: document.querySelector('#vista-grupo').dataset.tono, fondoPanel: redondear(fondoEfectivo(panel)),
     punto: [panel.getBoundingClientRect().left + 3, panel.getBoundingClientRect().top + panel.getBoundingClientRect().height / 2],
   };
@@ -5043,6 +5080,459 @@ def t_sin_desborde_grupos(e):
 
 
 # ----------------------------------------------------------------------------
+# Página de un grupo: su barra de escribir (con dictado)
+# ----------------------------------------------------------------------------
+
+JS_BARRA_EN_GRUPO = (JS_BARRA.replace("'#dictar'", "'#dictar-en-grupo'").replace("'#enviar'", "'#enviar-en-grupo'")
+                     .replace("'#campo'", "'#campo-en-grupo'").replace("'#formulario .pildora'", "'#formulario-en-grupo .pildora'"))
+
+
+def barra_en_grupo(pagina):
+    return pagina.evaluate(JS_BARRA_EN_GRUPO)
+
+
+def esperar_barra_en_grupo(pagina, esperado, que):
+    try:
+        pagina.wait_for_function(f"(esperado) => JSON.stringify(({JS_BARRA_EN_GRUPO})()) === JSON.stringify(esperado)", arg=esperado, timeout=2500)
+    except TiempoAgotado:
+        igual(barra_en_grupo(pagina), esperado, que)
+
+
+def campo_en_grupo(pagina):
+    return pagina.locator("#campo-en-grupo")
+
+
+def pagina_de_grupo_con_dictado(e, datos, ruta, **opciones):
+    contexto = e.contexto(**opciones)
+    contexto.add_init_script(JS_DICTADO_FALSO)
+    pagina = sembrar(e, datos, ruta=ruta, contexto=contexto)
+    esperar_vista(pagina, "grupo")
+    return pagina
+
+
+@prueba("página de grupo: bajo «Añadir cosas», la barra de escribir de inicio (campo, micrófono y Guardar) pegada abajo; lo escrito entra en el grupo, arriba, con «Guardado»; vacío no guarda; tocar el campo cierra el desplegable; lo que queda a medias no pasa a otro grupo")
+def t_grupo_escribir(e):
+    datos = estado_con([cosa(3, "Dentro", grupo="g-5"), cosa(2, "Hecha dentro", hecha=True, grupo="g-5"), cosa(1, "Fuera")],
+                       grupos=[grupo(5, "Casa"), grupo(4, "Otro")])
+    p = pagina_de_grupo_con_dictado(e, datos, "#grupo/g-5")
+    esperar_barra_en_grupo(p, BARRA_EN_REPOSO, "Barra de escribir del grupo en reposo")
+    m = barra_anadir(p)
+    anadir, escribir = m["pildora"], m["escribir"]
+    comprobar(0 <= e.alto - escribir["b"] <= 48 and abs(escribir["alto"] - 56) <= 0.5, f"La barra de escribir no está pegada abajo: {escribir}")
+    comprobar(0 <= escribir["y"] - anadir["b"] <= 16, f"«Añadir cosas» no queda justo encima de la barra de escribir: {anadir} / {escribir}")
+    comprobar(abs(anadir["x"] - escribir["x"]) <= 0.5 and abs(anadir["d"] - escribir["d"]) <= 0.5, f"Las dos píldoras no tienen el mismo ancho: {anadir} / {escribir}")
+    # La misma píldora que la de la pantalla principal (forma, relleno, letra del campo y hueco de los botones).
+    aspecto = """(sel) => { const el = document.querySelector(sel), cs = getComputedStyle(el), r = getComputedStyle(el.querySelector('.ranura'));
+        return [cs.borderTopLeftRadius, cs.height, cs.paddingLeft, cs.paddingRight, getComputedStyle(el.querySelector('.campo')).fontSize, r.width, r.height]; }"""
+    igual(p.evaluate(aspecto, "#formulario-en-grupo .pildora"), p.evaluate(aspecto, "#formulario .pildora"), "La barra de escribir del grupo no es como la de inicio")
+    igual(campo_en_grupo(p).evaluate("(c) => [c.getAttribute('aria-label'), c.placeholder, c.maxLength, c.getAttribute('enterkeyhint'), c.closest('form').id]"),
+          ["Escribe una cosa en este grupo", "Escribe una cosa…", 500, "done", "formulario-en-grupo"], "Atributos del campo del grupo")
+    # Tabulador: tras «Añadir cosas», el campo y el hueco.
+    boton_anadir(p).focus()
+    for esperado in ("Escribe una cosa en este grupo", "Dictar"):
+        p.keyboard.press("Tab")
+        igual(p.evaluate("() => document.activeElement.getAttribute('aria-label')"), esperado, "Orden de tabulación tras «Añadir cosas»")
+    # Solo espacios: no guarda nada.
+    campo_en_grupo(p).fill("   ")
+    campo_en_grupo(p).press("Enter")
+    p.wait_for_timeout(200)
+    igual(pagina_grupo(p)["miembros"], ["Dentro", "Hecha dentro"], "Solo espacios guarda algo")
+    # Con Intro: entra en el grupo (arriba, antes que las hechas) con «Guardado», y el campo se vacía.
+    campo_en_grupo(p).fill("  Comprar bombillas ")
+    esperar_barra_en_grupo(p, dict(BARRA_EN_REPOSO, micro=False, enviar=True, valor="  Comprar bombillas ", focoEnCampo=True), "Barra del grupo con texto")
+    campo_en_grupo(p).press("Enter")
+    comprobar(esperar_toast(p, "Guardado")["icono"], "«Guardado» sin icono")
+    esperar_pagina_grupo(p, "tras escribir en el grupo", miembros=["Comprar bombillas", "Dentro", "Hecha dentro"], vacio=False)
+    nueva = next(c for c in leer_estado(p)["cosas"] if c["texto"] == "Comprar bombillas")
+    igual((nueva["grupo"], nueva["hecha"], nueva["hechaEn"]), ("g-5", False, None), "La cosa escrita en el grupo")
+    esperar_barra_en_grupo(p, BARRA_EN_REPOSO, "Barra del grupo tras guardar")
+    # Con el botón Guardar.
+    p.wait_for_timeout(400)
+    campo_en_grupo(p).fill("Cambiar la bombilla")
+    p.wait_for_timeout(250)  # Fin del cruce entre el micrófono y Guardar.
+    p.locator("#enviar-en-grupo").tap()
+    esperar_pagina_grupo(p, "tras guardar con el botón", miembros=["Cambiar la bombilla", "Comprar bombillas", "Dentro", "Hecha dentro"])
+    # Lo escrito aquí no se ofrece en el desplegable (ya está dentro); tocar el campo lo cierra y el foco se queda en él.
+    p.wait_for_timeout(400)
+    boton_anadir(p).tap()
+    esperar_pagina_grupo(p, "desplegable abierto", desplegable=True, candidatas=["Fuera"])
+    p.wait_for_timeout(400)
+    campo_en_grupo(p).tap()
+    esperar_pagina_grupo(p, "desplegable cerrado al tocar el campo", desplegable=False, foco="campo-en-grupo")
+    # Lo que queda a medias no pasa a otro grupo.
+    campo_en_grupo(p).fill("A medias")
+    p.go_back()
+    esperar_vista(p, "lista")
+    igual(campo_en_grupo(p).input_value(), "", "Lo escrito a medias sigue en el campo del grupo al salir")
+    igual(textos_anidados(p, "Casa"), ["Cambiar la bombilla", "Comprar bombillas", "Dentro", "Hecha dentro"], "Lo escrito en el grupo no está dentro de él en la lista")
+    p.wait_for_timeout(400)
+    abrir_grupo(p, "Otro")
+    esperar_barra_en_grupo(p, BARRA_EN_REPOSO, "Barra del otro grupo")
+    comprobar("A medias" not in cosas_guardadas(p), "Se ha guardado lo escrito a medias")
+
+
+@prueba("página de grupo: se dicta en su barra como en la de inicio (micrófono, «Te escucho…», texto, Guardar) y lo dictado entra en el grupo; al salir de la página el dictado se corta")
+def t_grupo_dictado(e):
+    p = pagina_de_grupo_con_dictado(e, estado_con([cosa(1, "Fuera")], grupos=[grupo(5, "Casa")]), "#grupo/g-5")
+    esperar_barra_en_grupo(p, BARRA_EN_REPOSO, "Barra del grupo en reposo")
+    p.locator("#dictar-en-grupo").tap()
+    igual([r["llamadas"] for r in reconocimientos(p)], [["start"]], "Reconocimiento al tocar el micrófono del grupo")
+    igual(reconocimientos(p)[0]["lang"], "es-ES", "Idioma del dictado en el grupo")
+    esperar_barra_en_grupo(p, BARRA_ESCUCHANDO, "Barra del grupo escuchando")
+    igual(barra(p)["pulsado"], "false", "El micrófono de inicio también se marca como escuchando")
+    comprobar(p.evaluate("() => !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)"), "Al dictar el foco está en un campo de texto (se abriría el teclado)")
+    p.wait_for_timeout(400)
+    dictar(p, "regar las plantas")
+    esperar_barra_en_grupo(p, dict(BARRA_ESCUCHANDO, valor="Regar las plantas"), "Texto provisional en el campo del grupo")
+    igual(campo_barra(p).input_value(), "", "Lo dictado en el grupo se escribe en el campo de inicio")
+    dictar(p, "regar las plantas del balcón", final=True)
+    p.evaluate("() => window.__dictado.fin()")
+    esperar_barra_en_grupo(p, dict(BARRA_EN_REPOSO, micro=False, enviar=True, valor="Regar las plantas del balcón"), "Barra del grupo al terminar de dictar")
+    p.wait_for_timeout(600)
+    igual(pagina_grupo(p)["miembros"], [], "Lo dictado se guarda sin confirmar")
+    p.locator("#enviar-en-grupo").tap()
+    esperar_toast(p, "Guardado")
+    esperar_pagina_grupo(p, "tras guardar lo dictado", miembros=["Regar las plantas del balcón"])
+    igual(next(c["grupo"] for c in leer_estado(p)["cosas"] if c["texto"] == "Regar las plantas del balcón"), "g-5", "Lo dictado no entra en el grupo")
+    # Salir de la página mientras escucha corta el dictado: nada sigue escuchando ni escribiendo.
+    p.wait_for_timeout(400)
+    p.locator("#dictar-en-grupo").tap()
+    p.wait_for_timeout(400)
+    dictar(p, "a medias")
+    p.get_by_role("button", name="Volver", exact=True).tap()
+    esperar_vista(p, "lista")
+    igual(reconocimientos(p)[1]["llamadas"], ["start", "abort"], "Al salir de la página el dictado no se corta")
+    igual(reconocimientos(p)[1]["oyentes"], 0, "Oyentes vivos tras salir de la página")
+    igual(campo_en_grupo(p).input_value(), "", "Lo dictado a medias se queda en el campo del grupo")
+    igual(cosas_guardadas(p), ["Regar las plantas del balcón", "Fuera"], "Cosas guardadas tras salir dictando")
+
+
+# ----------------------------------------------------------------------------
+# Nube: con sesión, tus cosas en todos tus dispositivos (nube.js)
+# ----------------------------------------------------------------------------
+
+# La nube solo se carga en la app publicada (https): las pruebas la sirven en un origen https de mentira,
+# con una configuración y un Firebase de mentira (módulos que hablan con NubeFalsa, en este proceso).
+ORIGEN_NUBE = "https://cosas.test/"
+CDN_FIREBASE = "https://www.gstatic.com/firebasejs/"
+CONFIG_FALSA = "window.COSAS_FIREBASE = { apiKey: 'clave-de-prueba', authDomain: 'cosas.test', projectId: 'cosas-prueba', appId: '1:1:web:1' };"
+TIPOS = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+         ".webmanifest": "application/manifest+json", ".png": "image/png", ".svg": "image/svg+xml"}
+
+FIREBASE_FALSO = {
+    "firebase-app.js": r"""
+export function initializeApp(config, nombre) { window.__appFalsa = { config, nombre: nombre || '[DEFAULT]' }; return window.__appFalsa; }
+""",
+    "firebase-auth.js": r"""
+export const indexedDBLocalPersistence = { tipo: 'indexedDB' };
+export const browserLocalPersistence = { tipo: 'local' };
+export function initializeAuth(app, opciones) { window.__authFalsa = { app, persistencias: opciones.persistence.map((p) => p.tipo) }; return window.__authFalsa; }
+export function onAuthStateChanged(auth, oyente) {
+  const avisar = () => oyente(window.__usuarioFalso || null);
+  window.__cambiarUsuarioFalso = (usuario) => { window.__usuarioFalso = usuario; avisar(); };
+  setTimeout(avisar, 0);
+  return () => {};
+}
+""",
+    "firebase-firestore.js": r"""
+const llamar = (op, datos) => window.__nubeFalsa(JSON.stringify({ op, ...datos })).then((r) => JSON.parse(r));
+export function memoryLocalCache() { return { tipo: 'memoria' }; }
+export function initializeFirestore(app, opciones) { window.__cacheFalsa = opciones.localCache.tipo; return { app }; }
+export function collection(db, ...partes) { return { ruta: partes.join('/') }; }
+export function doc(coleccion, id) { return { ruta: coleccion.ruta, id }; }
+export function onSnapshot(coleccion, opciones, siguiente, error) {
+  let version = -1;
+  let vivo = true;
+  const mirar = async () => {
+    if (!vivo) return;
+    try {
+      const r = await llamar('leer', { ruta: coleccion.ruta });
+      if (r.error) { vivo = false; error(new Error(r.error)); return; }
+      if (vivo && r.version !== version) {
+        version = r.version;
+        siguiente({ metadata: { fromCache: false, hasPendingWrites: false }, docs: r.docs.map((d) => ({ id: d.id, data: () => d.datos })) });
+      }
+    } catch (e) { /* La página se está cerrando. */ }
+    if (vivo) setTimeout(mirar, 80);
+  };
+  // Como el SDK de verdad: antes de oír al servidor, una instantánea de la caché (vacía en memoria).
+  setTimeout(() => { if (vivo) siguiente({ metadata: { fromCache: true, hasPendingWrites: false }, docs: [] }); }, 0);
+  setTimeout(mirar, 30);
+  return () => { vivo = false; };
+}
+export function writeBatch(db) {
+  const operaciones = [];
+  return {
+    set(ref, datos) { operaciones.push({ ruta: ref.ruta, id: ref.id, datos }); },
+    delete(ref) { operaciones.push({ ruta: ref.ruta, id: ref.id, datos: null }); },
+    commit() {
+      return llamar('escribir', { operaciones }).then((r) => {
+        if (r.retener) return new Promise(() => {}); // Sin conexión: nunca llega.
+        if (r.error) throw new Error(r.error);
+      });
+    },
+  };
+}
+""",
+}
+
+
+class NubeFalsa:
+    """Firestore de mentira: colecciones en memoria, compartidas por todos los «dispositivos» (contextos) de una prueba."""
+
+    def __init__(self):
+        self.colecciones = {}
+        self.version = 0
+        self.escrituras = 0  # Lotes recibidos (también los retenidos y los rechazados).
+        self.retener = False  # Los lotes no llegan (la app se queda sin conexión y se cierra).
+        self.rechazar = False  # Los lotes se rechazan (como unas reglas que no los dejan pasar).
+
+    def atender(self, bruto):
+        peticion = json.loads(bruto)
+        if peticion["op"] == "leer":
+            documentos = self.colecciones.get(peticion["ruta"], {})
+            return json.dumps({"version": self.version, "docs": [{"id": k, "datos": v} for k, v in sorted(documentos.items())]})
+        self.escrituras += 1
+        if self.retener:
+            return json.dumps({"retener": True})
+        if self.rechazar:
+            return json.dumps({"error": "permission-denied"})
+        for operacion in peticion["operaciones"]:
+            documentos = self.colecciones.setdefault(operacion["ruta"], {})
+            if operacion["datos"] is None:
+                documentos.pop(operacion["id"], None)
+            else:
+                documentos[operacion["id"]] = operacion["datos"]
+        self.version += 1
+        return json.dumps({})
+
+    def documentos(self, uid="u1"):
+        return dict(self.colecciones.get(f"personales/{uid}/elementos", {}))
+
+
+def servir_app_en_la_nube(route):
+    ruta = re.sub(r"^https://[^/]+/", "", route.request.url).split("?")[0].split("#")[0] or "index.html"
+    if ruta == "firebase-config.js":
+        route.fulfill(status=200, content_type=TIPOS[".js"], body=CONFIG_FALSA)
+        return
+    fichero = APP / ruta
+    if not fichero.is_file():
+        route.fulfill(status=404, body="")
+        return
+    route.fulfill(status=200, content_type=TIPOS.get(fichero.suffix, "application/octet-stream"), body=fichero.read_bytes())
+
+
+def servir_firebase_falso(route):
+    nombre = route.request.url.split("?")[0].rsplit("/", 1)[-1]
+    route.fulfill(status=200, content_type=TIPOS[".js"], body=FIREBASE_FALSO[nombre])
+
+
+def dispositivo(e, nube, usuario="u1"):
+    """Un contexto (un dispositivo) con la app en https://cosas.test/ y el Firebase de mentira; «usuario» es su sesión de Google."""
+    for origen in (ORIGEN_NUBE, CDN_FIREBASE):
+        if origen not in e.origenes_propios:
+            e.origenes_propios.append(origen)
+    # El origen de mentira no tiene service worker (lo sirve Playwright): la app avisa de que no se ha podido registrar.
+    e.tolerar.append(r"^Service Worker registration blocked by Playwright$")
+    contexto = e.contexto(service_workers="block")
+    contexto.expose_function("__nubeFalsa", nube.atender)
+    if usuario:
+        contexto.add_init_script(f"window.__usuarioFalso = {json.dumps({'uid': usuario, 'isAnonymous': False})};")
+    contexto.route(ORIGEN_NUBE + "**", servir_app_en_la_nube)
+    contexto.route(CDN_FIREBASE + "**", servir_firebase_falso)
+    return contexto
+
+
+def abrir_en_la_nube(contexto, e, datos=None, ruta="", cuenta=True):
+    """Abre la app en ese dispositivo; con «datos», lo que ya tenía apuntado; con «cuenta», la sesión que dejó cuenta/."""
+    pagina = e.vigilar(contexto.new_page())
+    pagina.goto(ORIGEN_NUBE + "icons/favicon-32.png")
+    if datos is not None:
+        pagina.evaluate("([clave, valor]) => localStorage.setItem(clave, valor)", [CLAVE, json.dumps(datos, ensure_ascii=False)])
+    if cuenta:
+        pagina.evaluate("([clave, valor]) => localStorage.setItem(clave, valor)", [CLAVE_CUENTA, json.dumps({"nombre": "Raúl", "correo": "raul@example.com"})])
+    pagina.goto(ORIGEN_NUBE + ruta)
+    return pagina
+
+
+def esperar_nube(pagina, estado, ms=5000):
+    esperar(pagina, "(estado) => document.documentElement.dataset.nube === estado", arg=estado, ms=ms, que=f"la nube pasa a «{estado}»")
+
+
+def esperar_guardado(pagina, condicion, que, ms=5000):
+    """Espera a que lo guardado en ese dispositivo cumpla «condicion» (JS sobre el estado)."""
+    esperar(pagina, f"(clave) => {{ const s = JSON.parse(localStorage.getItem(clave)); return ({condicion})(s); }}", arg=CLAVE, ms=ms, que=que)
+
+
+def esperar_en_la_nube(pagina, nube, condicion, que, ms=5000):
+    fin = time.monotonic() + ms / 1000
+    while not condicion(nube.documentos()):
+        if time.monotonic() > fin:
+            raise Fallo(f"No se cumplió en {ms} ms: {que} (en la nube: {sorted(nube.documentos())})")
+        pagina.wait_for_timeout(50)  # Con Playwright esperando, las llamadas a la nube falsa se atienden.
+
+
+@prueba("nube: reconciliación documento a documento (la primera vez se juntan, bajas y cambios de cada lado, si cambian los dos gana este dispositivo, los ajustes de la cuenta mandan la primera vez, lo que se está subiendo no se toca)", una_vez=True)
+def t_nube_reconciliar(e):
+    p = e.pagina("icons/favicon-32.png")
+    r = p.evaluate("""async () => {
+      const n = await import('/nube.js');
+      const M = (o) => new Map(Object.entries(o));
+      const O = (m) => Object.fromEntries(m);
+      const c = (id, texto, extra = {}) => ({ tipo: 'cosa', id, texto, hecha: false, creada: 1, hechaEn: null, grupo: null, ...extra });
+      const aj = (colorFondo, nombre = '') => ({ tipo: 'ajustes', colorFondo, nombre });
+      const caso = (local, base, nube, ocupados = []) => {
+        const r = n.reconciliar(M(local), M(base), M(nube), new Set(ocupados));
+        return { escribir: O(r.escribir), aplicar: O(r.aplicar), base: O(r.base) };
+      };
+      return {
+        union: caso({ 'c-a': c('a', 'A'), ajustes: aj('#111111') }, {}, { 'c-b': c('b', 'B'), ajustes: aj('#EF5B5B', 'Raúl') }),
+        bajaEnLaNube: caso({ 'c-a': c('a', 'A') }, { 'c-a': c('a', 'A') }, {}),
+        bajaAqui: caso({}, { 'c-a': c('a', 'A') }, { 'c-a': c('a', 'A') }),
+        cambioEnLaNube: caso({ 'c-a': c('a', 'A') }, { 'c-a': c('a', 'A') }, { 'c-a': c('a', 'A', { hecha: true, hechaEn: 5 }) }),
+        cambioAqui: caso({ 'c-a': c('a', 'A2') }, { 'c-a': c('a', 'A') }, { 'c-a': c('a', 'A') }),
+        ambos: caso({ 'c-a': c('a', 'Aquí') }, { 'c-a': c('a', 'A') }, { 'c-a': c('a', 'Allí') }),
+        borradaAllíCambiadaAquí: caso({ 'c-a': c('a', 'A2') }, { 'c-a': c('a', 'A') }, {}),
+        ajustesConBase: caso({ ajustes: aj('#111111') }, { ajustes: aj('#2F6FED') }, { ajustes: aj('#EF5B5B') }),
+        ocupado: caso({ 'c-a': c('a', 'A2') }, { 'c-a': c('a', 'A') }, { 'c-a': c('a', 'A3') }, ['c-a']),
+        iguales: caso({ 'c-a': c('a', 'A') }, {}, { 'c-a': c('a', 'A') }),
+        claves: [n.claveDe('cosa', 'x/y.z'), n.claveDe('grupo', 'g-1'), n.claveDe('cosa', ''), n.claveDe('cosa', 'a'.repeat(201)), n.claveDe('cosa', 7)],
+        elementos: O(n.elementosDe({ cosas: [{ id: 'a', texto: 'A', hecha: true, creada: 1, hechaEn: 2, grupo: 'g' }, { id: '', texto: 'Sin id' }],
+                                     grupos: [{ id: 'g', nombre: 'G', color: null, creada: 3, abierto: true }], ajustes: { colorFondo: '#2F6FED', nombre: 'R' } })),
+        aplicado: n.estadoCon({ version: 2, cosas: [{ id: 'a', texto: 'A' }, { id: 'b', texto: 'B' }], grupos: [{ id: 'g', nombre: 'G', color: null, creada: 3, abierto: true }],
+                                ajustes: { colorFondo: '#2F6FED', nombre: '' } },
+                              new Map([['c-a', null], ['c-c', c('c', 'C')], ['g-g', { tipo: 'grupo', id: 'g', nombre: 'G2', color: '#EF5B5B', creada: 3 }],
+                                       ['g-h', { tipo: 'grupo', id: 'h', nombre: 'H', color: null, creada: 4 }], ['ajustes', aj('#111111', 'R')]])),
+        raros: [n.deLaNube('c-a', { tipo: 'cosa', id: 'b', texto: 'B', hecha: false, creada: 1 }), n.deLaNube('c-a', { tipo: 'cosa', id: 'a', texto: 5, hecha: false, creada: 1 }),
+                n.deLaNube('ajustes', null), n.deLaNube('g-g', { tipo: 'cosa', id: 'g', texto: 'x', hecha: false, creada: 1 }), n.deLaNube('c-a', { tipo: 'cosa', id: 'a', texto: 'A', hecha: 'no', creada: 1 })],
+        completada: n.deLaNube('c-a', { tipo: 'cosa', id: 'a', texto: 'A', hecha: false, creada: 1, extra: 1 }),
+      };
+    }""")
+
+    def c(id, texto, **extra):
+        return {"tipo": "cosa", "id": id, "texto": texto, "hecha": False, "creada": 1, "hechaEn": None, "grupo": None, **extra}
+
+    def aj(color, nombre=""):
+        return {"tipo": "ajustes", "colorFondo": color, "nombre": nombre}
+
+    vacio = {"escribir": {}, "aplicar": {}}
+    igual(r["union"], {"escribir": {"c-a": c("a", "A")}, "aplicar": {"c-b": c("b", "B"), "ajustes": aj("#EF5B5B", "Raúl")},
+                       "base": {"c-b": c("b", "B"), "ajustes": aj("#EF5B5B", "Raúl")}}, "Primera vez: se juntan y mandan los ajustes de la cuenta")
+    igual(r["bajaEnLaNube"], {"escribir": {}, "aplicar": {"c-a": None}, "base": {}}, "Borrada en otro dispositivo")
+    igual(r["bajaAqui"], {"escribir": {"c-a": None}, "aplicar": {}, "base": {"c-a": c("a", "A")}}, "Borrada aquí")
+    igual(r["cambioEnLaNube"], {"escribir": {}, "aplicar": {"c-a": c("a", "A", hecha=True, hechaEn=5)}, "base": {"c-a": c("a", "A", hecha=True, hechaEn=5)}}, "Cambiada en otro dispositivo")
+    igual(r["cambioAqui"], {"escribir": {"c-a": c("a", "A2")}, "aplicar": {}, "base": {"c-a": c("a", "A")}}, "Cambiada aquí")
+    igual(r["ambos"], {"escribir": {"c-a": c("a", "Aquí")}, "aplicar": {}, "base": {"c-a": c("a", "A")}}, "Cambiada en los dos: gana este dispositivo")
+    igual(r["borradaAllíCambiadaAquí"], {"escribir": {"c-a": c("a", "A2")}, "aplicar": {}, "base": {"c-a": c("a", "A")}}, "Borrada allí y cambiada aquí: se conserva")
+    igual(r["ajustesConBase"], {"escribir": {"ajustes": aj("#111111")}, "aplicar": {}, "base": {"ajustes": aj("#2F6FED")}}, "Ajustes cambiados en los dos (ya con base): gana este dispositivo")
+    igual(r["ocupado"], dict(vacio, base={"c-a": c("a", "A")}), "Lo que se está subiendo no se toca")
+    igual(r["iguales"], dict(vacio, base={"c-a": c("a", "A")}), "Iguales en los dos: solo avanza la base")
+    igual(r["claves"], ["c-x%2Fy.z", "g-g-1", None, None, None], "Ids de documento")
+    igual(r["elementos"], {"c-a": c("a", "A", hecha=True, hechaEn=2, grupo="g"), "g-g": {"tipo": "grupo", "id": "g", "nombre": "G", "color": None, "creada": 3},
+                           "ajustes": aj("#2F6FED", "R")}, "Lo local como documentos (el ojo de un grupo no viaja; una cosa sin id no se sube)")
+    igual(r["aplicado"], {"version": 2, "cosas": [{"id": "b", "texto": "B"}, {"id": "c", "texto": "C", "hecha": False, "creada": 1, "hechaEn": None, "grupo": None}],
+                          "grupos": [{"id": "g", "nombre": "G2", "color": "#EF5B5B", "creada": 3, "abierto": True}, {"id": "h", "nombre": "H", "color": None, "creada": 4, "abierto": False}],
+                          "ajustes": {"colorFondo": "#111111", "nombre": "R"}}, "Estado con lo de la nube aplicado (el ojo abierto se conserva)")
+    igual(r["raros"], [None] * 5, "Documentos de la nube que no tienen la forma esperada")
+    igual(r["completada"], c("a", "A"), "Un documento con campos de más se queda con los suyos")
+
+
+@prueba("nube: con sesión, dos dispositivos juntan lo que tenían y se pasan los cambios (altas, bajas, grupos, lo escrito en un grupo, color); lo pendiente al cerrar se sube al volver y lo borrado mientras tanto no resucita; un rechazo no se reintenta sin fin; al cerrar la sesión se para; sin sesión, ni se carga")
+def t_nube_dos_dispositivos(e):
+    nube = NubeFalsa()
+    # A tenía cosas antes de entrar: un grupo abierto, una hecha, su color y su nombre.
+    contexto_a = dispositivo(e, nube)
+    a = abrir_en_la_nube(contexto_a, e, estado_con([cosa(3, "Pan", grupo="g-casa"), cosa(2, "Luz", hecha=True), cosa(1, "Agua")],
+                                                   grupos=[grupo(9, "Casa", id="g-casa", abierto=True)], color="#EF5B5B", nombre="Raúl"), ruta="#lista")
+    esperar_nube(a, "al-dia")
+    igual(a.evaluate("() => [window.__appFalsa.nombre, window.__authFalsa.persistencias, window.__cacheFalsa]"), ["[DEFAULT]", ["indexedDB", "local"], "memoria"],
+          "Firebase: la app por defecto (la sesión de cosas.info), persistencia local y caché en memoria")
+    docs = nube.documentos()
+    igual(sorted(docs), ["ajustes", "c-id-1", "c-id-2", "c-id-3", "g-g-casa"], "Documentos en la nube tras entrar con A")
+    igual(docs["ajustes"], {"tipo": "ajustes", "colorFondo": "#EF5B5B", "nombre": "Raúl"}, "Ajustes en la nube")
+    igual(docs["g-g-casa"], {"tipo": "grupo", "id": "g-casa", "nombre": "Casa", "color": None, "creada": 1_700_000_000_009}, "Grupo en la nube (sin el ojo, que es de cada dispositivo)")
+    igual((docs["c-id-3"]["grupo"], docs["c-id-2"]["hecha"]), ("g-casa", True), "Pertenencia y hecha en la nube")
+    # B, otro dispositivo con la misma cuenta, tenía una cosa suya y el color de siempre: se juntan y mandan los ajustes de la cuenta.
+    contexto_b = dispositivo(e, nube)
+    b = abrir_en_la_nube(contexto_b, e, estado_con([cosa(5, "Llamar")]))
+    esperar_nube(b, "al-dia")
+    esperar_guardado(b, "(s) => s.cosas.map((c) => c.texto).sort().join() === 'Agua,Llamar,Luz,Pan'", "B tiene las cosas de los dos")
+    esperar_fondo(b, "#EF5B5B")
+    igual(leer_estado(b)["ajustes"], {"colorFondo": "#EF5B5B", "nombre": "Raúl"}, "B toma los ajustes de la cuenta")
+    igual([(g["nombre"], g["abierto"]) for g in leer_estado(b)["grupos"]], [("Casa", False)], "B tiene el grupo (cerrado: el ojo es de cada dispositivo)")
+    esperar_en_la_nube(b, nube, lambda d: "c-id-5" in d, "la cosa de B llega a la nube")
+    # A la ve en su lista, sin recargar.
+    esperar_nivel(a, ["Casa", "Llamar", "Agua", "Luz"], "A recibe la cosa de B en la lista abierta")
+    igual(leer_estado(a)["grupos"][0]["abierto"], True, "El ojo abierto de A se ha cerrado")
+    # A borra «Agua» y desaparece en B.
+    borrar_de(fila_de(a, "Agua")).tap()
+    esperar_guardado(b, "(s) => !s.cosas.some((c) => c.texto === 'Agua')", "«Agua» desaparece en B")
+    # B escribe en la página del grupo y A lo ve dentro del grupo.
+    abrir_lista(b)
+    b.wait_for_timeout(400)  # Pasa la guarda del doble toque tras cambiar de vista.
+    abrir_grupo(b, "Casa")
+    campo_en_grupo(b).fill("Bombillas")
+    campo_en_grupo(b).press("Enter")
+    esperar_toast(b, "Guardado")
+    esperar_anidadas(a, "Casa", ["Bombillas", "Pan"])
+    # A cambia el color y B, en la página del grupo (sin color propio), lo ve.
+    a.get_by_role("button", name="Volver", exact=True).tap()
+    esperar_vista(a, "inicio")
+    abrir_ajustes(a)
+    igual(a.locator("#sesion").text_content().strip(), "Cerrar sesión", "Con la sesión, el botón es «Cerrar sesión»")
+    elegir_color(a, "Turquesa")
+    esperar_fondo(b, "#1BA39C")
+    esperar(b, "() => getComputedStyle(document.querySelector('#vista-grupo')).backgroundColor === 'rgb(27, 163, 156)'", que="la página del grupo en B toma el color nuevo")
+    # B se queda sin conexión: quita «Pan» del grupo, pero no llega a la nube antes de cerrarse.
+    nube.retener = True
+    quitar_de(b, "Pan").tap()
+    esperar_toast(b, "Quitado del grupo")
+    b.wait_for_timeout(800)
+    b.close()
+    nube.retener = False
+    igual(nube.documentos()["c-id-3"]["grupo"], "g-casa", "Lo que no llegó está en la nube")
+    # Mientras B está cerrado, A borra «Luz»; al volver, B sube lo pendiente y no resucita «Luz».
+    volver(a)
+    abrir_lista(a)
+    borrar_de(fila_de(a, "Luz")).tap()
+    esperar_en_la_nube(a, nube, lambda d: "c-id-2" not in d, "«Luz» se borra de la nube")
+    b = abrir_en_la_nube(contexto_b, e, ruta="#lista", cuenta=False)
+    esperar_nube(b, "al-dia")
+    esperar_en_la_nube(b, nube, lambda d: d["c-id-3"]["grupo"] is None, "lo pendiente de B llega a la nube al volver")
+    esperar_guardado(b, "(s) => !s.cosas.some((c) => c.texto === 'Luz')", "B borra «Luz» (borrada en A mientras estaba cerrado)")
+    b.wait_for_timeout(600)
+    comprobar("c-id-2" not in nube.documentos(), "«Luz» ha resucitado en la nube")
+    esperar_anidadas(a, "Casa", ["Bombillas"])
+    igual(sorted(c["texto"] for c in leer_estado(a)["cosas"]), sorted(c["texto"] for c in leer_estado(b)["cosas"]), "A y B no acaban con las mismas cosas")
+    # Si la nube rechaza una subida, se marca el error y no se reintenta en bucle.
+    nube.rechazar = True
+    volver(b)
+    anotar(b, "Rechazada")
+    esperar_nube(b, "error")
+    antes = nube.escrituras
+    b.wait_for_timeout(1500)
+    igual(nube.escrituras, antes, "Tras un rechazo la app reintenta sin parar")
+    nube.rechazar = False
+    # Al cerrar la sesión (en otra pestaña, Tu cuenta) la sincronización se para; lo local se queda.
+    a.evaluate("() => window.__cambiarUsuarioFalso(null)")
+    esperar(a, "() => !document.documentElement.hasAttribute('data-nube')", que="sin sesión, A deja de sincronizar")
+    volver(a)
+    anotar(a, "Solo en A")
+    esperar_toast(a, "Guardado")
+    a.wait_for_timeout(800)
+    comprobar(all(d.get("texto") != "Solo en A" for d in nube.documentos().values()), "Sin sesión, lo apuntado sube a la nube")
+    # Sin cuenta (cosascon:cuenta), la app ni siquiera pide nube.js ni Firebase.
+    contexto_c = dispositivo(e, nube)
+    peticiones = []
+    contexto_c.on("request", lambda peticion: peticiones.append(peticion.url))
+    c = abrir_en_la_nube(contexto_c, e, estado_con([cosa(1, "Sin cuenta")]), cuenta=False)
+    esperar_vista(c, "inicio")
+    c.wait_for_timeout(800)
+    igual([u for u in peticiones if "nube.js" in u or u.startswith(CDN_FIREBASE) or "firebase-config" in u], [], "Sin sesión se carga la nube")
+    comprobar(not c.evaluate("() => document.documentElement.hasAttribute('data-nube')"), "Sin sesión hay estado de nube")
+
+
+# ----------------------------------------------------------------------------
 # Comprobaciones estáticas (una sola vez)
 # ----------------------------------------------------------------------------
 
@@ -5059,6 +5549,17 @@ def t_estatico(e):
         comprobar(not re.search(r"\bconsole\.(log|debug|info|warn|error)\b", fuente), f"{nombre} escribe en la consola")
         comprobar("innerHTML" not in fuente and "insertAdjacentHTML" not in fuente and "document.write" not in fuente, f"{nombre} usa innerHTML o similar")
         comprobar(not re.search(r"https?://", fuente), f"{nombre} contiene URLs externas")
+    # nube.js es un módulo (se comprueba como tal) y solo carga Firebase de su CDN.
+    with tempfile.TemporaryDirectory() as carpeta:
+        copia = Path(carpeta) / "nube.mjs"
+        copia.write_bytes((APP / "nube.js").read_bytes())
+        resultado = subprocess.run([str(NODE), "--check", str(copia)], capture_output=True, text=True, encoding="utf-8")
+        igual(resultado.returncode, 0, f"node --check nube.js: {resultado.stderr.strip()}")
+    fuente = re.sub(r"/\*.*?\*/", "", (APP / "nube.js").read_text(encoding="utf-8"), flags=re.S)
+    fuente = re.sub(r"(?m)(^|\s)//[^\n]*", "", fuente)
+    comprobar(not re.search(r"\bconsole\.(log|debug|info|warn|error)\b", fuente), "nube.js escribe en la consola")
+    comprobar("innerHTML" not in fuente and "insertAdjacentHTML" not in fuente and "document.write" not in fuente, "nube.js usa innerHTML o similar")
+    igual(sorted(set(re.findall(r"https?://[^\s'\"`$]+", fuente))), ["https://www.gstatic.com/firebasejs/"], "URLs externas de nube.js")
     css = (APP / "styles.css").read_text(encoding="utf-8")
     sin_bloques, posicion = "", 0
     for coincidencia in re.finditer(r"@media\s*\(hover:\s*hover\)\s*\{", css):
@@ -5100,7 +5601,7 @@ def t_sello_de_version(e):
         sys.path.pop(0)
     sw = (APP / "sw.js").read_text(encoding="utf-8")
     precargados = sellar_version.recursos_precargados(sw)
-    igual(sorted(precargados), sorted(["index.html", "styles.css", "app.js", "manifest.webmanifest"] + [f"icons/{i.name}" for i in (APP / "icons").glob("*.png")]),
+    igual(sorted(precargados), sorted(["index.html", "styles.css", "app.js", "nube.js", "manifest.webmanifest"] + [f"icons/{i.name}" for i in (APP / "icons").glob("*.png")]),
           "Ficheros cubiertos por el sello (los que precarga sw.js)")
     actual, debida = sellar_version.version_actual(sw), sellar_version.version_sellada(sw)
     comprobar(re.fullmatch(r"cosas-v[0-9.]+-[0-9a-f]{8}", actual), f"VERSION_CACHE no lleva sello de contenido: {actual!r}")
