@@ -8,7 +8,10 @@ Publicada en https://cosas-app.netlify.app
 
 - `app/` — la app. Es lo único que se publica. En la pantalla de inicio, bajo los botones, van los
   accesos «Cosas con» y «Cosas de» a las listas compartidas de cosas.info (`?desde=app` hace que la
-  flecha de esas páginas vuelva a la app).
+  flecha de esas páginas vuelva a la app). Se abren en este mismo dominio, en `/con/` y `/de/`:
+  `netlify.toml` las trae de cosas.info (proxy, el código sigue solo en el repositorio `Web`), así la
+  app instalada las abre sin la barra del navegador y ellas usan el color de fondo de la app. El
+  service worker no las sirve ni las guarda. Sin proxy (`file://`, servidor local), van a cosas.info.
 - `pruebas/e2e.py` — pruebas de extremo a extremo con Playwright (iPhone 13 y Pixel 7 emulados).
 - `herramientas/sellar_version.py` — sella la versión de la caché en `app/sw.js`.
 - `herramientas/generar_iconos.py` — genera los iconos PNG.

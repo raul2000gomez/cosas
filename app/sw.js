@@ -2,11 +2,14 @@
 'use strict';
 
 // Sello de versión: lo actualiza herramientas/sellar_version.py; ejecútalo antes de publicar cualquier cambio.
-const VERSION_CACHE = 'cosas-v1.2.0-efa91aa6';
+const VERSION_CACHE = 'cosas-v1.2.0-b25d08c5';
 const PREFIJO_CACHE = 'cosas-';
 const PORTADA = './index.html';
 // Rutas propias del alojamiento (Netlify), no de la app: ni se sirven ni se guardan desde aquí.
 const RUTAS_DEL_ALOJAMIENTO = ['/.netlify/'];
+// «Cosas con» y «Cosas de», que netlify.toml trae de cosas.info: siempre de la red, al día, y nunca
+// en la caché de la app (con una versión guardada se quedarían viejas hasta el siguiente sello).
+const RUTAS_DE_COSAS_INFO = ['/con/', '/de/', '/css/', '/js/', '/firebase-config.js', '/icons/favicon.svg'];
 const RECURSOS = [
   './',
   './index.html',
@@ -81,6 +84,6 @@ self.addEventListener('fetch', (evento) => {
   if (peticion.method !== 'GET') return;
   const url = new URL(peticion.url);
   if (url.origin !== self.location.origin) return;
-  if (RUTAS_DEL_ALOJAMIENTO.some((ruta) => url.pathname.startsWith(ruta))) return;
+  if ([...RUTAS_DEL_ALOJAMIENTO, ...RUTAS_DE_COSAS_INFO].some((ruta) => url.pathname.startsWith(ruta))) return;
   evento.respondWith(responder(peticion));
 });

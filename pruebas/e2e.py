@@ -589,8 +589,13 @@ def t_inicio_tres_elementos(e):
     igual(texto_inicio(auditoria), TEXTO_INICIO, "Texto visible tras guardar (contador/insignia)")
 
 
-@prueba("inicio: accesos «Cosas con» y «Cosas de» bajo los botones, centrados, a cosas.info y de vuelta a la app")
+@prueba("inicio: accesos «Cosas con» y «Cosas de» bajo los botones, centrados, en el dominio de la app y de vuelta a ella")
 def t_inicio_accesos(e):
+    # En el HTML son de este dominio (netlify.toml las trae de cosas.info: sin barra del navegador en la
+    # app instalada). Aquí, por http y sin ese proxy, app.js los manda a cosas.info.
+    html = (APP / "index.html").read_text(encoding="utf-8")
+    for destino in ('href="con/?desde=app"', 'href="de/?desde=app"'):
+        comprobar(destino in html, f"El HTML no lleva el acceso relativo {destino}")
     p = e.pagina()
     esperar_vista(p, "inicio")
     ancho = e.ancho
@@ -5031,8 +5036,10 @@ def t_estatico(e):
     # Los <a> son navegación (los accesos a cosas.info), no recursos que se carguen: no cuentan.
     sin_enlaces = re.sub(r"<a\s[^>]*>", "", html)
     comprobar(not re.search(r"(src|href)\s*=\s*[\"'](https?:)?//", sin_enlaces), "index.html carga recursos externos")
+    # Los accesos son de este dominio (netlify.toml los trae de cosas.info); sin ese proxy, van a data-web.
     externos = [d for d in re.findall(r"<a\s[^>]*href\s*=\s*[\"']([^\"']+)", html) if re.match(r"https?:", d)]
-    comprobar(externos and all(d.startswith("https://cosas.info/") for d in externos), f"Los enlaces externos de index.html deben ir a cosas.info: {externos}")
+    comprobar(all(d.startswith("https://cosas.info/") for d in externos), f"Los enlaces externos de index.html deben ir a cosas.info: {externos}")
+    comprobar('data-web="https://cosas.info/"' in html, "Sin proxy, los accesos no van a cosas.info (data-web de #accesos)")
     comprobar("..." not in re.sub(r"<script.*?</script>", "", html, flags=re.S), "index.html usa tres puntos en vez de «…»")
     sw = (APP / "sw.js").read_text(encoding="utf-8")
     cabecera = "\n".join(sw.splitlines()[:12])

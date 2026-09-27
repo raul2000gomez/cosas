@@ -3,3 +3,44 @@
 [build]
   publish = "app"
   command = ""
+
+# «Cosas con» y «Cosas de», las listas compartidas de cosas.info (repositorio Web), también se
+# sirven aquí, en /con/ y /de/: Netlify las trae de cosas.info (proxy, sin copiar código). En el
+# mismo dominio que la app, la app instalada las abre como pantallas suyas, sin la barra del
+# navegador, y ellas leen el color de fondo de la app. Con 200, la dirección no cambia; /con/ID y
+# /de/ID dan la página del apartado, que lee el ID de la dirección. Sus archivos vienen igual.
+[[redirects]]
+  from = "/con/*"
+  to = "https://cosas.info/con/index.html"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/de/*"
+  to = "https://cosas.info/de/index.html"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/css/*"
+  to = "https://cosas.info/css/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/js/*"
+  to = "https://cosas.info/js/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/firebase-config.js"
+  to = "https://cosas.info/firebase-config.js"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/icons/favicon.svg"
+  to = "https://cosas.info/icons/favicon.svg"
+  status = 200
+  force = true

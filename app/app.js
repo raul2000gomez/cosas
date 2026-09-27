@@ -1793,11 +1793,23 @@
     else window.addEventListener('load', registrar, { once: true });
   }
 
+  /** Los accesos «Cosas con» y «Cosas de» son de este dominio: Netlify los trae de cosas.info
+   *  (netlify.toml), siempre por https. Sin ese proxy (file://, un servidor local) van a la web
+   *  que dice data-web en index.html. */
+  function prepararAccesos() {
+    const accesos = document.getElementById('accesos');
+    if (window.location.protocol === 'https:' || !accesos) return;
+    for (const acceso of accesos.querySelectorAll('a')) {
+      acceso.href = accesos.dataset.web + acceso.getAttribute('href');
+    }
+  }
+
   // ---------- Arranque ----------
 
   function iniciar() {
     consolidarRescate();
     aplicarColor(estado.ajustes.colorFondo);
+    prepararAccesos();
     construirMuestras(muestras, 'color-fondo', PALETA);
     botonMicro.hidden = !Reconocimiento;
     ayudaDictado.hidden = !Reconocimiento;
