@@ -2,14 +2,15 @@
 'use strict';
 
 // Sello de versión: lo actualiza herramientas/sellar_version.py; ejecútalo antes de publicar cualquier cambio.
-const VERSION_CACHE = 'cosas-v1.2.0-b25d08c5';
+const VERSION_CACHE = 'cosas-v1.2.0-3bbac7dd';
 const PREFIJO_CACHE = 'cosas-';
 const PORTADA = './index.html';
 // Rutas propias del alojamiento (Netlify), no de la app: ni se sirven ni se guardan desde aquí.
 const RUTAS_DEL_ALOJAMIENTO = ['/.netlify/'];
-// «Cosas con» y «Cosas de», que netlify.toml trae de cosas.info: siempre de la red, al día, y nunca
-// en la caché de la app (con una versión guardada se quedarían viejas hasta el siguiente sello).
-const RUTAS_DE_COSAS_INFO = ['/con/', '/de/', '/css/', '/js/', '/firebase-config.js', '/icons/favicon.svg'];
+// «Cosas con», «Cosas de» y «Tu cuenta», que netlify.toml trae de cosas.info, y el ayudante de acceso
+// de Firebase (/__/): siempre de la red, al día, y nunca en la caché de la app (con una versión
+// guardada se quedarían viejas hasta el siguiente sello).
+const RUTAS_DE_COSAS_INFO = ['/con/', '/de/', '/cuenta/', '/__/', '/css/', '/js/', '/firebase-config.js', '/icons/favicon.svg'];
 const RECURSOS = [
   './',
   './index.html',

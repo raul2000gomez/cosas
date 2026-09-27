@@ -894,6 +894,20 @@ button {
 
 .boton-ancho:active { transform: scale(.98); }
 
+/* «Iniciar sesión» es un enlace (va a la página de la cuenta) con aspecto de botón ancho. */
+a.boton-ancho {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  text-decoration: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.datos + .boton-ancho { margin-top: 20px; }
+
 /* Sin botón (la app ya está instalada), la ayuda es el texto del apartado. */
 .boton-ancho[hidden] + .ayuda {
   margin: 0;

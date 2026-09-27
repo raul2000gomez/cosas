@@ -21,6 +21,22 @@
   status = 200
   force = true
 
+# Tu cuenta (entrar con Google o cerrar sesión), que abre el botón de sesión de los ajustes.
+[[redirects]]
+  from = "/cuenta/*"
+  to = "https://cosas.info/cuenta/index.html"
+  status = 200
+  force = true
+
+# El ayudante de acceso de Firebase (/__/auth/…): con él en este dominio (authDomain), entrar con
+# Google por redirección funciona también en la app instalada. Su URI de vuelta
+# (https://cosas-app.netlify.app/__/auth/handler) está autorizada en el cliente OAuth del proyecto.
+[[redirects]]
+  from = "/__/*"
+  to = "https://cosas-info.firebaseapp.com/__/:splat"
+  status = 200
+  force = true
+
 [[redirects]]
   from = "/css/*"
   to = "https://cosas.info/css/:splat"

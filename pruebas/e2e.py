@@ -48,6 +48,9 @@ PALETA = [
 ]
 # Lo único que la app dice sobre la privacidad del dictado: el audio puede salir del móvil (Google en Android, Apple en iOS).
 AYUDA_DICTADO = "El dictado usa el servicio de voz de tu móvil, que puede enviar el audio a Google o Apple."
+AYUDA_SESION = "Inicia sesión con Google para tener tus listas de Cosas con y Cosas de en todos tus dispositivos."
+AYUDA_NOMBRE = "Tu nombre se guarda solo en este dispositivo."
+CLAVE_CUENTA = "cosascon:cuenta"  # La cuenta de Google con la que se entró en Cosas con / Cosas de / Tu cuenta.
 DETALLE = False
 
 
@@ -729,7 +732,7 @@ def t_guardar_intro(e):
     igual((unica["hecha"], unica["hechaEn"], unica["grupo"]), (False, None, None), "hecha, hechaEn y grupo iniciales")
     igual(estado["grupos"], [], "grupos iniciales")
     comprobar(isinstance(unica["creada"], (int, float)) and abs(unica["creada"] - time.time() * 1000) < 60_000, "creada no es la hora actual en ms")
-    igual(sorted(estado["ajustes"].keys()), ["colorFondo", "correo", "nombre"], "Forma de ajustes")
+    igual(sorted(estado["ajustes"].keys()), ["colorFondo", "nombre"], "Forma de ajustes")
     igual(sorted(p.evaluate("() => Object.keys(localStorage)")), sorted([CLAVE, CLAVE_RESPALDO]), "Claves usadas en localStorage (la principal y el respaldo de grupos)")
 
 
@@ -1117,7 +1120,7 @@ def t_lista_vacia(e):
     comprobar(not vacio.is_visible(), "El estado vacío se ve con cosas en la lista")
 
 
-@prueba("persistencia tras recargar: cosas, hechas, color, nombre y correo")
+@prueba("persistencia tras recargar: cosas, hechas, color y nombre")
 def t_persistencia(e):
     p = e.pagina()
     for texto in ("Pagar la luz", "Ir al gimnasio"):
@@ -1128,14 +1131,12 @@ def t_persistencia(e):
     abrir_ajustes(p)
     elegir_color(p, "Coral")
     p.get_by_label("Nombre", exact=True).fill("Raúl")
-    p.get_by_label("Correo electrónico", exact=True).fill("raul@example.com")
-    p.get_by_label("Correo electrónico", exact=True).press("Tab")
-    esperar(p, "(clave) => { const s = JSON.parse(localStorage.getItem(clave)); return s.ajustes.correo === 'raul@example.com' && s.ajustes.nombre === 'Raúl'; }", arg=CLAVE, que="nombre y correo se autoguardan")
+    p.get_by_label("Nombre", exact=True).press("Tab")
+    esperar(p, "(clave) => JSON.parse(localStorage.getItem(clave)).ajustes.nombre === 'Raúl'", arg=CLAVE, que="el nombre se autoguarda")
     p.reload()
     esperar_vista(p, "ajustes")
     esperar_fondo(p, "#EF5B5B")
     igual(p.get_by_label("Nombre", exact=True).input_value(), "Raúl", "Nombre tras recargar")
-    igual(p.get_by_label("Correo electrónico", exact=True).input_value(), "raul@example.com", "Correo tras recargar")
     comprobar(p.get_by_role("radio", name="Coral", exact=True).is_checked(), "Coral no sigue seleccionado tras recargar")
     igual(p.locator('meta[name="theme-color"]').get_attribute("content").upper(), "#EF5B5B", "theme-color tras recargar")
     p.goto(e.base)
@@ -1146,7 +1147,7 @@ def t_persistencia(e):
     igual(check_de(fila_de(p, "Ir al gimnasio")).get_attribute("aria-pressed"), "false", "Pendiente tras recargar")
     igual(p.locator("#vista-lista h1").text_content().strip(), "Cosas de Raúl", "Título con nombre tras recargar")
     estado = leer_estado(p)
-    igual(estado["ajustes"], {"colorFondo": "#EF5B5B", "nombre": "Raúl", "correo": "raul@example.com"}, "Ajustes guardados")
+    igual(estado["ajustes"], {"colorFondo": "#EF5B5B", "nombre": "Raúl"}, "Ajustes guardados")
 
 
 # ----------------------------------------------------------------------------
@@ -1160,7 +1161,7 @@ def t_ajustes_estructura(e):
     igual(p.locator("#vista-ajustes h1").text_content().strip(), "Ajustes", "Título de ajustes")
     comprobar(p.get_by_role("button", name="Volver", exact=True).is_visible(), "Falta el botón Volver en ajustes")
     igual([h.strip() for h in p.locator("#vista-ajustes h2").all_text_contents()], ["Apariencia", "Datos personales", "Aplicación"], "Secciones de ajustes")
-    for texto in ("Color de fondo", "Color personalizado", f"Tus datos se guardan solo en este dispositivo. {AYUDA_DICTADO}", "Cosas 1.2"):
+    for texto in ("Color de fondo", "Color personalizado", f"{AYUDA_SESION} {AYUDA_NOMBRE} {AYUDA_DICTADO}", "Cosas 1.2"):
         comprobar(p.get_by_text(texto, exact=True).count() == 1, f"Falta el texto «{texto}» en ajustes")
     grupo = p.get_by_role("radiogroup")
     igual(grupo.count(), 1, "Número de radiogroup")
@@ -1175,11 +1176,18 @@ def t_ajustes_estructura(e):
     comprobar(all(a >= 44 and abs(a - b) < 0.5 and r == "50%" for a, b, r in medidas), f"Las muestras no son redondas de ≥44px: {medidas}")
     igual(p.locator("input[type=color]").count(), 1, "input type=color")
     nombre = p.get_by_label("Nombre", exact=True)
-    correo = p.get_by_label("Correo electrónico", exact=True)
     igual((nombre.get_attribute("autocomplete"), nombre.get_attribute("maxlength")), ("name", "60"), "Atributos de Nombre")
-    igual((correo.get_attribute("type"), correo.get_attribute("autocomplete"), correo.get_attribute("inputmode"), correo.get_attribute("maxlength")),
-          ("email", "email", "email", "120"), "Atributos de Correo electrónico")
-    # El pie y el correo se alcanzan desplazando.
+    igual(p.locator("#vista-ajustes input:not([type=color]):not([type=radio])").count(), 1, "Datos personales: solo el nombre (sin correo)")
+    # Tras el nombre, el botón de sesión: un enlace a Tu cuenta (en local, sin proxy, en cosas.info).
+    sesion = p.get_by_role("link", name="Iniciar sesión", exact=True)
+    igual(sesion.count(), 1, "Botón «Iniciar sesión»")
+    igual(sesion.get_attribute("href"), "https://cosas.info/cuenta/?desde=app&accion=entrar", "Destino de «Iniciar sesión»")
+    igual(sesion.get_attribute("aria-describedby"), "ayuda-datos", "«Iniciar sesión» lleva la ayuda de datos")
+    comprobar('href="cuenta/?desde=app&amp;accion=entrar"' in (APP / "index.html").read_text(encoding="utf-8"),
+              "En el HTML, «Iniciar sesión» no va a cuenta/ de este dominio")
+    caja, campo_caja = sesion.bounding_box(), nombre.bounding_box()
+    comprobar(caja["height"] >= 44 and caja["y"] >= campo_caja["y"] + campo_caja["height"] + 12, f"«Iniciar sesión» no va bajo el nombre o es pequeño: {caja} / {campo_caja}")
+    # El pie se alcanza desplazando.
     p.get_by_text("Cosas 1.2", exact=True).scroll_into_view_if_needed()
     caja = p.get_by_text("Cosas 1.2", exact=True).bounding_box()
     comprobar(caja["y"] + caja["height"] <= e.alto, f"El pie «Cosas 1.2» queda cortado: {caja}")
@@ -1286,6 +1294,7 @@ JS_CONTRASTES = "() => {" + JS_UTIL + r"""
       'pie «Cosas 1.2»': contrasteTexto(q('.pie')),
       'subtítulo de sección': contrasteTexto(q('.subtitulo')),
       'botón «Convertir en aplicación»': contrasteTexto(q('#instalar')),
+      'botón «Iniciar sesión»': contrasteTexto(q('#sesion')),
       'ayuda de «Aplicación»': contrasteTexto(q('#ayuda-instalar')),
     },
     iconos: {
@@ -1382,17 +1391,17 @@ def t_tono(e):
 def t_datos_personales(e):
     p = e.pagina()
     abrir_ajustes(p)
-    nombre, correo = p.get_by_label("Nombre", exact=True), p.get_by_label("Correo electrónico", exact=True)
+    nombre = p.get_by_label("Nombre", exact=True)
     nombre.tap()
     p.keyboard.type("  Raúl  ")
     esperar_toast(p, "Guardado", ms=2500)  # Guardado con retardo, sin salir del campo.
     comprobar(p.evaluate("() => document.activeElement.id === 'nombre'"), "El autoguardado quita el foco del campo")
     igual(leer_estado(p)["ajustes"]["nombre"], "Raúl", "Nombre autoguardado (recortado)")
     esperar_sin_toast(p)
-    correo.fill("raul@example.com")
-    correo.evaluate("(c) => c.blur()")
+    nombre.fill("Raúl García")
+    nombre.evaluate("(c) => c.blur()")
     p.wait_for_timeout(150)
-    igual(leer_estado(p)["ajustes"]["correo"], "raul@example.com", "Correo guardado al salir del campo (sin esperar al retardo)")
+    igual(leer_estado(p)["ajustes"]["nombre"], "Raúl García", "Nombre guardado al salir del campo (sin esperar al retardo)")
     esperar_toast(p, "Guardado")
     # Intro en un campo no envía ni recarga nada.
     nombre.press("Enter")
@@ -1400,7 +1409,7 @@ def t_datos_personales(e):
     comprobar(p.url.endswith("#ajustes") and "?" not in p.url, f"Intro en Nombre cambió la URL: {p.url}")
     volver(p)
     abrir_lista(p)
-    igual(p.locator("#vista-lista h1").text_content().strip(), "Cosas de Raúl", "Título de la lista con nombre")
+    igual(p.locator("#vista-lista h1").text_content().strip(), "Cosas de Raúl García", "Título de la lista con nombre")
     volver(p)
     # Escribir y volver enseguida (antes del retardo) también guarda.
     abrir_ajustes(p)
@@ -1413,13 +1422,12 @@ def t_datos_personales(e):
     # Los límites de longitud también se aplican a lo que se guarda.
     abrir_ajustes(p)
     nombre.evaluate("(c) => { c.value = 'N'.repeat(80); c.dispatchEvent(new Event('input', { bubbles: true })); }")
-    correo.evaluate("(c) => { c.value = 'c'.repeat(150) + '@example.com'; c.dispatchEvent(new Event('input', { bubbles: true })); }")
     volver(p)
     guardado = leer_estado(p)["ajustes"]
-    comprobar(len(guardado["nombre"]) <= 60 and len(guardado["correo"]) <= 120, f"Se guardan datos más largos que el máximo: {len(guardado['nombre'])}, {len(guardado['correo'])}")
+    comprobar(len(guardado["nombre"]) <= 60, f"Se guarda un nombre más largo que el máximo: {len(guardado['nombre'])}")
 
 
-@prueba("datos personales: sobreviven a una sesión posterior en la que no se abre Ajustes")
+@prueba("datos personales: sobreviven a una sesión posterior en la que no se abre Ajustes (y el correo de la 1.2 se olvida)")
 def t_datos_sobreviven(e):
     p = sembrar(e, estado_con([cosa(1, "Algo")], color="#7A4FD6", nombre="Raúl", correo="raul@example.com"))
     esperar_vista(p, "inicio")
@@ -1428,10 +1436,46 @@ def t_datos_sobreviven(e):
     p.reload()
     esperar_vista(p, "inicio")
     ajustes = leer_estado(p)["ajustes"]
-    igual(ajustes, {"colorFondo": "#7A4FD6", "nombre": "Raúl", "correo": "raul@example.com"},
-          "Ajustes guardados tras recargar una sesión en la que no se abrió Ajustes")
+    igual(ajustes, {"colorFondo": "#7A4FD6", "nombre": "Raúl"},
+          "Ajustes guardados tras recargar una sesión en la que no se abrió Ajustes (sin el correo que guardaba la 1.2)")
     abrir_lista(p)
     igual(p.locator("#vista-lista h1").text_content().strip(), "Cosas de Raúl", "Título de la lista tras esa recarga")
+
+
+@prueba("sesión: sin cuenta «Iniciar sesión»; con cuenta (cosascon:cuenta) «Cerrar sesión» y quién; valores raros se ignoran")
+def t_sesion(e):
+    con_cuenta = "tus listas de Cosas con y Cosas de te siguen a cualquier dispositivo."
+    casos = [
+        (None, "Iniciar sesión", "entrar", AYUDA_SESION),
+        (json.dumps({"nombre": "Raúl García", "correo": "raul@example.com"}), "Cerrar sesión", "salir",
+         f"Has iniciado sesión como Raúl García (raul@example.com): {con_cuenta}"),
+        (json.dumps({"nombre": "", "correo": "raul@example.com"}), "Cerrar sesión", "salir",
+         f"Has iniciado sesión como raul@example.com: {con_cuenta}"),
+        ("{roto", "Iniciar sesión", "entrar", AYUDA_SESION),
+        (json.dumps({"nombre": 5, "correo": ["x"]}), "Iniciar sesión", "entrar", AYUDA_SESION),
+        (json.dumps("texto"), "Iniciar sesión", "entrar", AYUDA_SESION),
+    ]
+    for bruto, texto, accion, ayuda in casos:
+        contexto = e.contexto()
+        p = e.vigilar(contexto.new_page())
+        p.goto(e.base + "icons/favicon-32.png")
+        if bruto is not None:
+            p.evaluate("([clave, valor]) => localStorage.setItem(clave, valor)", [CLAVE_CUENTA, bruto])
+        p.goto(e.base + "#ajustes")
+        esperar_vista(p, "ajustes")
+        sesion = p.locator("#sesion")
+        igual(sesion.text_content().strip(), texto, f"[{bruto}] texto del botón")
+        igual(sesion.get_attribute("href"), f"https://cosas.info/cuenta/?desde=app&accion={accion}", f"[{bruto}] destino (en local, sin proxy)")
+        igual(p.locator("#ayuda-sesion").text_content().strip(), ayuda, f"[{bruto}] ayuda de la sesión")
+        contexto.close()
+    # Si otra pestaña (Tu cuenta, Cosas con) inicia sesión, los ajustes abiertos lo reflejan (evento storage).
+    contexto = e.contexto()
+    a = e.pagina(ruta="#ajustes", contexto=contexto)
+    esperar_vista(a, "ajustes")
+    b = e.pagina(contexto=contexto)
+    b.evaluate("([clave, valor]) => localStorage.setItem(clave, valor)", [CLAVE_CUENTA, json.dumps({"nombre": "Raúl", "correo": ""})])
+    esperar(a, "() => document.querySelector('#sesion').textContent.trim() === 'Cerrar sesión'", que="los ajustes abiertos ven la sesión nueva")
+    contexto.close()
 
 
 # ----------------------------------------------------------------------------
@@ -1792,7 +1836,6 @@ def t_almacenamiento_corrupto(e):
         volver(p)
         abrir_ajustes(p)
         igual(p.get_by_label("Nombre", exact=True).input_value(), "", f"[{nombre}] nombre por defecto")
-        igual(p.get_by_label("Correo electrónico", exact=True).input_value(), "", f"[{nombre}] correo por defecto")
         guardado = leer_estado(p)
         comprobar(isinstance(guardado, dict) and guardado.get("version") == 2 and isinstance(guardado.get("cosas"), list)
                   and guardado.get("grupos") == [] and guardado["ajustes"]["colorFondo"].upper() == COLOR_DEFECTO,
@@ -2254,7 +2297,7 @@ def t_dictado_sin_soporte(e):
     igual(cosas_guardadas(p), ["Sin dictado"], "Cosas guardadas sin dictado")
     comprobar(not boton_micro(p).is_visible(), "El micrófono aparece tras guardar")
     abrir_ajustes(p)
-    comprobar(p.get_by_text("Tus datos se guardan solo en este dispositivo.").is_visible(), "Falta la ayuda de datos")
+    comprobar(p.get_by_text(AYUDA_NOMBRE).is_visible(), "Falta la ayuda de datos")
     igual(p.get_by_text(AYUDA_DICTADO).count(), 1, "La frase del dictado existe (oculta) en Ajustes")
     comprobar(not p.get_by_text(AYUDA_DICTADO).is_visible(), "Se habla del dictado donde no lo hay")
 
@@ -2672,7 +2715,7 @@ def t_dictado_no_disponible(e):
     esperar_toast(p, "Guardado")
     comprobar(not boton_micro(p).is_visible(), "El micrófono reaparece tras guardar")
     abrir_ajustes(p)
-    comprobar(p.get_by_text("Tus datos se guardan solo en este dispositivo.").is_visible(), "Falta la ayuda de datos")
+    comprobar(p.get_by_text(AYUDA_NOMBRE).is_visible(), "Falta la ayuda de datos")
     comprobar(not p.get_by_text(AYUDA_DICTADO).is_visible(), "Ajustes sigue hablando de un dictado que aquí no existe")
     p.context.close()
     # En Safari (dictado desactivado en los ajustes de iOS) y en la app instalada en Android el micrófono se queda: se puede reintentar.
@@ -2916,8 +2959,8 @@ def t_aplicacion_ios(e):
         igual(numeros, ["counter(paso)"] * 3, "Los pasos van numerados")
         igual(p.evaluate("() => [...document.querySelectorAll('[role=dialog] ol')].filter((o) => o.checkVisibility()).map((o) => o.getAttribute('role'))"), ["list"], "La lista de pasos se anuncia como lista")
         p.context.close()
-    # Con algo ya guardado en Safari (cosas, nombre o correo), la hoja avisa de que la app instalada empezará vacía.
-    for datos in (estado_con([cosa(1, "Comprar pan")]), estado_con(nombre="Raúl"), estado_con(correo="raul@example.com")):
+    # Con algo ya guardado en Safari (cosas o nombre), la hoja avisa de que la app instalada empezará vacía.
+    for datos in (estado_con([cosa(1, "Comprar pan")]), estado_con(nombre="Raúl")):
         p = pagina_de_ajustes(e, datos=datos, user_agent=UA_IPHONE)
         igual(abrir_hoja(p)["notas"], NOTAS_IOS + [NOTA_DATOS_IOS], f"Notas de la hoja en iOS con datos guardados ({datos['ajustes']})")
         p.context.close()

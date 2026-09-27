@@ -12,7 +12,9 @@
   const TINTA_CLARA = '#FFFFFF';
   const MAX_TEXTO = 500;
   const MAX_NOMBRE = 60;
-  const MAX_CORREO = 120;
+  // La cuenta de Google con la que se ha entrado ({ nombre, correo }). La escriben las páginas de
+  // Cosas con, Cosas de y Tu cuenta (mismo dominio); la app solo la lee para enseñarla.
+  const CLAVE_CUENTA = 'cosascon:cuenta';
   const DURACION_AVISO = 1800;
   const DURACION_DESHACER = 4000;
   const DURACION_SALIDA = 220;
@@ -94,8 +96,8 @@
   const selectorColor = $('#color-personalizado');
   const formularioDatos = $('#datos');
   const campoNombre = $('#nombre');
-  const campoCorreo = $('#correo');
-  const avisoCorreo = $('#aviso-correo');
+  const botonSesion = $('#sesion');
+  const ayudaSesion = $('#ayuda-sesion');
   const ayudaDictado = $('#ayuda-dictado');
   const botonInstalar = $('#instalar');
   const ayudaInstalar = $('#ayuda-instalar');
@@ -174,7 +176,7 @@
       version: VERSION,
       cosas: [],
       grupos: [],
-      ajustes: { colorFondo: COLOR_DEFECTO, nombre: '', correo: '' },
+      ajustes: { colorFondo: COLOR_DEFECTO, nombre: '' },
     };
   }
 
@@ -261,7 +263,7 @@
     const ajustes = bruto.ajustes && typeof bruto.ajustes === 'object' ? bruto.ajustes : {};
     if (esColor(ajustes.colorFondo)) estadoNuevo.ajustes.colorFondo = ajustes.colorFondo.toUpperCase();
     estadoNuevo.ajustes.nombre = textoLimpio(ajustes.nombre, MAX_NOMBRE);
-    estadoNuevo.ajustes.correo = textoLimpio(ajustes.correo, MAX_CORREO);
+    // El correo que guardaba la 1.2 ya no se usa: no se copia (se olvida al guardar).
     return estadoNuevo;
   }
 
@@ -1543,31 +1545,22 @@
     sincronizarColor();
   }
 
-  function revisarCorreo() {
-    const dudoso = campoCorreo.value.trim() !== '' && !campoCorreo.validity.valid;
-    avisoCorreo.hidden = !dudoso;
-    campoCorreo.toggleAttribute('aria-invalid', dudoso);
-  }
-
   function sincronizarAjustes() {
     sincronizarColor();
     if (document.activeElement !== campoNombre) campoNombre.value = estado.ajustes.nombre;
-    if (document.activeElement !== campoCorreo) campoCorreo.value = estado.ajustes.correo;
-    revisarCorreo();
+    pintarSesion();
   }
 
-  /** Guarda nombre y correo si el usuario los ha cambiado (autoguardado). */
+  /** Guarda el nombre si el usuario lo ha cambiado (autoguardado). */
   function guardarDatosPersonales() {
     clearTimeout(temporizadorDatos);
-    // Sin ediciones no hay nada que volcar: los campos pueden no reflejar el estado
+    // Sin ediciones no hay nada que volcar: el campo puede no reflejar el estado
     // (Ajustes sin abrir en esta sesión, o datos recién llegados de otra pestaña).
     if (!datosEditados) return;
     datosEditados = false;
     const nombre = textoLimpio(campoNombre.value, MAX_NOMBRE);
-    const correo = textoLimpio(campoCorreo.value, MAX_CORREO);
-    if (nombre === estado.ajustes.nombre && correo === estado.ajustes.correo) return;
+    if (nombre === estado.ajustes.nombre) return;
     estado.ajustes.nombre = nombre;
-    estado.ajustes.correo = correo;
     avisarGuardado(guardarEstado());
     actualizarTituloLista();
   }
@@ -1576,12 +1569,34 @@
     datosEditados = true;
     clearTimeout(temporizadorDatos);
     temporizadorDatos = setTimeout(guardarDatosPersonales, RETARDO_AUTOGUARDADO);
-    if (!avisoCorreo.hidden) revisarCorreo();
   }
 
-  function alSalirDeCampoDeDatos() {
-    guardarDatosPersonales();
-    revisarCorreo();
+  // ---------- Sesión (la de Cosas con y Cosas de) ----------
+
+  /** La cuenta apuntada por esas páginas, o null (sin sesión, o un valor que no se entiende). */
+  function leerCuenta() {
+    try {
+      const cuenta = JSON.parse(localStorage.getItem(CLAVE_CUENTA) || 'null');
+      if (!cuenta || typeof cuenta !== 'object') return null;
+      const nombre = typeof cuenta.nombre === 'string' ? textoLimpio(cuenta.nombre, MAX_NOMBRE) : '';
+      const correo = typeof cuenta.correo === 'string' ? textoLimpio(cuenta.correo, 254) : '';
+      return nombre || correo ? { nombre, correo } : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /** «Iniciar sesión» o «Cerrar sesión», y a quién pertenece la sesión. La página cuenta/ hace el resto. */
+  function pintarSesion() {
+    const cuenta = leerCuenta();
+    botonSesion.textContent = cuenta ? 'Cerrar sesión' : 'Iniciar sesión';
+    botonSesion.href = rutaDeCosasInfo(`cuenta/?desde=app&accion=${cuenta ? 'salir' : 'entrar'}`);
+    if (!cuenta) {
+      ayudaSesion.textContent = 'Inicia sesión con Google para tener tus listas de Cosas con y Cosas de en todos tus dispositivos.';
+    } else {
+      const quien = cuenta.nombre && cuenta.correo ? `${cuenta.nombre} (${cuenta.correo})` : cuenta.nombre || cuenta.correo;
+      ayudaSesion.textContent = `Has iniciado sesión como ${quien}: tus listas de Cosas con y Cosas de te siguen a cualquier dispositivo.`;
+    }
   }
 
   /** «Hecho»/Intro en el teclado: guarda (al perder el foco) y cierra el teclado. */
@@ -1680,8 +1695,7 @@
     pasosIos.hidden = !esIOS;
     pasosGenericos.hidden = esIOS;
     // En iOS la app instalada guarda sus datos aparte de Safari: quien ya tiene algo apuntado debe saberlo antes.
-    const { nombre, correo } = estado.ajustes;
-    const conDatos = estado.cosas.length > 0 || estado.grupos.length > 0 || nombre !== '' || correo !== '';
+    const conDatos = estado.cosas.length > 0 || estado.grupos.length > 0 || estado.ajustes.nombre !== '';
     avisoDatosIos.hidden = !(esIOS && conDatos);
     abrirPanel(hoja, tituloHoja);
   }
@@ -1784,6 +1798,7 @@
 
   function alCambiarAlmacenamiento(evento) {
     if (evento.key === null || evento.key === CLAVE) recargarEstado();
+    if (evento.key === null || evento.key === CLAVE_CUENTA) pintarSesion();
   }
 
   function registrarServiceWorker() {
@@ -1793,14 +1808,18 @@
     else window.addEventListener('load', registrar, { once: true });
   }
 
-  /** Los accesos «Cosas con» y «Cosas de» son de este dominio: Netlify los trae de cosas.info
+  /** Cosas con, Cosas de y Tu cuenta son de este dominio: Netlify las trae de cosas.info
    *  (netlify.toml), siempre por https. Sin ese proxy (file://, un servidor local) van a la web
    *  que dice data-web en index.html. */
-  function prepararAccesos() {
+  function rutaDeCosasInfo(ruta) {
     const accesos = document.getElementById('accesos');
-    if (window.location.protocol === 'https:' || !accesos) return;
-    for (const acceso of accesos.querySelectorAll('a')) {
-      acceso.href = accesos.dataset.web + acceso.getAttribute('href');
+    if (window.location.protocol === 'https:' || !accesos) return ruta;
+    return accesos.dataset.web + ruta;
+  }
+
+  function prepararAccesos() {
+    for (const acceso of document.querySelectorAll('#accesos a')) {
+      acceso.href = rutaDeCosasInfo(acceso.getAttribute('href'));
     }
   }
 
@@ -1810,6 +1829,7 @@
     consolidarRescate();
     aplicarColor(estado.ajustes.colorFondo);
     prepararAccesos();
+    pintarSesion();
     construirMuestras(muestras, 'color-fondo', PALETA);
     botonMicro.hidden = !Reconocimiento;
     ayudaDictado.hidden = !Reconocimiento;
@@ -1851,12 +1871,10 @@
     selectorColor.addEventListener('input', () => cambiarColor(selectorColor.value));
     selectorColor.addEventListener('change', () => cambiarColor(selectorColor.value));
     formularioDatos.addEventListener('submit', (evento) => evento.preventDefault());
-    for (const campoDatos of [campoNombre, campoCorreo]) {
-      campoDatos.addEventListener('keydown', alPulsarTeclaEnDatos);
-      campoDatos.addEventListener('input', programarGuardadoDatos);
-      campoDatos.addEventListener('change', alSalirDeCampoDeDatos);
-      campoDatos.addEventListener('blur', alSalirDeCampoDeDatos);
-    }
+    campoNombre.addEventListener('keydown', alPulsarTeclaEnDatos);
+    campoNombre.addEventListener('input', programarGuardadoDatos);
+    campoNombre.addEventListener('change', guardarDatosPersonales);
+    campoNombre.addEventListener('blur', guardarDatosPersonales);
     botonInstalar.addEventListener('click', alPulsarInstalar);
     botonCerrarHoja.addEventListener('click', alPulsarCierreDeHoja);
     veloHoja.addEventListener('click', alPulsarCierreDeHoja);

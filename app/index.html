@@ -190,14 +190,12 @@
               <label class="etiqueta" for="nombre">Nombre</label>
               <input id="nombre" class="campo-texto" type="text" name="name"
                      autocomplete="name" autocapitalize="words" maxlength="60" enterkeyhint="done">
-              <label class="etiqueta" for="correo">Correo electrónico</label>
-              <input id="correo" class="campo-texto" type="email" name="email"
-                     autocomplete="email" inputmode="email" autocapitalize="none"
-                     spellcheck="false" maxlength="120" enterkeyhint="done"
-                     aria-describedby="aviso-correo ayuda-datos">
-              <p id="aviso-correo" class="aviso" hidden>Parece que el correo no está completo.</p>
-              <p id="ayuda-datos" class="ayuda">Tus datos se guardan solo en este dispositivo. <span id="ayuda-dictado">El dictado usa el servicio de voz de tu móvil, que puede enviar el audio a Google o Apple.</span></p>
             </form>
+            <!-- La sesión (Google) es la de Cosas con y Cosas de: la página cuenta/, en este mismo
+                 dominio (netlify.toml la trae de cosas.info), la inicia o la cierra y vuelve aquí.
+                 app.js cambia el texto y la acción según haya sesión o no. -->
+            <a class="boton-ancho" id="sesion" href="cuenta/?desde=app&amp;accion=entrar" aria-describedby="ayuda-datos">Iniciar sesión</a>
+            <p id="ayuda-datos" class="ayuda"><span id="ayuda-sesion">Inicia sesión con Google para tener tus listas de Cosas con y Cosas de en todos tus dispositivos.</span> Tu nombre se guarda solo en este dispositivo. <span id="ayuda-dictado">El dictado usa el servicio de voz de tu móvil, que puede enviar el audio a Google o Apple.</span></p>
           </section>
 
           <section class="grupo" aria-labelledby="titulo-aplicacion">

@@ -12,6 +12,11 @@ Publicada en https://cosas-app.netlify.app
   `netlify.toml` las trae de cosas.info (proxy, el código sigue solo en el repositorio `Web`), así la
   app instalada las abre sin la barra del navegador y ellas usan el color de fondo de la app. El
   service worker no las sirve ni las guarda. Sin proxy (`file://`, servidor local), van a cosas.info.
+  En Ajustes → Datos personales, **Iniciar sesión** abre del mismo modo `cuenta/` (Tu cuenta, de
+  cosas.info), que entra con Google (la cuenta de Cosas con y Cosas de) y vuelve a los ajustes; con
+  sesión, el botón es **Cerrar sesión**. La app solo lee la cuenta que esa página deja en
+  `localStorage` (`cosascon:cuenta`). `netlify.toml` también sirve `/__/` desde firebaseapp.com para
+  que entrar con Google por redirección funcione en la app instalada.
 - `pruebas/e2e.py` — pruebas de extremo a extremo con Playwright (iPhone 13 y Pixel 7 emulados).
 - `herramientas/sellar_version.py` — sella la versión de la caché en `app/sw.js`.
 - `herramientas/generar_iconos.py` — genera los iconos PNG.
