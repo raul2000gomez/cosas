@@ -26,8 +26,8 @@
   // este tiempo (un doble toque humano) el segundo toque no debe accionarlo.
   const GUARDA_DOBLE_TOQUE = 350;
   const UMBRAL_TECLADO = 80;
-  // Deslizar en la pantalla principal: recorrido horizontal que abre una esquina (o la mitad, si es un
-  // golpe rápido), y franja de los bordes que es del sistema («atrás» en iOS y Android).
+  // Deslizar de lado: recorrido horizontal que abre una esquina o vuelve (o la mitad, si es un golpe
+  // rápido), y franja de los bordes que es del sistema («atrás» en iOS y Android).
   const UMBRAL_DESLIZAR = 64;
   const GOLPE_RAPIDO = 200;
   const BORDE_DEL_SISTEMA = 24;
@@ -1721,16 +1721,24 @@
     evento.target.blur();
   }
 
-  // ---------- Deslizar en la pantalla principal ----------
+  // ---------- Deslizar de lado ----------
 
   /*
-   * Deslizar el dedo abre el botón de la esquina de la que se tira, como si se hubiera pulsado: hacia la
-   * derecha, la lista (la esquina izquierda); hacia la izquierda, los ajustes. Sin nada que se mueva ni
-   * se marque mientras tanto: decide dónde se suelta, así que volver atrás con el dedo no abre nada.
-   * Con eventos táctiles, que siguen llegando aunque el navegador tome el gesto (los de puntero se
-   * cancelarían); styles.css le quita al navegador el deslizar horizontal en esta vista.
+   * Deslizar el dedo de lado hace lo mismo que los botones. En la pantalla principal abre el de la esquina
+   * de la que se tira: hacia la derecha, la lista (la esquina izquierda); hacia la izquierda, los ajustes.
+   * En la lista y en los ajustes, el gesto contrario (de vuelta) es «Volver»: hacia la izquierda en la
+   * lista, hacia la derecha en los ajustes. Sin nada que se mueva ni se marque mientras tanto: decide dónde
+   * se suelta, así que volver atrás con el dedo no hace nada. Con eventos táctiles, que siguen llegando
+   * aunque el navegador tome el gesto (los de puntero se cancelarían); styles.css le quita al navegador el
+   * deslizar horizontal en estas vistas.
    */
-  let tiron = null; // { x, y, inicio, horizontal }
+  const AL_DESLIZAR = {
+    inicio: { derecha: () => abrirVista('lista', abridores.lista), izquierda: () => abrirVista('ajustes', abridores.ajustes) },
+    lista: { izquierda: volver },
+    ajustes: { derecha: volver },
+  };
+
+  let tiron = null; // { vista, x, y, inicio, horizontal }
 
   function soltarTiron() {
     tiron = null;
@@ -1741,11 +1749,13 @@
 
   function alEmpezarTiron(evento) {
     soltarTiron();
-    if (evento.touches.length !== 1 || vistaActual !== 'inicio' || cambiandoVista || volviendo || conZoom()) return;
-    if (evento.target.closest('.barra')) return; // En la barra de escribir, el dedo es para el campo.
+    if (evento.touches.length !== 1 || evento.currentTarget !== vistas[vistaActual] || !AL_DESLIZAR[vistaActual]) return;
+    if (cambiandoVista || volviendo || panelAbierto || conZoom()) return;
+    // En las barras de abajo y en los campos de texto (el nombre), el dedo es para escribir.
+    if (evento.target.closest('.barra') || esCampoDeTexto(evento.target)) return;
     const { clientX: x, clientY: y } = evento.touches[0];
     if (x < BORDE_DEL_SISTEMA || x > window.innerWidth - BORDE_DEL_SISTEMA) return;
-    tiron = { x, y, inicio: performance.now(), horizontal: null };
+    tiron = { vista: vistaActual, x, y, inicio: performance.now(), horizontal: null };
   }
 
   function alMoverTiron(evento) {
@@ -1765,14 +1775,14 @@
   function alSoltarTiron(evento) {
     const hecho = tiron;
     soltarTiron();
-    if (!hecho || !hecho.horizontal || evento.touches.length > 0) return;
+    if (!hecho || !hecho.horizontal || evento.touches.length > 0 || hecho.vista !== vistaActual) return;
     const dx = evento.changedTouches[0].clientX - hecho.x;
     const dy = evento.changedTouches[0].clientY - hecho.y;
     const rapido = performance.now() - hecho.inicio < GOLPE_RAPIDO;
     const recorrido = Math.abs(dx);
     if (recorrido < (rapido ? UMBRAL_DESLIZAR / 2 : UMBRAL_DESLIZAR) || recorrido <= Math.abs(dy)) return;
-    const nombre = dx > 0 ? 'lista' : 'ajustes';
-    abrirVista(nombre, abridores[nombre]);
+    const accion = AL_DESLIZAR[vistaActual][dx > 0 ? 'derecha' : 'izquierda'];
+    if (accion) accion();
   }
 
   // ---------- Hojas (paneles inferiores) ----------
@@ -2058,10 +2068,12 @@
     abridores.lista.addEventListener('click', () => abrirVista('lista', abridores.lista));
     abridores.ajustes.addEventListener('click', () => abrirVista('ajustes', abridores.ajustes));
     for (const boton of document.querySelectorAll('[data-volver]')) boton.addEventListener('click', volver);
-    vistas.inicio.addEventListener('touchstart', alEmpezarTiron, { passive: true });
-    vistas.inicio.addEventListener('touchmove', alMoverTiron, { passive: true });
-    vistas.inicio.addEventListener('touchend', alSoltarTiron, { passive: true });
-    vistas.inicio.addEventListener('touchcancel', soltarTiron, { passive: true });
+    for (const nombre of Object.keys(AL_DESLIZAR)) {
+      vistas[nombre].addEventListener('touchstart', alEmpezarTiron, { passive: true });
+      vistas[nombre].addEventListener('touchmove', alMoverTiron, { passive: true });
+      vistas[nombre].addEventListener('touchend', alSoltarTiron, { passive: true });
+      vistas[nombre].addEventListener('touchcancel', soltarTiron, { passive: true });
+    }
 
     for (const barra of escrituras) {
       barra.micro.hidden = !Reconocimiento;

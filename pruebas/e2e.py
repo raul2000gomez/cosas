@@ -780,6 +780,57 @@ def t_inicio_deslizar(e):
     igual(p.evaluate("() => history.length"), antes + 1, "Historial tras los gestos que no abren nada")
 
 
+@prueba("lista y ajustes: deslizar de vuelta (a la izquierda en la lista, a la derecha en los ajustes) vuelve a la principal; el otro lado, los campos, el grupo y lo vertical, no")
+def t_deslizar_volver(e):
+    p = sembrar(e, estado_con([cosa(i, f"Cosa número {i}") for i in range(1, 41)], grupos=[grupo(100, "Casa")]))
+    esperar_vista(p, "inicio")
+    centro = (e.ancho / 2, e.alto * 0.5)
+    antes = p.evaluate("() => history.length")
+    # Todos los gestos, lentos (pausa): en la emulación, la inercia de uno rápido se come el toque siguiente.
+    for vista, abrir, boton, vuelta in (("lista", abrir_lista, "abrir-lista", -120), ("ajustes", abrir_ajustes, "abrir-ajustes", 120)):
+        abrir(p)
+        p.wait_for_timeout(400)
+        igual(p.evaluate(f"() => [...document.querySelectorAll('#vista-{vista}, #vista-{vista} .desplazable')].map((el) => getComputedStyle(el).touchAction)"),
+              ["pan-y pinch-zoom"] * 2, f"touch-action en «{vista}» y su zona desplazable")
+        deslizar(p, centro, -vuelta, pausa=40)
+        p.wait_for_timeout(400)
+        igual(vista_visible(p), vista, f"En «{vista}», deslizar hacia el otro lado no hace nada")
+        campo_texto = "#campo-grupo" if vista == "lista" else "#nombre"
+        if vista == "lista":
+            p.locator("#crear-grupo").tap()  # La barra de crear grupos se convierte en un campo.
+            p.wait_for_timeout(300)
+        caja = p.locator(campo_texto).bounding_box()
+        deslizar(p, (caja["x"] + caja["width"] / 2, caja["y"] + caja["height"] / 2), vuelta, pausa=40)
+        p.wait_for_timeout(400)
+        igual(vista_visible(p), vista, f"En «{vista}», deslizar desde un campo de texto no vuelve")
+        deslizar(p, centro, vuelta, pausa=40)
+        esperar_vista(p, "inicio")
+        # Como «Volver»: retrocede en el historial (no apila otra entrada) y el foco va al botón que la abrió, sin aro.
+        igual((p.evaluate("() => location.hash"), p.evaluate("() => history.length")), ("", antes + 1), f"Historial tras volver de «{vista}» deslizando")
+        igual((p.evaluate("() => document.activeElement.id"), p.evaluate(JS_ARO)), (boton, "none"), f"Foco tras volver de «{vista}» deslizando")
+        p.wait_for_timeout(400)
+    # En la página de un grupo, deslizar no hace nada (tiene su propio «Volver», a la lista).
+    abrir_lista(p)
+    p.wait_for_timeout(400)  # Pasa la guarda del cambio de vista.
+    abrir_grupo(p, "Casa")
+    p.wait_for_timeout(400)
+    for dx in (-120, 120):
+        deslizar(p, centro, dx, pausa=40)
+        p.wait_for_timeout(400)
+        igual(vista_visible(p), "grupo", f"En un grupo, deslizar {dx:+d}px")
+    volver_a_la_lista = p.get_by_role("button", name="Volver", exact=True)
+    volver_a_la_lista.tap()
+    esperar_vista(p, "lista")
+    p.wait_for_timeout(400)
+    # Deslizar en vertical sigue desplazando la lista y no vuelve.
+    zona = p.locator("#zona-lista")
+    zona.evaluate("(z) => { z.scrollTop = 0; }")
+    deslizar(p, centro, 0, -250, pausa=40)
+    p.wait_for_timeout(500)
+    igual(vista_visible(p), "lista", "Deslizar en vertical en la lista")
+    comprobar(zona.evaluate("(z) => z.scrollTop") > 50, "Deslizar en vertical ya no desplaza la lista")
+
+
 @prueba("inicio: atributos de la barra de escribir")
 def t_atributos_campo(e):
     p = e.pagina()

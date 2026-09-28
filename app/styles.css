@@ -210,12 +210,16 @@ button {
 
 /* ---------- Vista principal ---------- */
 
-/* Deslizar a los lados es de la app (abre las esquinas, app.js): el navegador no lo toma, así que
-   no enseña su círculo de «atrás»/«adelante» (Chrome en Android). */
-.vista-inicio {
-  overflow: hidden;
-  touch-action: pan-y pinch-zoom;
-}
+.vista-inicio { overflow: hidden; }
+
+/* Deslizar a los lados es de la app (app.js: en la principal abre las esquinas; en la lista y los
+   ajustes, vuelve): el navegador no lo toma, así que no enseña su círculo de «atrás»/«adelante»
+   (Chrome en Android). Va también en sus zonas desplazables: el touch-action no pasa de una a otra. */
+.vista-inicio,
+#vista-lista,
+#vista-ajustes,
+#vista-lista .desplazable,
+#vista-ajustes .desplazable { touch-action: pan-y pinch-zoom; }
 
 .esquinas {
   display: flex;
