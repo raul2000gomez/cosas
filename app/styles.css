@@ -917,7 +917,8 @@ a.boton-ancho {
   -webkit-touch-callout: none;
 }
 
-.datos + .boton-ancho { margin-top: 20px; }
+.datos + .boton-ancho,
+.ayuda + .boton-ancho { margin-top: 20px; }
 
 /* Sin botón (la app ya está instalada), la ayuda es el texto del apartado. */
 .boton-ancho[hidden] + .ayuda {

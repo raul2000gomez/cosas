@@ -17,6 +17,10 @@ Publicada en https://cosas-app.netlify.app
   sesión, el botón es **Cerrar sesión**. La app solo lee la cuenta que esa página deja en
   `localStorage` (`cosascon:cuenta`). `netlify.toml` también sirve `/__/` desde firebaseapp.com para
   que entrar con Google por redirección funcione en la app instalada.
+  En Ajustes → Aplicación, bajo **Convertir en aplicación**, **Compartir aplicación** envía el enlace
+  de la app con el menú de compartir del sistema (o lo copia, si no hay). La vista previa del enlace
+  son las etiquetas `og:` de `index.html` y la tarjeta `icons/compartir.png` (1200x630, la misma
+  que las de las invitaciones de Cosas con y Cosas de).
 - `app/nube.js` — con sesión, **tus cosas en todos tus dispositivos**: las cosas, los grupos, el color
   y el nombre se guardan también en Firestore (proyecto `cosas-info`, el de cosas.info), en
   `personales/{uid}/elementos` (un documento por cosa, por grupo y para los ajustes; las reglas están

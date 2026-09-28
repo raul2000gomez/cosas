@@ -1296,6 +1296,7 @@ JS_CONTRASTES = "() => {" + JS_UTIL + r"""
       'pie «Cosas 1.2»': contrasteTexto(q('.pie')),
       'subtítulo de sección': contrasteTexto(q('.subtitulo')),
       'botón «Convertir en aplicación»': contrasteTexto(q('#instalar')),
+      'botón «Compartir aplicación»': contrasteTexto(q('#compartir')),
       'botón «Iniciar sesión»': contrasteTexto(q('#sesion')),
       'ayuda de «Aplicación»': contrasteTexto(q('#ayuda-instalar')),
     },
@@ -3038,6 +3039,106 @@ def t_aplicacion_appinstalled(e):
     abrir_ajustes(p2)
     igual(ayuda_instalar(p2), "Ya está en tu pantalla de inicio.", "Texto al abrir Ajustes después")
     comprobar(not p2.locator("#instalar").is_visible(), "El botón se ve tras instalar desde otra vista")
+
+
+# «Compartir aplicación»: un navigator.share y un portapapeles falsos, que apuntan lo que reciben. share() se
+# queda abierto (hasta __compartir.cerrar()), se cancela o falla según __compartir.modo.
+JS_COMPARTIR_FALSO = r"""
+(() => {
+  const registro = { llamadas: [], copiado: null };
+  window.__compartir = { registro, modo: 'abierto', cerrar: null };
+  Object.defineProperty(Navigator.prototype, 'share', { configurable: true, value(datos) {
+    registro.llamadas.push(datos);
+    if (window.__compartir.modo === 'cancelar') return Promise.reject(new DOMException('Cancelado', 'AbortError'));
+    if (window.__compartir.modo === 'falla') return Promise.reject(new DOMException('No permitido', 'NotAllowedError'));
+    return new Promise((resuelve) => { window.__compartir.cerrar = resuelve; });
+  } });
+  Object.defineProperty(Navigator.prototype, 'clipboard', { configurable: true, get: () => ({
+    writeText: async (texto) => { registro.copiado = texto; } }) });
+})();
+"""
+JS_SIN_COMPARTIR = "Object.defineProperty(Navigator.prototype, 'share', { configurable: true, value: undefined });"
+JS_SIN_PORTAPAPELES = """Object.defineProperty(Navigator.prototype, 'clipboard', { configurable: true, get: () => ({
+    writeText: () => Promise.reject(new DOMException('No permitido', 'NotAllowedError')) }) });
+    Document.prototype.execCommand = () => false;"""
+
+
+def boton_compartir(pagina):
+    return pagina.get_by_role("button", name="Compartir aplicación", exact=True)
+
+
+def compartido(pagina):
+    return pagina.evaluate("() => window.__compartir.registro")
+
+
+@prueba("aplicación: «Compartir aplicación» bajo «Convertir en aplicación» envía el enlace de la app (o lo copia)")
+def t_aplicacion_compartir(e):
+    p = pagina_de_ajustes(e, [JS_COMPARTIR_FALSO], user_agent=UA_ANDROID)
+    boton = boton_compartir(p)
+    boton.scroll_into_view_if_needed()
+    comprobar(boton.is_visible(), "No se ve el botón «Compartir aplicación»")
+    medidas = boton.evaluate("""(b) => { const r = b.getBoundingClientRect(), cs = getComputedStyle(b), grupo = b.parentElement.getBoundingClientRect(),
+            instalar = document.querySelector('#instalar').getBoundingClientRect(), ayuda = document.querySelector('#ayuda-instalar').getBoundingClientRect();
+        return { apartado: b.closest('section').querySelector('h2').textContent.trim(), ultimo: b === b.parentElement.lastElementChild, tipo: b.type,
+                 ancho: r.width, anchoGrupo: grupo.width, alto: r.height, radio: parseFloat(cs.borderTopLeftRadius),
+                 bajoInstalar: r.top >= instalar.bottom, bajoAyuda: r.top - ayuda.bottom }; }""")
+    igual((medidas["apartado"], medidas["ultimo"], medidas["tipo"], medidas["bajoInstalar"]), ("Aplicación", True, "button", True), "Sitio del botón")
+    comprobar(abs(medidas["ancho"] - medidas["anchoGrupo"]) <= 1 and medidas["alto"] >= 48 and medidas["radio"] >= medidas["alto"] / 2 - 0.5,
+              f"«Compartir aplicación» no es la misma píldora ancha: {medidas}")
+    comprobar(12 <= medidas["bajoAyuda"] <= 32, f"Separación entre la ayuda y «Compartir aplicación»: {medidas['bajoAyuda']}")
+    # Un doble toque abre el menú del sistema una sola vez, con el enlace de la portada de la app.
+    doble_toque(p, boton, 120)
+    p.wait_for_timeout(300)
+    igual(compartido(p)["llamadas"], [{"title": "Cosas", "text": "Te recomiendo Cosas", "url": e.base}], "Lo que recibe navigator.share")
+    comprobar(not toast(p)["visible"], "Sale un aviso al compartir")
+    p.evaluate("() => window.__compartir.cerrar()")
+    p.wait_for_timeout(100)
+    # Cerrado sin elegir: nada; si el sistema no abre el menú, se copia el enlace.
+    p.evaluate("() => { window.__compartir.modo = 'cancelar'; }")
+    boton.tap()
+    p.wait_for_timeout(300)
+    igual((len(compartido(p)["llamadas"]), compartido(p)["copiado"], toast(p)["visible"]), (2, None, False), "Menú cerrado sin elegir")
+    p.evaluate("() => { window.__compartir.modo = 'falla'; }")
+    boton.tap()
+    esperar_toast(p, "Enlace copiado")
+    igual((len(compartido(p)["llamadas"]), compartido(p)["copiado"]), (3, e.base), "El sistema no abre el menú: se copia el enlace")
+    comprobar_aviso_entero(p, e.ancho, e.alto, "«Enlace copiado» en Ajustes")
+    # Sin menú de compartir (algunos navegadores de ordenador): se copia.
+    p2 = pagina_de_ajustes(e, [JS_COMPARTIR_FALSO, JS_SIN_COMPARTIR], user_agent=UA_ANDROID)
+    boton_compartir(p2).tap()
+    esperar_toast(p2, "Enlace copiado")
+    igual(compartido(p2), {"llamadas": [], "copiado": e.base}, "Sin navigator.share")
+    # Ni menú ni portapapeles: lo dice y el foco sigue en el botón.
+    p3 = pagina_de_ajustes(e, [JS_COMPARTIR_FALSO, JS_SIN_COMPARTIR, JS_SIN_PORTAPAPELES], user_agent=UA_ANDROID)
+    boton_compartir(p3).tap()
+    esperar_toast(p3, "No se pudo copiar el enlace")
+    igual(p3.evaluate("() => document.activeElement.id"), "compartir", "Foco tras no poder copiar")
+    # En la app instalada «Convertir en aplicación» no está, pero se puede compartir igual.
+    for guiones, agente in (([JS_MODO_APLICACION], UA_ANDROID), (["Object.defineProperty(Navigator.prototype, 'standalone', { configurable: true, get: () => true });"], UA_IPHONE)):
+        p4 = pagina_de_ajustes(e, guiones + [JS_COMPARTIR_FALSO], user_agent=agente)
+        boton = boton_compartir(p4)
+        comprobar(boton.is_visible() and not p4.locator("#instalar").is_visible(), "En modo aplicación, «Compartir aplicación» sin «Convertir en aplicación»")
+        separacion = boton.evaluate("(b) => b.getBoundingClientRect().top - document.querySelector('#ayuda-instalar').getBoundingClientRect().bottom")
+        comprobar(12 <= separacion <= 32, f"En modo aplicación, separación entre el texto y el botón: {separacion}")
+        boton.tap()
+        p4.wait_for_timeout(300)
+        igual(len(compartido(p4)["llamadas"]), 1, f"Compartir en modo aplicación ({agente[:30]})")
+        p4.context.close()
+    comprobar_sin_desborde(p, "ajustes con «Compartir aplicación»")
+
+
+@prueba("aplicación: la vista previa del enlace compartido (etiquetas og: y la tarjeta de 1200x630)")
+def t_aplicacion_vista_previa(e):
+    p = e.pagina()
+    og = p.evaluate("() => Object.fromEntries([...document.querySelectorAll('meta[property^=\"og:\"]')].map((m) => [m.getAttribute('property'), m.content]))")
+    igual({k: og.get(k) for k in ("og:title", "og:url", "og:image", "og:image:width", "og:image:height")},
+          {"og:title": "Cosas", "og:url": "https://cosas-app.netlify.app/", "og:image": "https://cosas-app.netlify.app/icons/compartir.png",
+           "og:image:width": "1200", "og:image:height": "630"}, "Etiquetas og: de la app")
+    comprobar(og.get("og:description"), "Falta og:description")
+    respuesta = p.request.get(e.base + "icons/compartir.png")
+    igual((respuesta.status, respuesta.headers.get("content-type")), (200, "image/png"), "Descarga de la tarjeta")
+    cuerpo = respuesta.body()
+    igual((int.from_bytes(cuerpo[16:20], "big"), int.from_bytes(cuerpo[20:24], "big")), (1200, 630), "Tamaño de la tarjeta")
 
 
 @prueba("hoja de pasos: diálogo modal accesible (role, aria, foco dentro y atrapado, Escape, velo, «Cerrar», el foco vuelve)")
@@ -5601,7 +5702,9 @@ def t_sello_de_version(e):
         sys.path.pop(0)
     sw = (APP / "sw.js").read_text(encoding="utf-8")
     precargados = sellar_version.recursos_precargados(sw)
-    igual(sorted(precargados), sorted(["index.html", "styles.css", "app.js", "nube.js", "manifest.webmanifest"] + [f"icons/{i.name}" for i in (APP / "icons").glob("*.png")]),
+    # La tarjeta de la vista previa del enlace (compartir.png) no es de la app: solo la piden WhatsApp y compañía.
+    iconos = [f"icons/{i.name}" for i in (APP / "icons").glob("*.png") if i.name != "compartir.png"]
+    igual(sorted(precargados), sorted(["index.html", "styles.css", "app.js", "nube.js", "manifest.webmanifest"] + iconos),
           "Ficheros cubiertos por el sello (los que precarga sw.js)")
     actual, debida = sellar_version.version_actual(sw), sellar_version.version_sellada(sw)
     comprobar(re.fullmatch(r"cosas-v[0-9.]+-[0-9a-f]{8}", actual), f"VERSION_CACHE no lleva sello de contenido: {actual!r}")

@@ -96,6 +96,7 @@
   const ayudaDictado = $('#ayuda-dictado');
   const botonInstalar = $('#instalar');
   const ayudaInstalar = $('#ayuda-instalar');
+  const botonCompartir = $('#compartir');
   const hoja = $('#hoja');
   const veloHoja = $('#velo-hoja');
   const tituloHoja = $('#titulo-hoja');
@@ -1852,6 +1853,54 @@
     pintarInstalacion();
   }
 
+  // ---------- Compartir la aplicación ----------
+
+  let compartiendo = false;
+
+  /** Copia el enlace a mano (sin permiso para el portapapeles, a la antigua). */
+  async function copiarEnlace(enlace) {
+    try {
+      await window.navigator.clipboard.writeText(enlace);
+      return true;
+    } catch (error) { /* Se intenta a la antigua. */ }
+    const area = document.createElement('textarea');
+    area.value = enlace;
+    area.setAttribute('readonly', '');
+    area.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+    document.body.append(area);
+    area.select();
+    let copiado = false;
+    try { copiado = document.execCommand('copy'); } catch (error) { /* Tampoco. */ }
+    area.remove();
+    botonCompartir.focus({ preventScroll: true });
+    return copiado;
+  }
+
+  /**
+   * El enlace de la app (su portada, donde esté publicada) con el menú de compartir del sistema; un
+   * mensaje corto, que la vista previa (las etiquetas og: de index.html) pone el resto. Sin ese menú, o
+   * si el sistema no lo abre, se copia el enlace.
+   */
+  async function alPulsarCompartir() {
+    if (compartiendo) return; // El menú del sistema ya está abierto (doble toque).
+    compartiendo = true;
+    const enlace = new URL('./', window.location.href).href;
+    try {
+      if (window.navigator.share) {
+        try {
+          await window.navigator.share({ title: 'Cosas', text: 'Te recomiendo Cosas', url: enlace });
+          return;
+        } catch (error) {
+          if (error && error.name === 'AbortError') return; // Cerrado sin elegir: no pasa nada.
+        }
+      }
+      if (await copiarEnlace(enlace)) avisar('Enlace copiado', { icono: true });
+      else avisar('No se pudo copiar el enlace');
+    } finally {
+      compartiendo = false;
+    }
+  }
+
   // ---------- Teclado en pantalla ----------
 
   const esCampoDeTexto = (elemento) =>
@@ -1991,6 +2040,7 @@
     campoNombre.addEventListener('change', guardarDatosPersonales);
     campoNombre.addEventListener('blur', guardarDatosPersonales);
     botonInstalar.addEventListener('click', alPulsarInstalar);
+    botonCompartir.addEventListener('click', alPulsarCompartir);
     botonCerrarHoja.addEventListener('click', alPulsarCierreDeHoja);
     veloHoja.addEventListener('click', alPulsarCierreDeHoja);
     window.addEventListener('beforeinstallprompt', alPoderInstalar);

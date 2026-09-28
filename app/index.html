@@ -13,6 +13,19 @@
   <meta name="apple-mobile-web-app-title" content="Cosas">
   <meta name="application-name" content="Cosas">
   <meta name="format-detection" content="telephone=no">
+  <!-- La vista previa del enlace que envía «Compartir aplicación» (WhatsApp, Mensajes…). Tarjeta en
+       icons/compartir.png (1200x630, todo centrado: también vale recortada en cuadrado). -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Cosas">
+  <meta property="og:title" content="Cosas">
+  <meta property="og:description" content="Apunta las cosas que tienes que hacer. Sencilla, rápida y sin conexión.">
+  <meta property="og:url" content="https://cosas-app.netlify.app/">
+  <meta property="og:image" content="https://cosas-app.netlify.app/icons/compartir.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Cosas">
+  <meta property="og:locale" content="es_ES">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -220,6 +233,8 @@
             <h2 id="titulo-aplicacion" class="subtitulo">Aplicación</h2>
             <button type="button" class="boton-ancho" id="instalar" aria-describedby="ayuda-instalar">Convertir en aplicación</button>
             <p id="ayuda-instalar" class="ayuda"></p>
+            <!-- Envía el enlace de la app con el menú de compartir del sistema (o lo copia). -->
+            <button type="button" class="boton-ancho" id="compartir">Compartir aplicación</button>
           </section>
 
           <p class="pie">Cosas 1.2</p>
