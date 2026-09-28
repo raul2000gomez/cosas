@@ -5476,26 +5476,50 @@ const llamar = (op, datos) => window.__nubeFalsa(JSON.stringify({ op, ...datos }
 export function memoryLocalCache() { return { tipo: 'memoria' }; }
 export function initializeFirestore(app, opciones) { window.__cacheFalsa = opciones.localCache.tipo; return { app }; }
 export function collection(db, ...partes) { return { ruta: partes.join('/') }; }
-export function doc(coleccion, id) { return { ruta: coleccion.ruta, id }; }
-export function onSnapshot(coleccion, opciones, siguiente, error) {
+// doc(coleccion, id) o doc(db, 'coleccion', …, 'id').
+export function doc(base, ...partes) {
+  if (base && typeof base.ruta === 'string' && partes.length === 1) return { ruta: base.ruta, id: partes[0] };
+  return { ruta: partes.slice(0, -1).join('/'), id: partes[partes.length - 1] };
+}
+export function where(campo, op, valor) { return { campo, op, valor }; }
+export function query(coleccion, ...filtros) { return { ruta: coleccion.ruta, filtros }; }
+export function serverTimestamp() { return Date.now(); }
+const pasa = (datos, filtros) => (filtros || []).every((f) => f.op === 'array-contains' && Array.isArray(datos[f.campo]) && datos[f.campo].includes(f.valor));
+// La instantánea de un documento (exists, data) o de una colección o consulta (docs).
+function instantanea(ref, docs, fromCache) {
+  const metadata = { fromCache, hasPendingWrites: false };
+  if (ref.id !== undefined) {
+    const d = docs.find((x) => x.id === ref.id);
+    return { metadata, id: ref.id, exists: () => Boolean(d), data: () => (d ? d.datos : undefined) };
+  }
+  return { metadata, docs: docs.filter((d) => pasa(d.datos, ref.filtros)).map((d) => ({ id: d.id, data: () => d.datos })) };
+}
+export function onSnapshot(ref, ...resto) {
+  const [siguiente, error] = typeof resto[0] === 'function' ? resto : resto.slice(1);
   let version = -1;
   let vivo = true;
   const mirar = async () => {
     if (!vivo) return;
     try {
-      const r = await llamar('leer', { ruta: coleccion.ruta });
+      const r = await llamar('leer', { ruta: ref.ruta });
       if (r.error) { vivo = false; error(new Error(r.error)); return; }
       if (vivo && r.version !== version) {
         version = r.version;
-        siguiente({ metadata: { fromCache: false, hasPendingWrites: false }, docs: r.docs.map((d) => ({ id: d.id, data: () => d.datos })) });
+        siguiente(instantanea(ref, r.docs, false));
       }
     } catch (e) { /* La página se está cerrando. */ }
     if (vivo) setTimeout(mirar, 80);
   };
   // Como el SDK de verdad: antes de oír al servidor, una instantánea de la caché (vacía en memoria).
-  setTimeout(() => { if (vivo) siguiente({ metadata: { fromCache: true, hasPendingWrites: false }, docs: [] }); }, 0);
+  setTimeout(() => { if (vivo) siguiente(instantanea(ref, [], true)); }, 0);
   setTimeout(mirar, 30);
   return () => { vivo = false; };
+}
+export function setDoc(ref, datos, opciones) {
+  return llamar('escribir', { operaciones: [{ ruta: ref.ruta, id: ref.id, datos, fundir: Boolean(opciones && opciones.merge) }] }).then((r) => {
+    if (r.retener) return new Promise(() => {});
+    if (r.error) throw new Error(r.error);
+  });
 }
 export function writeBatch(db) {
   const operaciones = [];
@@ -5512,6 +5536,14 @@ export function writeBatch(db) {
 }
 """,
 }
+
+
+def fundir(antes, cambios):
+    """Como setDoc con merge: los mapas se funden campo a campo; lo demás se sustituye."""
+    resultado = dict(antes)
+    for clave, valor in cambios.items():
+        resultado[clave] = fundir(resultado.get(clave) or {}, valor) if isinstance(valor, dict) else valor
+    return resultado
 
 
 class NubeFalsa:
@@ -5538,10 +5570,17 @@ class NubeFalsa:
             documentos = self.colecciones.setdefault(operacion["ruta"], {})
             if operacion["datos"] is None:
                 documentos.pop(operacion["id"], None)
+            elif operacion.get("fundir"):
+                documentos[operacion["id"]] = fundir(documentos.get(operacion["id"], {}), operacion["datos"])
             else:
                 documentos[operacion["id"]] = operacion["datos"]
         self.version += 1
         return json.dumps({})
+
+    def poner(self, ruta, id, datos):
+        """Un cambio que llega de otro sitio (otra persona, otro dispositivo)."""
+        self.colecciones.setdefault(ruta, {})[id] = datos
+        self.version += 1
 
     def documentos(self, uid="u1"):
         return dict(self.colecciones.get(f"personales/{uid}/elementos", {}))
@@ -5767,6 +5806,107 @@ def t_nube_dos_dispositivos(e):
     c.wait_for_timeout(800)
     igual([u for u in peticiones if "nube.js" in u or u.startswith(CDN_FIREBASE) or "firebase-config" in u], [], "Sin sesión se carga la nube")
     comprobar(not c.evaluate("() => document.documentElement.hasAttribute('data-nube')"), "Sin sesión hay estado de nube")
+
+
+@prueba("novedades: las cuentas del punto verde (lo último de otra persona frente a lo visto, a cuándo entraste y a cuándo se empezó a contar)", una_vez=True)
+def t_novedades_cuentas(e):
+    p = e.pagina("icons/favicon-32.png")
+    r = p.evaluate("""async () => {
+      const n = await import('/nube.js');
+      const lista = (id, tipo, en, por, extra = {}) => ({ id, tipo, uids: ['yo', 'otra'], miembros: { yo: { desde: 1000 } }, ultima: { en, por }, ...extra });
+      const marca = (v) => ({ toMillis: () => v });
+      return {
+        sinDesde: n.novedadesDe([lista('a', 'con', 5000, 'otra')], {}, 'yo'),
+        sinSesion: n.novedadesDe([lista('a', 'con', 5000, 'otra')], { _desde: 2000 }, null),
+        nueva: n.novedadesDe([lista('a', 'con', 5000, 'otra')], { _desde: 2000 }, 'yo'),
+        propia: n.novedadesDe([lista('a', 'con', 5000, 'yo')], { _desde: 2000 }, 'yo'),
+        vista: n.novedadesDe([lista('a', 'con', 5000, 'otra')], { _desde: 2000, a: 6000 }, 'yo'),
+        antesDeContar: n.novedadesDe([lista('a', 'con', 1500, 'otra')], { _desde: 2000 }, 'yo'),
+        antesDeEntrar: n.novedadesDe([lista('a', 'de', 5000, 'otra', { miembros: { yo: { desde: 7000 } } })], { _desde: 2000 }, 'yo'),
+        deCosasDe: n.novedadesDe([lista('a', 'con', 5000, 'yo'), lista('b', 'de', 5000, 'otra')], { _desde: 2000 }, 'yo'),
+        marcasDeFirestore: n.novedadesDe([lista('a', 'de', marca(5000), 'otra')], { _desde: marca(2000), a: marca(4000) }, 'yo'),
+        sinUltima: n.novedadesDe([{ id: 'a', tipo: 'con' }], { _desde: 2000 }, 'yo'),
+      };
+    }""")
+    nada, con, de = {"con": False, "de": False}, {"con": True, "de": False}, {"con": False, "de": True}
+    esperado = {"sinDesde": nada, "sinSesion": nada, "nueva": con, "propia": nada, "vista": nada, "antesDeContar": nada,
+                "antesDeEntrar": nada, "deCosasDe": de, "marcasDeFirestore": de, "sinUltima": nada}
+    for caso, valor in esperado.items():
+        igual(r[caso], valor, f"Novedades: {caso}")
+
+
+JS_PUNTOS = """() => Object.fromEntries([...document.querySelectorAll('#accesos a')].map((a) => {
+    const d = getComputedStyle(a, '::after'), icono = a.querySelector('svg').getBoundingClientRect(), caja = a.getBoundingClientRect();
+    return [a.dataset.tipo, { punto: a.hasAttribute('data-novedad'), contenido: d.content, color: d.backgroundColor, etiqueta: a.getAttribute('aria-label'),
+      centro: [caja.left + parseFloat(d.left) + parseFloat(d.width) / 2 - icono.right, caja.top + parseFloat(d.top) + parseFloat(d.height) / 2 - icono.top] }];
+}))"""
+
+
+def abrir_con_listas(contexto, e, listas=("l1", "l2")):
+    """La app en ese dispositivo, con listas de Cosas con y Cosas de ya abiertas en él (sin cuenta de Google)."""
+    pagina = e.vigilar(contexto.new_page())
+    pagina.goto(ORIGEN_NUBE + "icons/favicon-32.png")
+    if listas:
+        pagina.evaluate("(ids) => localStorage.setItem('cosascon:ids', JSON.stringify(ids))", list(listas))
+    pagina.goto(ORIGEN_NUBE)
+    esperar_vista(pagina, "inicio")
+    return pagina
+
+
+@prueba("novedades: punto verde arriba a la derecha del icono de Cosas con o Cosas de si otra persona ha apuntado algo sin ver; se va al verlo; la primera vez se empieza a contar; sin listas en el dispositivo, ni se carga")
+def t_novedades_puntos(e):
+    nube = NubeFalsa()
+    nube.colecciones["listas"] = {
+        "l1": {"tipo": "con", "uids": ["u1", "u2"], "miembros": {"u1": {"desde": 1000}, "u2": {"desde": 1000}}, "ultima": {"en": 5000, "por": "u2", "grupo": None}},
+        "l2": {"tipo": "de", "uids": ["u1", "u3"], "miembros": {"u1": {"desde": 1000}}, "ultima": {"en": 6000, "por": "u1", "grupo": None}},
+        "l9": {"tipo": "de", "uids": ["u7"], "ultima": {"en": 9000, "por": "u7"}},  # De otros: no cuenta.
+    }
+    nube.colecciones["usuarios"] = {"u1": {"nombre": "Raúl", "vistos": {"_desde": 2000}}}
+    # Con la sesión (anónima) que dejaron Cosas con y Cosas de, sin cuenta de Google.
+    contexto = dispositivo(e, nube, usuario=None)
+    contexto.add_init_script("window.__usuarioFalso = { uid: 'u1', isAnonymous: true };")
+    p = abrir_con_listas(contexto, e)
+    esperar(p, f"() => ({JS_PUNTOS})().con.punto", que="sale el punto de Cosas con")
+    puntos = p.evaluate(JS_PUNTOS)
+    igual((puntos["con"]["contenido"], rgb_css(puntos["con"]["color"]), puntos["con"]["etiqueta"]), ('""', (34, 197, 94), "Cosas con. Hay cosas nuevas"),
+          "Punto verde de Cosas con (y lo dice a los lectores de pantalla)")
+    comprobar(all(abs(v) <= 4 for v in puntos["con"]["centro"]), f"El punto no está arriba a la derecha del icono: {puntos['con']['centro']}")
+    igual((puntos["de"]["punto"], puntos["de"]["contenido"], puntos["de"]["etiqueta"]), (False, "none", None), "Sin novedades en Cosas de (lo último es tuyo)")
+    comprobar(not p.evaluate("() => document.documentElement.hasAttribute('data-nube')"), "Sin cuenta de Google, las novedades encienden la sincronización de tus cosas")
+    # Lo ves (en la lista, en Cosas con): se va, sin recargar.
+    nube.poner("usuarios", "u1", {"nombre": "Raúl", "vistos": {"_desde": 2000, "l1": 7000}})
+    esperar(p, f"() => !({JS_PUNTOS})().con.punto", que="se va el punto de Cosas con al verlo")
+    # Otra persona apunta algo en tu lista de Cosas de: sale su punto.
+    nube.poner("listas", "l2", {**nube.colecciones["listas"]["l2"], "ultima": {"en": 8000, "por": "u3", "grupo": "g1"}})
+    esperar(p, f"() => ({JS_PUNTOS})().de.punto && !({JS_PUNTOS})().con.punto", que="sale el punto de Cosas de")
+    # Al cerrar la sesión de esas páginas, sin puntos.
+    p.evaluate("() => window.__cambiarUsuarioFalso(null)")
+    esperar(p, f"() => !({JS_PUNTOS})().de.punto", que="sin sesión, sin puntos")
+
+    # La primera vez (sin «_desde») no hay nada nuevo y se empieza a contar desde ahora.
+    nube2 = NubeFalsa()
+    nube2.colecciones["listas"] = {"l1": dict(nube.colecciones["listas"]["l1"])}
+    nube2.colecciones["usuarios"] = {"u1": {"nombre": "Raúl"}}
+    contexto2 = dispositivo(e, nube2, usuario="u1")
+    p2 = abrir_con_listas(contexto2, e)
+    for _ in range(40):  # La nube de mentira es de Python: se mira desde aquí.
+        if (nube2.colecciones["usuarios"]["u1"].get("vistos") or {}).get("_desde"):
+            break
+        p2.wait_for_timeout(100)
+    desde = (nube2.colecciones["usuarios"]["u1"].get("vistos") or {}).get("_desde")
+    comprobar(isinstance(desde, (int, float)) and desde > 0, f"La primera vez no apunta desde cuándo se cuenta: {nube2.colecciones['usuarios']['u1']}")
+    igual(nube2.colecciones["usuarios"]["u1"].get("nombre"), "Raúl", "Al apuntar desde cuándo se cuenta, se pierde el resto del perfil")
+    p2.wait_for_timeout(300)
+    igual(p2.evaluate(f"() => ({JS_PUNTOS})().con.punto"), False, "La primera vez, lo que ya había sale como nuevo")
+
+    # Sin listas de Cosas con y Cosas de en el dispositivo (ni cuenta), la app ni pide nube.js ni Firebase.
+    contexto3 = dispositivo(e, NubeFalsa(), usuario="u1")
+    peticiones = []
+    contexto3.on("request", lambda peticion: peticiones.append(peticion.url))
+    p3 = abrir_con_listas(contexto3, e, listas=())
+    p3.wait_for_timeout(800)
+    igual([u for u in peticiones if "nube.js" in u or u.startswith(CDN_FIREBASE) or "firebase-config" in u], [], "Sin listas compartidas se carga la nube")
+    igual(p3.evaluate("() => document.querySelectorAll('#accesos [data-novedad]').length"), 0, "Puntos sin listas compartidas")
 
 
 # ----------------------------------------------------------------------------

@@ -15,6 +15,8 @@
   // La cuenta de Google con la que se ha entrado ({ nombre, correo }). La escriben las páginas de
   // Cosas con, Cosas de y Tu cuenta (mismo dominio); la app solo la lee para enseñarla.
   const CLAVE_CUENTA = 'cosascon:cuenta';
+  // Las listas de Cosas con y Cosas de abiertas en este dispositivo (las apuntan esas páginas).
+  const CLAVE_LISTAS = 'cosascon:ids';
   const DURACION_AVISO = 1800;
   const DURACION_DESHACER = 4000;
   const DURACION_SALIDA = 220;
@@ -1714,6 +1716,51 @@
     sincronizar(true);
   }
 
+  // ---------- Novedades de Cosas con y Cosas de (el punto verde de sus iconos) ----------
+
+  let novedades = null;
+  let cargandoNovedades = false;
+  let intentosNovedades = 0;
+
+  function tieneListasCompartidas() {
+    try {
+      const ids = JSON.parse(localStorage.getItem(CLAVE_LISTAS) || '[]');
+      return Array.isArray(ids) && ids.length > 0;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
+   * Si otra persona ha apuntado algo que aún no has visto en una de tus listas, un punto verde en el icono
+   * de Cosas con o de Cosas de. nube.js lo vigila con la sesión de esas páginas; solo en la app publicada
+   * (https) y si en este dispositivo hay listas suyas. Sin conexión se reintenta al volver.
+   */
+  function cargarNovedades() {
+    if (novedades || cargandoNovedades || window.location.protocol !== 'https:' || !tieneListasCompartidas()) return;
+    cargandoNovedades = true;
+    import('./nube.js')
+      .then((modulo) => modulo.vigilarNovedades(pintarNovedades, intentosNovedades))
+      .then((vigilancia) => {
+        novedades = vigilancia;
+      })
+      .catch(() => {
+        intentosNovedades += 1;
+      })
+      .finally(() => {
+        cargandoNovedades = false;
+      });
+  }
+
+  function pintarNovedades(hay) {
+    for (const acceso of document.querySelectorAll('#accesos a[data-tipo]')) {
+      const nueva = Boolean(hay[acceso.dataset.tipo]);
+      acceso.toggleAttribute('data-novedad', nueva);
+      if (nueva) acceso.setAttribute('aria-label', `${acceso.textContent.trim()}. Hay cosas nuevas`);
+      else acceso.removeAttribute('aria-label');
+    }
+  }
+
   /** «Hecho»/Intro en el teclado: guarda (al perder el foco) y cierra el teclado. */
   function alPulsarTeclaEnDatos(evento) {
     if (evento.key !== 'Enter') return;
@@ -2030,6 +2077,7 @@
       pintarSesion();
       cargarNube(); // Se acaba de entrar con Google en otra pestaña.
     }
+    if (evento.key === null || evento.key === CLAVE_LISTAS) cargarNovedades(); // La primera lista, en otra pestaña.
   }
 
   function registrarServiceWorker() {
@@ -2123,6 +2171,7 @@
 
     window.addEventListener('storage', alCambiarAlmacenamiento);
     window.addEventListener('online', cargarNube);
+    window.addEventListener('online', cargarNovedades);
     window.addEventListener('pageshow', (evento) => { if (evento.persisted) recargarEstado(); });
     window.addEventListener('pagehide', guardarDatosPersonales);
     window.addEventListener('pagehide', cancelarDictado);
@@ -2140,6 +2189,7 @@
     iniciarNavegacion();
     registrarServiceWorker();
     cargarNube();
+    cargarNovedades();
   }
 
   iniciar();

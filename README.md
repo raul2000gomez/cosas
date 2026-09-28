@@ -38,6 +38,11 @@ Publicada en https://cosas-app.netlify.app
   https (la app publicada: la configuración es la `firebase-config.js` de cosas.info que sirve
   `netlify.toml`); `data-nube` en `<html>` dice cómo va (`conectando`, `guardando`, `al-dia`, `error`).
   Sin sesión, todo se queda en el dispositivo, como siempre.
+  `nube.js` vigila también las **novedades** de Cosas con y Cosas de (`vigilarNovedades`): con la sesión
+  que esas páginas dejan en este dominio (anónima o de Google) y si en el dispositivo hay listas suyas
+  (`cosascon:ids`), un punto verde arriba a la derecha del icono de Cosas con o Cosas de cuando otra
+  persona ha apuntado algo que aún no has visto (la lista guarda `ultima`; lo visto, `usuarios/{uid}.vistos`,
+  lo escriben esas páginas). Firebase se carga una sola vez para las dos cosas.
 - `pruebas/e2e.py` — pruebas de extremo a extremo con Playwright (iPhone 13 y Pixel 7 emulados).
 - `herramientas/sellar_version.py` — sella la versión de la caché en `app/sw.js`.
 - `herramientas/generar_iconos.py` — genera los iconos PNG.

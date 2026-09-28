@@ -11,7 +11,10 @@
    La base solo avanza con lo que la nube ha confirmado: lo pendiente de subir al cerrar la app se
    vuelve a subir la próxima vez.
 
-   Sin efectos al importarlo: Firebase se carga dentro de conectar(). */
+   Aquí también se vigilan las novedades de Cosas con y Cosas de (vigilarNovedades): el punto verde de sus
+   iconos en la pantalla principal.
+
+   Sin efectos al importarlo: Firebase se carga la primera vez que se pide (conectar o vigilarNovedades). */
 
 const VERSION_SDK = '12.4.0';
 const CDN = `https://www.gstatic.com/firebasejs/${VERSION_SDK}/`;
@@ -166,6 +169,43 @@ function guardarBase(uid, base) {
   } catch (error) { /* Sin almacenamiento: la próxima vez se reconcilia desde cero (sin perder nada). */ }
 }
 
+// ---------- Firebase (una sola vez para todo lo de la nube) ----------
+
+let firebase = null; // Promesa de { sdkAuth, sdkFs, autenticacion, db } (o de null, sin configuración).
+
+/**
+ * Carga Firebase la primera vez que se pide y lo comparte después. «intento» cambia las URL al reintentar:
+ * un import() fallido se queda fallido para esa URL.
+ */
+function cargarFirebase(intento) {
+  if (!firebase) {
+    firebase = (async () => {
+      const sufijo = intento ? `?reintento=${intento}` : '';
+      await import(`./firebase-config.js${sufijo}`); // La de cosas.info (netlify.toml la sirve aquí): define window.COSAS_FIREBASE.
+      const config = window.COSAS_FIREBASE;
+      if (!config || !config.apiKey || !config.projectId) return null;
+      const [sdkApp, sdkAuth, sdkFs] = await Promise.all([
+        import(`${CDN}firebase-app.js${sufijo}`),
+        import(`${CDN}firebase-auth.js${sufijo}`),
+        import(`${CDN}firebase-firestore.js${sufijo}`),
+      ]);
+      // Mismo nombre de app y misma clave que las páginas de cosas.info: así se encuentra la sesión que
+      // dejaron guardada en este dominio. Sin ventanas ni redirecciones: aquí no se entra, solo se lee.
+      const aplicacion = sdkApp.initializeApp(config);
+      const autenticacion = sdkAuth.initializeAuth(aplicacion, {
+        persistence: [sdkAuth.indexedDBLocalPersistence, sdkAuth.browserLocalPersistence],
+      });
+      // Caché en memoria: lo local ya vive en localStorage, y la caché persistente es de Cosas con y Cosas de.
+      const db = sdkFs.initializeFirestore(aplicacion, { localCache: sdkFs.memoryLocalCache() });
+      return { sdkAuth, sdkFs, autenticacion, db };
+    })();
+    firebase.catch(() => {
+      firebase = null; // Sin conexión, por ejemplo: se podrá volver a intentar.
+    });
+  }
+  return firebase;
+}
+
 // ---------- Conexión ----------
 
 /**
@@ -177,24 +217,9 @@ function guardarBase(uid, base) {
  * «intento» cambia las URL al reintentar: un import() fallido se queda fallido para esa URL.
  */
 export async function conectar(app, intento = 0) {
-  const sufijo = intento ? `?reintento=${intento}` : '';
-  await import(`./firebase-config.js${sufijo}`); // La de cosas.info (netlify.toml la sirve aquí): define window.COSAS_FIREBASE.
-  const config = window.COSAS_FIREBASE;
-  if (!config || !config.apiKey || !config.projectId) return null;
-  const [sdkApp, sdkAuth, sdkFs] = await Promise.all([
-    import(`${CDN}firebase-app.js${sufijo}`),
-    import(`${CDN}firebase-auth.js${sufijo}`),
-    import(`${CDN}firebase-firestore.js${sufijo}`),
-  ]);
-
-  // Mismo nombre de app y misma clave que las páginas de cosas.info: así se encuentra la sesión que
-  // dejaron guardada en este dominio. Sin ventanas ni redirecciones: aquí no se entra, solo se lee.
-  const aplicacion = sdkApp.initializeApp(config);
-  const autenticacion = sdkAuth.initializeAuth(aplicacion, {
-    persistence: [sdkAuth.indexedDBLocalPersistence, sdkAuth.browserLocalPersistence],
-  });
-  // Caché en memoria: lo local ya vive en localStorage, y la caché persistente es de Cosas con y Cosas de.
-  const db = sdkFs.initializeFirestore(aplicacion, { localCache: sdkFs.memoryLocalCache() });
+  const firebaseCargado = await cargarFirebase(intento);
+  if (!firebaseCargado) return null;
+  const { sdkAuth, sdkFs, autenticacion, db } = firebaseCargado;
 
   let uid = null;
   let coleccion = null;
@@ -307,4 +332,69 @@ export async function conectar(app, intento = 0) {
   });
 
   return { cambio: () => programar() };
+}
+
+// ---------- Novedades de Cosas con y Cosas de ----------
+
+const milis = (v) => (v && typeof v.toMillis === 'function' ? v.toMillis() : typeof v === 'number' ? v : 0);
+
+/**
+ * ¿Hay cosas nuevas de otra persona sin ver en tus listas de Cosas con y en las de Cosas de? { con, de }. Las
+ * mismas cuentas que esas páginas (js/con.js en cosas.info): la última cosa nueva de cada lista («ultima»)
+ * frente a lo último que viste en ella (usuarios/{uid}.vistos), cuándo entraste y cuándo se empezó a
+ * contar («_desde»; sin él, nada es nuevo todavía).
+ */
+export function novedadesDe(listas, vistos, uid) {
+  const hay = { con: false, de: false };
+  if (!uid || !vistos || !vistos._desde) return hay;
+  for (const lista of listas) {
+    const ultima = lista && lista.ultima;
+    if (!ultima || !ultima.por || ultima.por === uid) continue;
+    const yo = lista.miembros && lista.miembros[uid];
+    const desde = Math.max(milis(vistos[lista.id]), milis(vistos._desde), milis(yo && yo.desde));
+    if (milis(ultima.en) > desde) hay[lista.tipo === 'de' ? 'de' : 'con'] = true;
+  }
+  return hay;
+}
+
+/**
+ * Vigila tus listas de Cosas con y Cosas de con la sesión que esas páginas dejaron en este dominio (anónima
+ * o de Google) y llama a avisar({ con, de }) cada vez que cambia lo que hay. Devuelve null sin configuración.
+ */
+export async function vigilarNovedades(avisar, intento = 0) {
+  const firebaseCargado = await cargarFirebase(intento);
+  if (!firebaseCargado) return null;
+  const { sdkAuth, sdkFs, autenticacion, db } = firebaseCargado;
+  let uid = null;
+  let listas = [];
+  let vistos = null;
+  let dejarDeMirar = [];
+  const calcular = () => avisar(novedadesDe(listas, vistos, uid));
+
+  sdkAuth.onAuthStateChanged(autenticacion, (usuario) => {
+    const nuevo = usuario ? usuario.uid : null;
+    if (nuevo === uid) return;
+    for (const parar of dejarDeMirar) parar();
+    dejarDeMirar = [];
+    uid = nuevo;
+    listas = [];
+    vistos = null;
+    calcular();
+    if (!uid) return;
+    const mias = sdkFs.query(sdkFs.collection(db, 'listas'), sdkFs.where('uids', 'array-contains', uid));
+    dejarDeMirar.push(sdkFs.onSnapshot(mias, (instantanea) => {
+      listas = instantanea.docs.map((documento) => ({ id: documento.id, ...documento.data({ serverTimestamps: 'estimate' }) }));
+      calcular();
+    }, () => {}));
+    const perfil = sdkFs.doc(db, 'usuarios', uid);
+    dejarDeMirar.push(sdkFs.onSnapshot(perfil, (instantanea) => {
+      vistos = (instantanea.exists() && instantanea.data({ serverTimestamps: 'estimate' }).vistos) || {};
+      // La primera vez se empieza a contar ahora: lo de antes cuenta como visto.
+      if (!vistos._desde && !instantanea.metadata.fromCache) {
+        sdkFs.setDoc(perfil, { vistos: { _desde: sdkFs.serverTimestamp() } }, { merge: true }).catch(() => {});
+      }
+      calcular();
+    }, () => {}));
+  });
+  return { vigilando: true };
 }

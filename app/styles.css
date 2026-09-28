@@ -248,6 +248,7 @@ button {
 }
 
 .acceso {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -279,6 +280,21 @@ button {
 .acceso svg {
   width: 20px;
   height: 20px;
+}
+
+/* Cosas nuevas de otra persona sin ver en una de esas listas (app.js, nube.js): un punto verde arriba a la
+   derecha del icono, con un filete del color de fondo para que se vea sobre cualquiera. */
+.acceso[data-novedad]::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 30px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #22C55E;
+  box-shadow: 0 0 0 2px var(--fondo);
+  pointer-events: none;
 }
 
 .barra {
