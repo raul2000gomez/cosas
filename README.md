@@ -42,7 +42,29 @@ Publicada en https://cosas-app.netlify.app
   que esas páginas dejan en este dominio (anónima o de Google) y si en el dispositivo hay listas suyas
   (`cosascon:ids`), un punto verde arriba a la derecha del icono de Cosas con o Cosas de cuando otra
   persona ha apuntado algo que aún no has visto (la lista guarda `ultima`; lo visto, `usuarios/{uid}.vistos`,
-  lo escriben esas páginas). Firebase se carga una sola vez para las dos cosas.
+  lo escriben esas páginas). Firebase se carga una sola vez para todo.
+- **Notificaciones** (Ajustes → Notificaciones): avisos en el móvil cuando alguien añade una cosa a una de
+  tus listas de Cosas con o de Cosas de. **Activar notificaciones** pide permiso, suscribe este dispositivo
+  (push) con la clave pública de la función de avisos y lo da de alta con la sesión de Cosas con y Cosas de
+  en este dominio (`sesionDeAvisos` de `nube.js`; si aún no hay ninguna, entra de forma anónima, como harían
+  ellas). El dispositivo lo recuerda en `cosas:avisos` (`{ uid, endpoint, en }`); al abrir la app se vuelve a
+  dar de alta si el navegador cambió la suscripción o ha pasado un día, y si se quitó el permiso quedan
+  desactivadas. En iPhone y iPad solo llegan a la app instalada (Safari no tiene push fuera de ella): allí
+  la ayuda lo dice. `sw.js` enseña cada aviso (título de la lista, «Ana ha añadido «Leche»», icono y
+  `icons/aviso-96.png` como insignia), junta en uno los de una misma lista (etiqueta `lista-ID`, hasta cinco
+  líneas, lo nuevo arriba) y, al tocarlo, abre esa lista (o el grupo donde está la cosa) en la app. Cosas
+  con y Cosas de quitan los avisos de una lista al verla.
+- `netlify/functions/avisos.mjs` — la **función de avisos** (Netlify Functions, en `/api/avisos/…`):
+  `clave` (la clave pública VAPID), `alta` y `baja` (este dispositivo, con la sesión de Firebase en
+  `Authorization: Bearer`) y `avisar` (lo llama Cosas con / Cosas de, también desde cosas.info, tras
+  añadir una cosa). Comprueba el token con las claves públicas de Google y lee la lista y la cosa de
+  Firestore **con ese mismo token**, así que mandan las reglas: solo avisa quien está en la lista, de una
+  cosa suya, recién añadida y una sola vez; los avisos van a los dispositivos de la demás gente de la
+  lista. Solo envía a los servicios push de los navegadores (Google, Apple, Mozilla, Microsoft) y olvida
+  las suscripciones que ya no existen. Todo lo suyo (las claves VAPID, que se crean solas la primera vez,
+  y los dispositivos) vive en Netlify Blobs (almacén `avisos`): no hay nada que configurar ni secretos
+  en el repositorio. Sus dependencias (`package.json`) las instala Netlify al publicar.
+  Para probarla en local: `netlify dev --dir app` (con `netlify link` hecho una vez).
 - `pruebas/e2e.py` — pruebas de extremo a extremo con Playwright (iPhone 13 y Pixel 7 emulados).
 - `herramientas/sellar_version.py` — sella la versión de la caché en `app/sw.js`.
 - `herramientas/generar_iconos.py` — genera los iconos PNG.
@@ -51,8 +73,8 @@ Publicada en https://cosas-app.netlify.app
 
 1. `python herramientas/sellar_version.py` (sin esto, los móviles con la app instalada no reciben la versión nueva).
 2. `python pruebas/e2e.py` (tiene que salir todo PASS).
-3. `git push` (el sitio de Netlify está conectado al repositorio y publica `app/` con cada cambio
-   en `main`, según `netlify.toml`). A mano también vale: `netlify deploy --prod --dir app`.
+3. `git push` (el sitio de Netlify está conectado al repositorio y publica `app/` y la función de
+   avisos con cada cambio en `main`, según `netlify.toml`). A mano también vale: `netlify deploy --prod`.
 
 Ojo: si el repositorio es privado, el plan gratuito de Netlify solo construye los commits cuyo
 autor sea el dueño de la cuenta (en GitHub, `raul2000gomez`); cualquier otro autor se queda en

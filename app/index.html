@@ -229,6 +229,14 @@
             <p id="ayuda-datos" class="ayuda"><span id="ayuda-sesion">Inicia sesión con Google para tener tus cosas, tus grupos y tus listas de Cosas con y Cosas de en todos tus dispositivos. Sin sesión, todo se queda en este dispositivo.</span> <span id="ayuda-dictado">El dictado usa el servicio de voz de tu móvil, que puede enviar el audio a Google o Apple.</span></p>
           </section>
 
+          <!-- Avisos de Cosas con y Cosas de (notificaciones push). app.js pone el texto del botón y de la
+               ayuda según se pueda, esté activado o esté bloqueado; sin poder, solo queda la ayuda. -->
+          <section class="grupo" aria-labelledby="titulo-avisos">
+            <h2 id="titulo-avisos" class="subtitulo">Notificaciones</h2>
+            <button type="button" class="boton-ancho" id="avisos" aria-describedby="ayuda-avisos">Activar notificaciones</button>
+            <p id="ayuda-avisos" class="ayuda"></p>
+          </section>
+
           <section class="grupo" aria-labelledby="titulo-aplicacion">
             <h2 id="titulo-aplicacion" class="subtitulo">Aplicación</h2>
             <button type="button" class="boton-ancho" id="instalar" aria-describedby="ayuda-instalar">Convertir en aplicación</button>

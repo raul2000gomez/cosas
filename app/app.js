@@ -17,6 +17,8 @@
   const CLAVE_CUENTA = 'cosascon:cuenta';
   // Las listas de Cosas con y Cosas de abiertas en este dispositivo (las apuntan esas páginas).
   const CLAVE_LISTAS = 'cosascon:ids';
+  // Las notificaciones de este dispositivo ({ uid, endpoint, en }); sin ellas, no existe. Ver «Notificaciones».
+  const CLAVE_AVISOS = 'cosas:avisos';
   const DURACION_AVISO = 1800;
   const DURACION_DESHACER = 4000;
   const DURACION_SALIDA = 220;
@@ -104,6 +106,8 @@
   const botonInstalar = $('#instalar');
   const ayudaInstalar = $('#ayuda-instalar');
   const botonCompartir = $('#compartir');
+  const botonAvisos = $('#avisos');
+  const ayudaAvisos = $('#ayuda-avisos');
   const hoja = $('#hoja');
   const veloHoja = $('#velo-hoja');
   const tituloHoja = $('#titulo-hoja');
@@ -1614,6 +1618,7 @@
     sincronizarColor();
     if (document.activeElement !== campoNombre) campoNombre.value = estado.ajustes.nombre;
     pintarSesion();
+    pintarAvisos(); // El permiso ha podido cambiar en los ajustes del móvil.
   }
 
   /** Guarda el nombre si el usuario lo ha cambiado (autoguardado). */
@@ -2017,6 +2022,199 @@
     }
   }
 
+  // ---------- Notificaciones (avisos de Cosas con y Cosas de) ----------
+
+  /*
+   * Con las notificaciones activadas, la función de avisos (netlify/functions/avisos.mjs, en /api/avisos/ de
+   * este dominio) avisa a este dispositivo cuando alguien añade una cosa a una de tus listas de Cosas con o de
+   * Cosas de, y sw.js enseña el aviso. El dispositivo se suscribe (push) con la clave pública de la función y
+   * se da de alta con la sesión de esas páginas (nube.js). Lo recuerda en CLAVE_AVISOS ({ uid, endpoint, en }),
+   * que también leen ellas: si allí se entra con otra cuenta, los avisos pasan a la nueva.
+   */
+  const API_AVISOS = new URL('api/avisos/', new URL('./', window.location.href)).href;
+  const RENOVAR_AVISOS = 24 * 60 * 60 * 1000; // Cada día, la función vuelve a oír que este dispositivo sigue ahí.
+  const ESPERA_AVISOS = 15000;
+  const puedeAvisar = window.isSecureContext && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  let cambiandoAvisos = false;
+  let claveAvisos = null; // Promesa de la clave pública de la función, en bytes.
+
+  function leerAvisos() {
+    try {
+      const guardado = JSON.parse(localStorage.getItem(CLAVE_AVISOS));
+      return guardado && typeof guardado.endpoint === 'string' ? guardado : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function guardarAvisos(valor) {
+    try {
+      if (valor) localStorage.setItem(CLAVE_AVISOS, JSON.stringify(valor));
+      else localStorage.removeItem(CLAVE_AVISOS);
+    } catch (error) { /* Sin almacenamiento: la próxima vez se vuelve a dar de alta. */ }
+  }
+
+  /** 'activos', 'apagados', 'bloqueados' (sin permiso), 'instalar' (iPhone o iPad en Safari) o 'imposible'. */
+  function estadoAvisos() {
+    if (!puedeAvisar) return esIOS && !enModoAplicacion ? 'instalar' : 'imposible';
+    if (Notification.permission === 'denied') return 'bloqueados';
+    return Notification.permission === 'granted' && leerAvisos() ? 'activos' : 'apagados';
+  }
+
+  const PARA_QUE_AVISOS = 'te avisamos cuando alguien añada una cosa a tus listas de Cosas con y Cosas de.';
+
+  function pintarAvisos() {
+    if (cambiandoAvisos) return; // Hasta que termine, el botón dice lo que está haciendo.
+    const actual = estadoAvisos();
+    const boton = { apagados: 'Activar notificaciones', activos: 'Desactivar notificaciones' }[actual];
+    // El foco no puede quedarse en un botón que va a desaparecer.
+    if (!boton && document.activeElement === botonAvisos) titulos.ajustes.focus({ preventScroll: true });
+    botonAvisos.hidden = !boton;
+    if (boton) botonAvisos.textContent = boton;
+    const dispositivo = /iPhone|iPod/.test(window.navigator.userAgent) ? 'iPhone' : 'iPad';
+    ayudaAvisos.textContent = {
+      apagados: `Si las activas, ${PARA_QUE_AVISOS}`,
+      activos: `Activadas en este dispositivo: ${PARA_QUE_AVISOS}`,
+      bloqueados: 'Las notificaciones de Cosas están bloqueadas en este dispositivo. Para recibirlas, permítelas en los ajustes del móvil o del navegador.',
+      instalar: `En ${dispositivo}, las notificaciones llegan a la aplicación: pulsa «Convertir en aplicación» y actívalas desde ella.`,
+      imposible: 'Este navegador no puede recibir notificaciones.',
+    }[actual];
+  }
+
+  /** «promesa», o un error si tarda más de «ms» (un service worker que no llega a estar listo, por ejemplo). */
+  function conTiempo(promesa, ms = ESPERA_AVISOS) {
+    let temporizador = 0;
+    const tarde = new Promise((_, rechazar) => {
+      temporizador = setTimeout(() => rechazar(new Error('Tiempo agotado')), ms);
+    });
+    return Promise.race([promesa, tarde]).finally(() => clearTimeout(temporizador));
+  }
+
+  function bytesDeBase64(texto) {
+    const base64 = texto.replace(/-/g, '+').replace(/_/g, '/');
+    const binario = window.atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4));
+    return Uint8Array.from(binario, (letra) => letra.charCodeAt(0));
+  }
+
+  /** La clave pública de la función (una vez por sesión; si falla, se volverá a pedir). */
+  function pedirClaveAvisos() {
+    if (!claveAvisos) {
+      claveAvisos = conTiempo(fetch(`${API_AVISOS}clave`))
+        .then((respuesta) => (respuesta.ok ? respuesta.json() : Promise.reject(new Error(`Clave de avisos: ${respuesta.status}`))))
+        .then((datos) => bytesDeBase64(datos.clave));
+      claveAvisos.catch(() => {
+        claveAvisos = null;
+      });
+    }
+    return claveAvisos;
+  }
+
+  /** ¿Esa suscripción se hizo con esta clave? (Si la función cambiara de claves, habría que suscribirse otra vez.) */
+  function mismaClave(suscripcion, clave) {
+    const suya = suscripcion.options && suscripcion.options.applicationServerKey;
+    if (!suya) return true; // El navegador no lo dice: se da por buena.
+    const bytes = new Uint8Array(suya);
+    return bytes.length === clave.length && bytes.every((valor, i) => valor === clave[i]);
+  }
+
+  async function sesionDeAvisos() {
+    const nube = await import('./nube.js');
+    const sesion = await conTiempo(nube.sesionDeAvisos());
+    if (!sesion) throw new Error('Sin configuración de Firebase');
+    return sesion;
+  }
+
+  async function llamarAvisos(accion, sesion, datos) {
+    const respuesta = await conTiempo(fetch(`${API_AVISOS}${accion}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await sesion.token()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(datos),
+    }));
+    if (!respuesta.ok) throw new Error(`Avisos (${accion}): ${respuesta.status}`);
+  }
+
+  async function darDeAltaAvisos(suscripcion, sesion) {
+    await llamarAvisos('alta', sesion, { suscripcion: suscripcion.toJSON() });
+    guardarAvisos({ uid: sesion.uid, endpoint: suscripcion.endpoint, en: Date.now() });
+  }
+
+  async function suscribirse(registro) {
+    const clave = await pedirClaveAvisos();
+    let suscripcion = await registro.pushManager.getSubscription();
+    if (suscripcion && !mismaClave(suscripcion, clave)) {
+      await suscripcion.unsubscribe();
+      suscripcion = null;
+    }
+    return suscripcion || registro.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: clave });
+  }
+
+  /** true si quedan activadas; false si no se ha dado permiso. */
+  async function activarAvisos() {
+    // Lo primero, el permiso: iPhone y iPad solo lo preguntan mientras dura el toque.
+    const permiso = await Notification.requestPermission();
+    if (permiso !== 'granted') return false;
+    const [registro, sesion] = await Promise.all([conTiempo(navigator.serviceWorker.ready), sesionDeAvisos()]);
+    await darDeAltaAvisos(await suscribirse(registro), sesion);
+    return true;
+  }
+
+  async function desactivarAvisos() {
+    const guardado = leerAvisos();
+    guardarAvisos(null);
+    const registro = await navigator.serviceWorker.getRegistration();
+    const suscripcion = registro ? await registro.pushManager.getSubscription() : null;
+    if (suscripcion) await suscripcion.unsubscribe().catch(() => {});
+    // Que la función lo olvide ya (sin esto, lo olvidaría sola la primera vez que el aviso no llegara).
+    const endpoint = (suscripcion && suscripcion.endpoint) || (guardado && guardado.endpoint);
+    if (endpoint) sesionDeAvisos().then((sesion) => llamarAvisos('baja', sesion, { endpoint })).catch(() => {});
+  }
+
+  async function alPulsarAvisos() {
+    if (cambiandoAvisos) return; // Ya se está activando o desactivando (doble toque).
+    const activar = estadoAvisos() !== 'activos';
+    cambiandoAvisos = true;
+    // La primera vez, suscribirse puede tardar unos segundos (el móvil se da de alta en su servicio de avisos).
+    botonAvisos.textContent = activar ? 'Activando…' : 'Desactivando…';
+    botonAvisos.setAttribute('aria-busy', 'true');
+    try {
+      if (!activar) {
+        await desactivarAvisos();
+        avisar('Notificaciones desactivadas');
+      } else if (await activarAvisos()) {
+        avisar('Notificaciones activadas', { icono: true });
+      }
+    } catch (error) {
+      if (activar) guardarAvisos(null);
+      avisar(activar ? 'No se pudieron activar las notificaciones' : 'No se pudieron desactivar las notificaciones');
+    } finally {
+      cambiandoAvisos = false;
+      botonAvisos.removeAttribute('aria-busy');
+      pintarAvisos();
+    }
+  }
+
+  /**
+   * Al abrir la app con las notificaciones activadas: que la función siga teniendo este dispositivo. Si el
+   * navegador ha cambiado la suscripción, o ha pasado un día, se da de alta otra vez; si se ha quitado el
+   * permiso en los ajustes del móvil, quedan desactivadas.
+   */
+  async function renovarAvisos() {
+    const guardado = leerAvisos();
+    if (!guardado || !puedeAvisar || window.location.protocol !== 'https:') return;
+    if (Notification.permission !== 'granted') {
+      guardarAvisos(null);
+      pintarAvisos();
+      return;
+    }
+    try {
+      const registro = await conTiempo(navigator.serviceWorker.ready);
+      const actual = await registro.pushManager.getSubscription();
+      if (actual && actual.endpoint === guardado.endpoint && Date.now() - guardado.en < RENOVAR_AVISOS) return;
+      const [suscripcion, sesion] = await Promise.all([suscribirse(registro), sesionDeAvisos()]);
+      await darDeAltaAvisos(suscripcion, sesion);
+    } catch (error) { /* Sin conexión, por ejemplo: la próxima vez. */ }
+  }
+
   // ---------- Teclado en pantalla ----------
 
   const esCampoDeTexto = (elemento) =>
@@ -2078,6 +2276,7 @@
       cargarNube(); // Se acaba de entrar con Google en otra pestaña.
     }
     if (evento.key === null || evento.key === CLAVE_LISTAS) cargarNovedades(); // La primera lista, en otra pestaña.
+    if (evento.key === null || evento.key === CLAVE_AVISOS) pintarAvisos();
   }
 
   function registrarServiceWorker() {
@@ -2112,6 +2311,7 @@
     construirMuestras(muestras, 'color-fondo', PALETA);
     ayudaDictado.hidden = !Reconocimiento;
     pintarInstalacion();
+    pintarAvisos();
 
     abridores.lista.addEventListener('click', () => abrirVista('lista', abridores.lista));
     abridores.ajustes.addEventListener('click', () => abrirVista('ajustes', abridores.ajustes));
@@ -2164,6 +2364,7 @@
     campoNombre.addEventListener('blur', guardarDatosPersonales);
     botonInstalar.addEventListener('click', alPulsarInstalar);
     botonCompartir.addEventListener('click', alPulsarCompartir);
+    botonAvisos.addEventListener('click', alPulsarAvisos);
     botonCerrarHoja.addEventListener('click', alPulsarCierreDeHoja);
     veloHoja.addEventListener('click', alPulsarCierreDeHoja);
     window.addEventListener('beforeinstallprompt', alPoderInstalar);
@@ -2190,6 +2391,7 @@
     registrarServiceWorker();
     cargarNube();
     cargarNovedades();
+    renovarAvisos();
   }
 
   iniciar();

@@ -15,6 +15,7 @@ Uso (PowerShell):
 Sale con código distinto de cero si alguna prueba falla.
 """
 import argparse
+import base64
 import json
 import re
 import shutil
@@ -167,6 +168,15 @@ class Manejador(SimpleHTTPRequestHandler):
             cuerpo = b"/* script del alojamiento */"
             self.send_response(200)
             self.send_header("Content-Type", "text/javascript")
+            self.send_header("Content-Length", str(len(cuerpo)))
+            self.end_headers()
+            self.wfile.write(cuerpo)
+            return
+        # Y la función de avisos, en /api/.
+        if self.path.startswith("/api/"):
+            cuerpo = b'{"clave": "de-prueba"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(cuerpo)))
             self.end_headers()
             self.wfile.write(cuerpo)
@@ -1298,7 +1308,7 @@ def t_ajustes_estructura(e):
     abrir_ajustes(p)
     igual(p.locator("#vista-ajustes h1").text_content().strip(), "Ajustes", "Título de ajustes")
     comprobar(p.get_by_role("button", name="Volver", exact=True).is_visible(), "Falta el botón Volver en ajustes")
-    igual([h.strip() for h in p.locator("#vista-ajustes h2").all_text_contents()], ["Apariencia", "Datos personales", "Aplicación"], "Secciones de ajustes")
+    igual([h.strip() for h in p.locator("#vista-ajustes h2").all_text_contents()], ["Apariencia", "Datos personales", "Notificaciones", "Aplicación"], "Secciones de ajustes")
     for texto in ("Color de fondo", "Color personalizado", f"{AYUDA_SESION} {AYUDA_DICTADO}", "Cosas 1.2"):
         comprobar(p.get_by_text(texto, exact=True).count() == 1, f"Falta el texto «{texto}» en ajustes")
     grupo = p.get_by_role("radiogroup")
@@ -3021,7 +3031,7 @@ def t_aplicacion_apartado(e):
     igual(boton.text_content().strip(), "Convertir en aplicación", "Texto del botón")
     orden = p.evaluate("""() => { const hijos = [...document.querySelector('#vista-ajustes .ajustes').children];
         return hijos.map((h) => (h.querySelector('h2') || h).textContent.trim()); }""")
-    igual(orden, ["Apariencia", "Datos personales", "Aplicación", "Cosas 1.2"], "Orden de los apartados de ajustes")
+    igual(orden, ["Apariencia", "Datos personales", "Notificaciones", "Aplicación", "Cosas 1.2"], "Orden de los apartados de ajustes")
     medidas = boton.evaluate("""(b) => { const r = b.getBoundingClientRect(), cs = getComputedStyle(b), grupo = b.parentElement.getBoundingClientRect(), ayuda = document.querySelector('#ayuda-instalar');
         return { ancho: r.width, alto: r.height, anchoGrupo: grupo.width, radio: parseFloat(cs.borderTopLeftRadius), fuente: parseFloat(cs.fontSize),
                  descrito: b.getAttribute('aria-describedby'), tipo: b.type, lineasAyuda: Math.round(ayuda.getBoundingClientRect().height / parseFloat(getComputedStyle(ayuda).lineHeight)),
@@ -3676,16 +3686,17 @@ def t_sw_caches_antiguas(e):
     igual(len(p.evaluate("async () => (await caches.keys()).filter((n) => n.startsWith('cosas'))")), 1, "Cachés de Cosas tras activar")
 
 
-@prueba("service worker: no sirve ni guarda las rutas del alojamiento (/.netlify/)")
+@prueba("service worker: no sirve ni guarda las rutas del alojamiento (/.netlify/) ni la función de avisos (/api/)")
 def t_sw_rutas_del_alojamiento(e):
     contexto = e.contexto()
     p = e.vigilar(contexto.new_page())
     p.goto(e.base)
     esperar(p, "() => navigator.serviceWorker.controller !== null", ms=15000, que="el SW toma el control")
     igual(p.evaluate("async () => (await fetch('/.netlify/scripts/hud?variant=public')).ok"), True, "La ruta del alojamiento responde")
+    igual(p.evaluate("async () => (await fetch('/api/avisos/clave')).ok"), True, "La función de avisos responde")
     guardadas = p.evaluate("""async () => { const rutas = []; for (const n of await caches.keys()) { for (const r of await (await caches.open(n)).keys()) rutas.push(new URL(r.url).pathname); } return rutas; }""")
     comprobar(len(guardadas) > 0, "La caché de la app está vacía")
-    igual([r for r in guardadas if r.startswith("/.netlify/")], [], "Rutas del alojamiento guardadas en la caché")
+    igual([r for r in guardadas if r.startswith(("/.netlify/", "/api/"))], [], "Rutas del alojamiento o de la función guardadas en la caché")
 
 
 @prueba("funciona abriendo index.html con file:// (sin service worker)")
@@ -5463,7 +5474,21 @@ export function initializeApp(config, nombre) { window.__appFalsa = { config, no
     "firebase-auth.js": r"""
 export const indexedDBLocalPersistence = { tipo: 'indexedDB' };
 export const browserLocalPersistence = { tipo: 'local' };
-export function initializeAuth(app, opciones) { window.__authFalsa = { app, persistencias: opciones.persistence.map((p) => p.tipo) }; return window.__authFalsa; }
+export function initializeAuth(app, opciones) {
+  window.__authFalsa = {
+    app,
+    persistencias: opciones.persistence.map((p) => p.tipo),
+    get currentUser() { const u = window.__usuarioFalso; return u ? { ...u, getIdToken: async () => `token-${u.uid}` } : null; },
+    authStateReady: async () => {},
+  };
+  return window.__authFalsa;
+}
+export async function signInAnonymously() {
+  window.__anonimos = (window.__anonimos || 0) + 1;
+  window.__usuarioFalso = { uid: `anonimo-${window.__anonimos}`, isAnonymous: true };
+  if (window.__cambiarUsuarioFalso) window.__cambiarUsuarioFalso(window.__usuarioFalso);
+  return { user: window.__usuarioFalso };
+}
 export function onAuthStateChanged(auth, oyente) {
   const avisar = () => oyente(window.__usuarioFalso || null);
   window.__cambiarUsuarioFalso = (usuario) => { window.__usuarioFalso = usuario; avisar(); };
@@ -5907,6 +5932,345 @@ def t_novedades_puntos(e):
     p3.wait_for_timeout(800)
     igual([u for u in peticiones if "nube.js" in u or u.startswith(CDN_FIREBASE) or "firebase-config" in u], [], "Sin listas compartidas se carga la nube")
     igual(p3.evaluate("() => document.querySelectorAll('#accesos [data-novedad]').length"), 0, "Puntos sin listas compartidas")
+
+
+# ----------------------------------------------------------------------------
+# Notificaciones (avisos de Cosas con y Cosas de)
+# ----------------------------------------------------------------------------
+
+CLAVE_AVISOS = "cosas:avisos"
+CLAVE_VAPID = bytes(range(1, 66))  # La clave pública de mentira de la función de avisos (65 bytes, como una de verdad).
+ENDPOINT_PRUEBA = "https://fcm.googleapis.com/fcm/send/"
+PARA_QUE_AVISOS = "te avisamos cuando alguien añada una cosa a tus listas de Cosas con y Cosas de."
+AYUDA_AVISOS = {
+    "apagados": f"Si las activas, {PARA_QUE_AVISOS}",
+    "activos": f"Activadas en este dispositivo: {PARA_QUE_AVISOS}",
+    "bloqueados": "Las notificaciones de Cosas están bloqueadas en este dispositivo. Para recibirlas, permítelas en los ajustes del móvil o del navegador.",
+    "instalar": "En iPhone, las notificaciones llegan a la aplicación: pulsa «Convertir en aplicación» y actívalas desde ella.",
+    "imposible": "Este navegador no puede recibir notificaciones.",
+}
+
+# El permiso y el push del navegador, de mentira (el Chromium de las pruebas no los tiene): window.__avisos dice lo que
+# hay (permiso, suscripción) y apunta lo que se pide.
+JS_AVISOS_FALSOS = r"""(() => {
+  const a = window.__avisos = { permiso: 'default', respuesta: 'granted', pedidos: 0, suscripcion: null, suscritas: 0, bajas: 0, retraso: 0, opciones: null };
+  Object.defineProperty(Notification, 'permission', { configurable: true, get: () => a.permiso });
+  Notification.requestPermission = async () => { a.pedidos += 1; if (a.permiso === 'default') a.permiso = a.respuesta; return a.permiso; };
+  a.nueva = (endpoint, clave) => ({
+    endpoint,
+    options: { userVisibleOnly: true, applicationServerKey: clave ? new Uint8Array(clave).buffer : null },
+    toJSON() { return { endpoint, expirationTime: null, keys: { p256dh: 'clave-p256dh', auth: 'clave-auth' } }; },
+    async unsubscribe() { a.bajas += 1; if (a.suscripcion && a.suscripcion.endpoint === endpoint) a.suscripcion = null; return true; },
+  });
+  const pushManager = {
+    async getSubscription() { return a.suscripcion; },
+    async subscribe(opciones) {
+      a.suscritas += 1;
+      a.opciones = { userVisibleOnly: opciones.userVisibleOnly, clave: Array.from(new Uint8Array(opciones.applicationServerKey)) };
+      if (a.retraso) await new Promise((r) => setTimeout(r, a.retraso));
+      a.suscripcion = a.nueva(`https://fcm.googleapis.com/fcm/send/prueba-${a.suscritas}`, a.opciones.clave);
+      return a.suscripcion;
+    },
+  };
+  if (!('PushManager' in window)) window.PushManager = function PushManager() {};
+  const registro = { scope: location.origin + '/', pushManager };
+  Object.defineProperty(ServiceWorkerContainer.prototype, 'ready', { configurable: true, get: () => Promise.resolve(registro) });
+  ServiceWorkerContainer.prototype.getRegistration = async () => registro;
+})();"""
+JS_SIN_PUSH = "delete window.PushManager;"
+
+
+class ApiAvisosFalsa:
+    """La función de avisos (/api/avisos/…) de mentira: apunta cada llamada (acción, Authorization, cuerpo)."""
+
+    def __init__(self):
+        self.llamadas = []
+        self.fallar = set()
+
+    def atender(self, route):
+        accion = route.request.url.split("/api/avisos/", 1)[1].split("?")[0]
+        cuerpo = route.request.post_data
+        self.llamadas.append((accion, route.request.headers.get("authorization"), json.loads(cuerpo) if cuerpo else None))
+        if accion in self.fallar:
+            route.fulfill(status=500, content_type="application/json", body='{"error":"interno"}')
+        elif accion == "clave":
+            clave = base64.urlsafe_b64encode(CLAVE_VAPID).rstrip(b"=").decode()
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"clave": clave}))
+        else:
+            route.fulfill(status=200, content_type="application/json", body='{"ok":true}')
+
+    def de(self, accion):
+        return [llamada for llamada in self.llamadas if llamada[0] == accion]
+
+
+def dispositivo_con_avisos(e, api, usuario=None, preparar=""):
+    """Un dispositivo en https://cosas.test con el push de mentira y la función de avisos «api»; «usuario», su cuenta de Google."""
+    contexto = dispositivo(e, NubeFalsa(), usuario=usuario)
+    contexto.add_init_script(JS_AVISOS_FALSOS + preparar)
+    contexto.route(ORIGEN_NUBE + "api/avisos/**", api.atender)
+    return contexto
+
+
+def abrir_con_avisos(contexto, e, guardado=None):
+    """La app en ese dispositivo; con «guardado», las notificaciones que ya se activaron en él (CLAVE_AVISOS)."""
+    pagina = e.vigilar(contexto.new_page())
+    pagina.goto(ORIGEN_NUBE + "icons/favicon-32.png")
+    if guardado is not None:
+        pagina.evaluate("([clave, valor]) => localStorage.setItem(clave, valor)", [CLAVE_AVISOS, json.dumps(guardado)])
+    pagina.goto(ORIGEN_NUBE)
+    esperar_vista(pagina, "inicio")
+    return pagina
+
+
+def boton_avisos(pagina):
+    return pagina.locator("#avisos")
+
+
+def ayuda_avisos(pagina):
+    return pagina.locator("#ayuda-avisos").text_content()
+
+
+def guardado_avisos(pagina):
+    return pagina.evaluate("(clave) => JSON.parse(localStorage.getItem(clave))", CLAVE_AVISOS)
+
+
+def esperar_boton_avisos(pagina, texto, ms=6000):
+    esperar(pagina, "(texto) => document.querySelector('#avisos').textContent === texto", arg=texto, ms=ms, que=f"el botón dice «{texto}»")
+
+
+def esperar_llamadas(pagina, api, accion, cuantas, ms=5000):
+    fin = time.monotonic() + ms / 1000
+    while len(api.de(accion)) < cuantas:
+        if time.monotonic() > fin:
+            raise Fallo(f"La función no recibe {cuantas} «{accion}» en {ms} ms: {api.llamadas}")
+        pagina.wait_for_timeout(50)  # Con Playwright esperando, las llamadas a la función falsa se atienden.
+
+
+@prueba("notificaciones: apartado propio en Ajustes, antes de Aplicación; el botón y la ayuda según se pueda, estén activadas o bloqueadas")
+def t_avisos_apartado(e):
+    p = pagina_de_ajustes(e, [JS_AVISOS_FALSOS], user_agent=UA_ANDROID)
+    orden = p.evaluate("() => [...document.querySelector('#vista-ajustes .ajustes').children].map((h) => (h.querySelector('h2') || h).textContent.trim())")
+    igual(orden, ["Apariencia", "Datos personales", "Notificaciones", "Aplicación", "Cosas 1.2"], "Orden de los apartados de ajustes")
+    boton = p.get_by_role("button", name="Activar notificaciones", exact=True)
+    boton.scroll_into_view_if_needed()
+    comprobar(boton.is_visible(), "No se ve el botón «Activar notificaciones»")
+    medidas = boton.evaluate("""(b) => { const r = b.getBoundingClientRect(), cs = getComputedStyle(b), grupo = b.parentElement.getBoundingClientRect(), ayuda = document.querySelector('#ayuda-avisos');
+        return { ancho: r.width, alto: r.height, anchoGrupo: grupo.width, radio: parseFloat(cs.borderTopLeftRadius), fuente: parseFloat(cs.fontSize),
+                 descrito: b.getAttribute('aria-describedby'), tipo: b.type, ayudaDebajo: ayuda.getBoundingClientRect().top >= r.bottom }; }""")
+    comprobar(abs(medidas["ancho"] - medidas["anchoGrupo"]) <= 1 and medidas["alto"] >= 48 and medidas["radio"] >= medidas["alto"] / 2 - 0.5 and medidas["fuente"] >= 16,
+              f"El botón no es una píldora de todo el ancho como las demás de Ajustes: {medidas}")
+    igual((medidas["tipo"], medidas["descrito"], medidas["ayudaDebajo"]), ("button", "ayuda-avisos", True), "Botón y ayuda")
+    igual(ayuda_avisos(p), AYUDA_AVISOS["apagados"], "Ayuda sin activar")
+    comprobar_sin_desborde(p, "ajustes con el apartado «Notificaciones»")
+
+    activadas = "localStorage.setItem('cosas:avisos', JSON.stringify({ uid: 'u1', endpoint: 'https://fcm.googleapis.com/fcm/send/x', en: Date.now() }));"
+    casos = [
+        # (qué, agente, guion, botón, ayuda)
+        ("activadas", UA_ANDROID, "window.__avisos.permiso = 'granted';" + activadas, "Desactivar notificaciones", "activos"),
+        ("con permiso, pero sin activar en este dispositivo", UA_ANDROID, "window.__avisos.permiso = 'granted';", "Activar notificaciones", "apagados"),
+        ("bloqueadas", UA_ANDROID, "window.__avisos.permiso = 'denied';" + activadas, None, "bloqueados"),
+        ("iPhone en Safari (sin push hasta instalarla)", UA_IPHONE, JS_SIN_PUSH, None, "instalar"),
+        ("navegador sin push", UA_ANDROID, JS_SIN_PUSH, None, "imposible"),
+    ]
+    for que, agente, guion, texto_boton, ayuda in casos:
+        p = pagina_de_ajustes(e, [JS_AVISOS_FALSOS, guion], user_agent=agente)
+        if texto_boton:
+            comprobar(boton_avisos(p).is_visible(), f"{que}: no se ve el botón")
+            igual(boton_avisos(p).text_content(), texto_boton, f"{que}: texto del botón")
+        else:
+            comprobar(boton_avisos(p).is_hidden(), f"{que}: se ve un botón que no sirve")
+        igual(ayuda_avisos(p), AYUDA_AVISOS[ayuda], f"{que}: ayuda")
+
+
+@prueba("notificaciones: activarlas pide permiso, se suscribe con la clave de la función y da de alta este dispositivo con la sesión de Cosas con y Cosas de (anónima si aún no hay); desactivarlas lo deshace")
+def t_avisos_activar(e):
+    api = ApiAvisosFalsa()
+    p = abrir_con_avisos(dispositivo_con_avisos(e, api, preparar="window.__avisos.retraso = 500;"), e)
+    abrir_ajustes(p)
+    p.wait_for_timeout(400)  # Pasa la guarda del cambio de vista.
+    boton = boton_avisos(p)
+    igual(boton.text_content(), "Activar notificaciones", "Botón sin activar")
+    boton.click()
+    esperar(p, "() => { const b = document.querySelector('#avisos'); return b.textContent === 'Activando…' && b.getAttribute('aria-busy') === 'true'; }",
+            que="mientras se activan, el botón dice «Activando…»")
+    boton.click()  # Un segundo toque mientras tanto no hace nada.
+    esperar_boton_avisos(p, "Desactivar notificaciones")
+    esperar_toast(p, "Notificaciones activadas")
+    comprobar(boton.get_attribute("aria-busy") is None, "El botón sigue marcado como ocupado")
+    igual(ayuda_avisos(p), AYUDA_AVISOS["activos"], "Ayuda con las notificaciones activadas")
+    avisos = p.evaluate("() => ({ pedidos: window.__avisos.pedidos, suscritas: window.__avisos.suscritas, opciones: window.__avisos.opciones, anonimos: window.__anonimos || 0 })")
+    igual(avisos, {"pedidos": 1, "suscritas": 1, "opciones": {"userVisibleOnly": True, "clave": list(CLAVE_VAPID)}, "anonimos": 1},
+          "Permiso pedido una vez, suscripción con la clave de la función y, sin sesión, entrada anónima (como harían Cosas con y Cosas de)")
+    altas = api.de("alta")
+    igual(len(altas), 1, f"Altas en la función (un doble toque no da dos): {api.llamadas}")
+    igual(altas[0][1:], ("Bearer token-anonimo-1", {"suscripcion": {"endpoint": ENDPOINT_PRUEBA + "prueba-1", "expirationTime": None,
+                                                                    "keys": {"p256dh": "clave-p256dh", "auth": "clave-auth"}}}),
+          "El alta: con el token de la sesión y la suscripción del navegador")
+    guardado = guardado_avisos(p)
+    comprobar(guardado and guardado["uid"] == "anonimo-1" and guardado["endpoint"] == ENDPOINT_PRUEBA + "prueba-1" and abs(guardado["en"] - time.time() * 1000) < 60000,
+              f"Lo que recuerda el dispositivo: {guardado}")
+
+    # Desactivarlas: se deshace la suscripción y se olvidan aquí y en la función.
+    p.wait_for_timeout(400)
+    boton.click()
+    esperar_boton_avisos(p, "Activar notificaciones")
+    esperar_toast(p, "Notificaciones desactivadas")
+    igual((guardado_avisos(p), p.evaluate("() => window.__avisos.bajas")), (None, 1), "Desactivadas: el dispositivo las olvida y deshace la suscripción")
+    esperar_llamadas(p, api, "baja", 1)
+    igual(api.de("baja")[0][1:], ("Bearer token-anonimo-1", {"endpoint": ENDPOINT_PRUEBA + "prueba-1"}), "La baja en la función")
+    igual(ayuda_avisos(p), AYUDA_AVISOS["apagados"], "Ayuda tras desactivarlas")
+
+    # Con la cuenta de Google de Cosas con y Cosas de: se da de alta con ella, sin entrar de forma anónima.
+    api2 = ApiAvisosFalsa()
+    p2 = abrir_con_avisos(dispositivo_con_avisos(e, api2, usuario="u1"), e)
+    abrir_ajustes(p2)
+    p2.wait_for_timeout(400)
+    boton_avisos(p2).click()
+    esperar_boton_avisos(p2, "Desactivar notificaciones")
+    igual((api2.de("alta")[0][1], (guardado_avisos(p2) or {}).get("uid"), p2.evaluate("() => window.__anonimos || 0")), ("Bearer token-u1", "u1", 0),
+          "Con cuenta: el alta va con su token, el dispositivo avisa a esa cuenta y no se entra de forma anónima")
+
+
+@prueba("notificaciones: sin permiso quedan bloqueadas (sin alta ni suscripción); si se cierra la pregunta, nada cambia; si la función falla, se dice y se pueden volver a activar")
+def t_avisos_fallos(e):
+    api = ApiAvisosFalsa()
+    p = abrir_con_avisos(dispositivo_con_avisos(e, api, preparar="window.__avisos.respuesta = 'denied';"), e)
+    abrir_ajustes(p)
+    p.wait_for_timeout(400)
+    boton_avisos(p).click()
+    esperar(p, "() => document.querySelector('#avisos').hidden", que="sin permiso, el botón se va")
+    igual(ayuda_avisos(p), AYUDA_AVISOS["bloqueados"], "Ayuda sin permiso")
+    igual(p.evaluate("() => document.activeElement && document.activeElement.id"), "titulo-ajustes", "Al irse el botón, el foco pasa al título")
+    igual((api.llamadas, guardado_avisos(p), p.evaluate("() => window.__avisos.suscritas")), ([], None, 0), "Sin permiso: llamadas, lo guardado y suscripciones")
+
+    api2 = ApiAvisosFalsa()
+    p2 = abrir_con_avisos(dispositivo_con_avisos(e, api2, preparar="window.__avisos.respuesta = 'default';"), e)
+    abrir_ajustes(p2)
+    p2.wait_for_timeout(400)
+    boton_avisos(p2).click()
+    esperar_boton_avisos(p2, "Activar notificaciones")
+    p2.wait_for_timeout(300)
+    igual((api2.llamadas, guardado_avisos(p2), (toast(p2) or {}).get("texto") or ""), ([], None, ""), "Pregunta cerrada sin elegir: nada cambia ni se avisa")
+
+    e.tolerar += [r"/api/avisos/alta", r"status of 500 \(Internal Server Error\)$"]  # El 500 de la función de mentira.
+    api3 = ApiAvisosFalsa()
+    api3.fallar.add("alta")
+    p3 = abrir_con_avisos(dispositivo_con_avisos(e, api3), e)
+    abrir_ajustes(p3)
+    p3.wait_for_timeout(400)
+    boton_avisos(p3).click()
+    esperar_toast(p3, "No se pudieron activar las notificaciones", ms=6000)
+    igual((boton_avisos(p3).text_content(), guardado_avisos(p3)), ("Activar notificaciones", None), "Tras el fallo: sin activar y se puede volver a intentar")
+
+
+@prueba("notificaciones: al abrir la app, si siguen activadas, este dispositivo sigue dado de alta (otra suscripción, otra clave o pasado un día); al día, ni se carga la nube; sin permiso, quedan desactivadas")
+def t_avisos_renovar(e):
+    clave = json.dumps(list(CLAVE_VAPID))
+    e1 = ENDPOINT_PRUEBA + "E1"
+    reciente = {"uid": "anonimo-1", "endpoint": e1, "en": time.time() * 1000}
+    antiguo = {**reciente, "en": time.time() * 1000 - 2 * 86400 * 1000}
+
+    def abrir(preparar, guardado):
+        api = ApiAvisosFalsa()
+        contexto = dispositivo_con_avisos(e, api, preparar="window.__avisos.permiso = 'granted';" + preparar)
+        peticiones = []
+        contexto.on("request", lambda peticion: peticiones.append(peticion.url))
+        return api, abrir_con_avisos(contexto, e, guardado), peticiones
+
+    suscrita = f"window.__avisos.suscripcion = window.__avisos.nueva('{e1}', {clave});"
+    api, p, peticiones = abrir(suscrita, reciente)
+    p.wait_for_timeout(800)
+    igual(api.llamadas, [], "Al día: llamadas a la función")
+    igual([u for u in peticiones if "nube.js" in u or u.startswith(CDN_FIREBASE)], [], "Al día, se carga la nube")
+    abrir_ajustes(p)
+    igual(boton_avisos(p).text_content(), "Desactivar notificaciones", "Al día, siguen activadas")
+
+    casos = [
+        # (qué, preparar, guardado, endpoint dado de alta, [suscritas, bajas])
+        ("pasado un día, la misma suscripción", suscrita, antiguo, e1, [0, 0]),
+        ("con otra clave (la función cambió las suyas), otra suscripción", f"window.__avisos.suscripcion = window.__avisos.nueva('{e1}', [9, 9, 9]);", antiguo, ENDPOINT_PRUEBA + "prueba-1", [1, 1]),
+        ("el navegador cambió la suscripción: la nueva, enseguida", f"window.__avisos.suscripcion = window.__avisos.nueva('{ENDPOINT_PRUEBA}E2', {clave});", reciente, ENDPOINT_PRUEBA + "E2", [0, 0]),
+        ("el navegador la perdió: se suscribe otra vez", "", reciente, ENDPOINT_PRUEBA + "prueba-1", [1, 0]),
+    ]
+    for que, preparar, guardado, endpoint, cuentas in casos:
+        api, p, _ = abrir(preparar, guardado)
+        esperar_llamadas(p, api, "alta", 1)
+        igual(api.de("alta")[0][2]["suscripcion"]["endpoint"], endpoint, f"{que}: lo que se da de alta")
+        esperar(p, "([clave, endpoint]) => { const g = JSON.parse(localStorage.getItem(clave)); return g.endpoint === endpoint && g.en > Date.now() - 60000; }",
+                arg=[CLAVE_AVISOS, endpoint], que=f"{que}: se apunta el alta")
+        igual(p.evaluate("() => [window.__avisos.suscritas, window.__avisos.bajas]"), cuentas, f"{que}: suscripciones y bajas")
+
+    api, p, _ = abrir("window.__avisos.permiso = 'default';", reciente)
+    esperar(p, "(clave) => localStorage.getItem(clave) === null", arg=CLAVE_AVISOS, que="sin permiso (quitado en los ajustes del móvil), quedan desactivadas")
+    igual(api.llamadas, [], "Sin permiso: llamadas a la función")
+
+
+@prueba("service worker: enseña los avisos (título, texto, icono, insignia, enlace) y junta los de una misma lista en uno, lo nuevo arriba y hasta cinco líneas", una_vez=True)
+def t_sw_avisos(e):
+    # El Chromium de las pruebas no enseña notificaciones: hace falta Google Chrome (los avisos llegan por CDP, sin servicio push).
+    try:
+        chrome = e.pw.chromium.launch(channel="chrome")
+    except Exception:
+        print("         (sin Google Chrome en este equipo: no se puede comprobar)")
+        return
+    try:
+        e.tolerar.append(r"^Banner not shown")  # Chrome lo dice al guardarse la instalación para el botón de Ajustes.
+        origen = e.base.rstrip("/")
+        contexto = chrome.new_context()
+        contexto.grant_permissions(["notifications"], origin=origen)
+        p = e.vigilar(contexto.new_page())
+        p.goto(e.base)
+        esperar(p, "() => navigator.serviceWorker.controller !== null", ms=15000, que="el SW toma el control")
+        cdp = contexto.new_cdp_session(p)
+        registros = []
+        cdp.on("ServiceWorker.workerRegistrationUpdated", lambda evento: registros.extend(evento["registrations"]))
+        cdp.send("ServiceWorker.enable")
+        fin = time.monotonic() + 5
+        while not any(not r.get("isDeleted") for r in registros) and time.monotonic() < fin:
+            p.wait_for_timeout(50)
+        registro = next(r["registrationId"] for r in registros if not r.get("isDeleted"))
+
+        def empujar(datos):
+            bruto = datos if isinstance(datos, str) else json.dumps(datos, ensure_ascii=False)
+            cdp.send("ServiceWorker.deliverPushMessage", {"origin": origen, "registrationId": registro, "data": bruto})
+
+        def esperar_avisos(condicion, que):
+            fin = time.monotonic() + 5
+            while True:
+                avisos = p.evaluate("""async () => (await (await navigator.serviceWorker.ready).getNotifications())
+                    .map((n) => ({ titulo: n.title, cuerpo: n.body, etiqueta: n.tag, datos: n.data, icono: n.icon, insignia: n.badge }))""")
+                if condicion(avisos):
+                    return avisos
+                if time.monotonic() > fin:
+                    raise Fallo(f"No se cumplió: {que} (avisos: {avisos})")
+                p.wait_for_timeout(50)
+
+        viaje = {"titulo": "Cosas de Viaje", "etiqueta": "lista-viaje123"}
+        empujar({**viaje, "linea": "Ana ha añadido «Billetes»", "url": "/de/viaje123#grupo/g1"})
+        aviso = esperar_avisos(lambda a: len(a) == 1, "llega el aviso")[0]
+        igual((aviso["titulo"], aviso["cuerpo"], aviso["etiqueta"], aviso["datos"]),
+              ("Cosas de Viaje", "Ana ha añadido «Billetes»", "lista-viaje123", {"url": "/de/viaje123#grupo/g1", "lineas": ["Ana ha añadido «Billetes»"]}), "El aviso")
+        igual((aviso["icono"], aviso["insignia"]), (e.base + "icons/icon-192.png", e.base + "icons/aviso-96.png"), "Icono e insignia del aviso")
+
+        empujar({**viaje, "linea": "Beto ha añadido «Maleta»", "url": "/de/viaje123"})
+        aviso = esperar_avisos(lambda a: len(a) == 1 and a[0]["cuerpo"].startswith("Beto"), "se junta con el de antes")[0]
+        igual((aviso["cuerpo"], aviso["datos"]["url"]), ("Beto ha añadido «Maleta»\nAna ha añadido «Billetes»", "/de/viaje123"), "Dos avisos de la misma lista, en uno (lo nuevo arriba, con su enlace)")
+        for i in range(5):  # Seguidos, sin esperar: no se pisan.
+            empujar({**viaje, "linea": f"Ana ha añadido «Cosa {i}»", "url": "/de/viaje123"})
+        aviso = esperar_avisos(lambda a: len(a) == 1 and a[0]["cuerpo"].startswith("Ana ha añadido «Cosa 4»"), "llegan cinco más")[0]
+        igual(aviso["cuerpo"].split("\n"), [f"Ana ha añadido «Cosa {i}»" for i in (4, 3, 2, 1, 0)], "Hasta cinco líneas, las más nuevas")
+
+        empujar({"titulo": "Cosas con Beto", "etiqueta": "lista-pan12345", "linea": "Beto ha añadido «Pan»", "url": "/con/pan12345"})
+        esperar_avisos(lambda a: len(a) == 2, "el de otra lista va aparte")
+        empujar("esto no es JSON")
+        generico = [a for a in esperar_avisos(lambda a: len(a) == 3, "un aviso sin datos legibles") if a["etiqueta"] == "cosas"]
+        igual([(a["titulo"], a["cuerpo"], a["datos"]["url"]) for a in generico], [("Cosas", "Hay cosas nuevas", "./")], "Aviso sin datos legibles: genérico, abre la app")
+        for i, url in enumerate(("https://fuera.example/", "//fuera.example/x", "/\\fuera.example/x")):
+            empujar({"titulo": "Otro", "etiqueta": f"lista-fuera{i}", "linea": "Algo", "url": url})
+            fuera = [a for a in esperar_avisos(lambda a: len(a) == 4 + i, f"un aviso con un enlace de fuera ({url})") if a["etiqueta"] == f"lista-fuera{i}"]
+            igual(fuera[0]["datos"]["url"], "./", f"Un enlace de fuera ({url}) no se abre: abre la app")
+    finally:
+        chrome.close()
 
 
 # ----------------------------------------------------------------------------

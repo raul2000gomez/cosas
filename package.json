@@ -1,0 +1,10 @@
+{
+  "name": "cosas-app",
+  "private": true,
+  "description": "Cosas: la app (app/, sin build) y la función de Netlify de los avisos (netlify/functions/).",
+  "dependencies": {
+    "@netlify/blobs": "^11.1.1",
+    "jose": "^6.2.12",
+    "web-push": "^3.6.7"
+  }
+}

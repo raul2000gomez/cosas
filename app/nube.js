@@ -12,9 +12,11 @@
    vuelve a subir la próxima vez.
 
    Aquí también se vigilan las novedades de Cosas con y Cosas de (vigilarNovedades): el punto verde de sus
-   iconos en la pantalla principal.
+   iconos en la pantalla principal. Y se da la sesión con la que este dispositivo recibe sus avisos
+   (sesionDeAvisos): las notificaciones.
 
-   Sin efectos al importarlo: Firebase se carga la primera vez que se pide (conectar o vigilarNovedades). */
+   Sin efectos al importarlo: Firebase se carga la primera vez que se pide (conectar, vigilarNovedades o
+   sesionDeAvisos). */
 
 const VERSION_SDK = '12.4.0';
 const CDN = `https://www.gstatic.com/firebasejs/${VERSION_SDK}/`;
@@ -397,4 +399,21 @@ export async function vigilarNovedades(avisar, intento = 0) {
     }, () => {}));
   });
   return { vigilando: true };
+}
+
+// ---------- Avisos (notificaciones) de Cosas con y Cosas de ----------
+
+/**
+ * La sesión de Cosas con y Cosas de en este dominio, para darse de alta en sus avisos: { uid, token() }. Si aún
+ * no hay ninguna (no se han abierto aquí nunca), se entra de forma anónima, como harían ellas al abrirse: las
+ * listas que se creen o a las que se entre después serán de esta misma sesión. null sin configuración.
+ */
+export async function sesionDeAvisos(intento = 0) {
+  const firebaseCargado = await cargarFirebase(intento);
+  if (!firebaseCargado) return null;
+  const { sdkAuth, autenticacion } = firebaseCargado;
+  await autenticacion.authStateReady();
+  if (!autenticacion.currentUser) await sdkAuth.signInAnonymously(autenticacion);
+  const usuario = autenticacion.currentUser;
+  return { uid: usuario.uid, token: () => usuario.getIdToken() };
 }

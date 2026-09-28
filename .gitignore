@@ -3,3 +3,5 @@
 # Restos de Python.
 __pycache__/
 *.pyc
+# Dependencias de la función de avisos (las instala Netlify al publicar).
+node_modules/

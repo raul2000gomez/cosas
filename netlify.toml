@@ -4,6 +4,12 @@
   publish = "app"
   command = ""
 
+# La función de los avisos (notificaciones de Cosas con y Cosas de), en /api/avisos/…: sus dependencias
+# (package.json) las instala Netlify al publicar. Guarda lo suyo en Netlify Blobs, sin nada que configurar.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
 # «Cosas con» y «Cosas de», las listas compartidas de cosas.info (repositorio Web), también se
 # sirven aquí, en /con/ y /de/: Netlify las trae de cosas.info (proxy, sin copiar código). En el
 # mismo dominio que la app, la app instalada las abre como pantallas suyas, sin la barra del
