@@ -74,6 +74,9 @@ html {
   -webkit-font-smoothing: antialiased;
   /* Sin zoom por doble toque en ninguna parte (iOS); el de pellizco sigue disponible. */
   touch-action: manipulation;
+  /* Sin «atrás»/«adelante» al deslizar de lado sobre la página (Chrome): en la pantalla principal,
+     deslizar abre las esquinas. */
+  overscroll-behavior-x: none;
   transition: background-color .25s ease;
 }
 
@@ -201,7 +204,12 @@ button {
 
 /* ---------- Vista principal ---------- */
 
-.vista-inicio { overflow: hidden; }
+/* Deslizar a los lados es de la app (abre las esquinas, app.js): el navegador no lo toma, así que
+   no enseña su círculo de «atrás»/«adelante» (Chrome en Android). */
+.vista-inicio {
+  overflow: hidden;
+  touch-action: pan-y pinch-zoom;
+}
 
 .esquinas {
   display: flex;
@@ -211,16 +219,6 @@ button {
   transform: translateY(var(--vv-arriba));
   transition: transform .18s ease-out;
 }
-
-/* Deslizar hacia un lado (app.js): el botón de esa esquina crece con el recorrido (--tiron, de 0 a 1)
-   y se ilumina al llegar al punto en que, al soltar, se abre. Sigue al dedo sin transición; al
-   soltar vuelve a su sitio con la de siempre. */
-.esquinas .redondo[data-tiron] {
-  transform: scale(calc(1 + var(--tiron, 0) * .16));
-  transition: none;
-}
-
-.esquinas .redondo[data-tiron="listo"] { background: var(--superficie-activa); }
 
 /* ---------- Accesos a «Cosas con» y «Cosas de» ---------- */
 

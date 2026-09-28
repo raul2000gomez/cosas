@@ -26,8 +26,8 @@
   // este tiempo (un doble toque humano) el segundo toque no debe accionarlo.
   const GUARDA_DOBLE_TOQUE = 350;
   const UMBRAL_TECLADO = 80;
-  // Deslizar en la pantalla principal: recorrido horizontal que abre la esquina de ese lado (o la mitad,
-  // si es un golpe rápido), y franja de los bordes que es del sistema («atrás» en iOS y Android).
+  // Deslizar en la pantalla principal: recorrido horizontal que abre una esquina (o la mitad, si es un
+  // golpe rápido), y franja de los bordes que es del sistema («atrás» en iOS y Android).
   const UMBRAL_DESLIZAR = 64;
   const GOLPE_RAPIDO = 200;
   const BORDE_DEL_SISTEMA = 24;
@@ -1724,28 +1724,16 @@
   // ---------- Deslizar en la pantalla principal ----------
 
   /*
-   * Deslizar el dedo hacia un lado abre el botón de esa esquina: hacia la izquierda, la lista; hacia la
-   * derecha, los ajustes. Mientras se desliza, ese botón crece con el recorrido (--tiron, de 0 a 1) y se
-   * ilumina al llegar al umbral; al soltar ahí, se abre como si se hubiera pulsado. Decide dónde se
-   * suelta: volver atrás con el dedo lo deja todo como estaba. Con eventos táctiles, que siguen llegando
-   * aunque el navegador tome el gesto (los de puntero se cancelarían).
+   * Deslizar el dedo abre el botón de la esquina de la que se tira, como si se hubiera pulsado: hacia la
+   * derecha, la lista (la esquina izquierda); hacia la izquierda, los ajustes. Sin nada que se mueva ni
+   * se marque mientras tanto: decide dónde se suelta, así que volver atrás con el dedo no abre nada.
+   * Con eventos táctiles, que siguen llegando aunque el navegador tome el gesto (los de puntero se
+   * cancelarían); styles.css le quita al navegador el deslizar horizontal en esta vista.
    */
-  let tiron = null; // { x, y, inicio, horizontal, boton }
-
-  function pintarTiron(boton, avance) {
-    for (const otro of Object.values(abridores)) {
-      if (otro === boton) continue;
-      otro.removeAttribute('data-tiron');
-      otro.style.removeProperty('--tiron');
-    }
-    if (!boton) return;
-    boton.setAttribute('data-tiron', avance >= 1 ? 'listo' : '');
-    boton.style.setProperty('--tiron', String(Math.min(avance, 1)));
-  }
+  let tiron = null; // { x, y, inicio, horizontal }
 
   function soltarTiron() {
     tiron = null;
-    pintarTiron(null);
   }
 
   /** Con el zoom de pellizco puesto, arrastrar mueve la vista ampliada: no es un gesto de la app. */
@@ -1757,7 +1745,7 @@
     if (evento.target.closest('.barra')) return; // En la barra de escribir, el dedo es para el campo.
     const { clientX: x, clientY: y } = evento.touches[0];
     if (x < BORDE_DEL_SISTEMA || x > window.innerWidth - BORDE_DEL_SISTEMA) return;
-    tiron = { x, y, inicio: performance.now(), horizontal: null, boton: null };
+    tiron = { x, y, inicio: performance.now(), horizontal: null };
   }
 
   function alMoverTiron(evento) {
@@ -1766,18 +1754,12 @@
       soltarTiron(); // Un segundo dedo: es un pellizco.
       return;
     }
+    if (tiron.horizontal !== null) return;
     const dx = evento.touches[0].clientX - tiron.x;
     const dy = evento.touches[0].clientY - tiron.y;
-    if (tiron.horizontal === null) {
-      if (Math.hypot(dx, dy) < 10) return; // Aún no se sabe hacia dónde va.
-      tiron.horizontal = Math.abs(dx) > Math.abs(dy) * 1.5;
-    }
-    if (!tiron.horizontal) {
-      soltarTiron();
-      return;
-    }
-    tiron.boton = dx < 0 ? abridores.lista : dx > 0 ? abridores.ajustes : null;
-    pintarTiron(tiron.boton, Math.abs(dx) / UMBRAL_DESLIZAR);
+    if (Math.hypot(dx, dy) < 10) return; // Aún no se sabe hacia dónde va.
+    tiron.horizontal = Math.abs(dx) > Math.abs(dy) * 1.5;
+    if (!tiron.horizontal) soltarTiron();
   }
 
   function alSoltarTiron(evento) {
@@ -1789,7 +1771,7 @@
     const rapido = performance.now() - hecho.inicio < GOLPE_RAPIDO;
     const recorrido = Math.abs(dx);
     if (recorrido < (rapido ? UMBRAL_DESLIZAR / 2 : UMBRAL_DESLIZAR) || recorrido <= Math.abs(dy)) return;
-    const nombre = dx < 0 ? 'lista' : 'ajustes';
+    const nombre = dx > 0 ? 'lista' : 'ajustes';
     abrirVista(nombre, abridores[nombre]);
   }
 
