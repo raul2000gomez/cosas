@@ -26,6 +26,11 @@
   // este tiempo (un doble toque humano) el segundo toque no debe accionarlo.
   const GUARDA_DOBLE_TOQUE = 350;
   const UMBRAL_TECLADO = 80;
+  // Deslizar en la pantalla principal: recorrido horizontal que abre la esquina de ese lado (o la mitad,
+  // si es un golpe rápido), y franja de los bordes que es del sistema («atrás» en iOS y Android).
+  const UMBRAL_DESLIZAR = 64;
+  const GOLPE_RAPIDO = 200;
+  const BORDE_DEL_SISTEMA = 24;
   // Por debajo de esta luminancia (negro y casi negros) «más oscuro» ya no se distingue.
   const LUZ_PROFUNDA = 0.03;
   // Tras stop(), el navegador entrega lo reconocido y avisa con «end»; si no lo hace, se corta.
@@ -1716,6 +1721,78 @@
     evento.target.blur();
   }
 
+  // ---------- Deslizar en la pantalla principal ----------
+
+  /*
+   * Deslizar el dedo hacia un lado abre el botón de esa esquina: hacia la izquierda, la lista; hacia la
+   * derecha, los ajustes. Mientras se desliza, ese botón crece con el recorrido (--tiron, de 0 a 1) y se
+   * ilumina al llegar al umbral; al soltar ahí, se abre como si se hubiera pulsado. Decide dónde se
+   * suelta: volver atrás con el dedo lo deja todo como estaba. Con eventos táctiles, que siguen llegando
+   * aunque el navegador tome el gesto (los de puntero se cancelarían).
+   */
+  let tiron = null; // { x, y, inicio, horizontal, boton }
+
+  function pintarTiron(boton, avance) {
+    for (const otro of Object.values(abridores)) {
+      if (otro === boton) continue;
+      otro.removeAttribute('data-tiron');
+      otro.style.removeProperty('--tiron');
+    }
+    if (!boton) return;
+    boton.setAttribute('data-tiron', avance >= 1 ? 'listo' : '');
+    boton.style.setProperty('--tiron', String(Math.min(avance, 1)));
+  }
+
+  function soltarTiron() {
+    tiron = null;
+    pintarTiron(null);
+  }
+
+  /** Con el zoom de pellizco puesto, arrastrar mueve la vista ampliada: no es un gesto de la app. */
+  const conZoom = () => Boolean(window.visualViewport && window.visualViewport.scale > 1.01);
+
+  function alEmpezarTiron(evento) {
+    soltarTiron();
+    if (evento.touches.length !== 1 || vistaActual !== 'inicio' || cambiandoVista || volviendo || conZoom()) return;
+    if (evento.target.closest('.barra')) return; // En la barra de escribir, el dedo es para el campo.
+    const { clientX: x, clientY: y } = evento.touches[0];
+    if (x < BORDE_DEL_SISTEMA || x > window.innerWidth - BORDE_DEL_SISTEMA) return;
+    tiron = { x, y, inicio: performance.now(), horizontal: null, boton: null };
+  }
+
+  function alMoverTiron(evento) {
+    if (!tiron) return;
+    if (evento.touches.length !== 1) {
+      soltarTiron(); // Un segundo dedo: es un pellizco.
+      return;
+    }
+    const dx = evento.touches[0].clientX - tiron.x;
+    const dy = evento.touches[0].clientY - tiron.y;
+    if (tiron.horizontal === null) {
+      if (Math.hypot(dx, dy) < 10) return; // Aún no se sabe hacia dónde va.
+      tiron.horizontal = Math.abs(dx) > Math.abs(dy) * 1.5;
+    }
+    if (!tiron.horizontal) {
+      soltarTiron();
+      return;
+    }
+    tiron.boton = dx < 0 ? abridores.lista : dx > 0 ? abridores.ajustes : null;
+    pintarTiron(tiron.boton, Math.abs(dx) / UMBRAL_DESLIZAR);
+  }
+
+  function alSoltarTiron(evento) {
+    const hecho = tiron;
+    soltarTiron();
+    if (!hecho || !hecho.horizontal || evento.touches.length > 0) return;
+    const dx = evento.changedTouches[0].clientX - hecho.x;
+    const dy = evento.changedTouches[0].clientY - hecho.y;
+    const rapido = performance.now() - hecho.inicio < GOLPE_RAPIDO;
+    const recorrido = Math.abs(dx);
+    if (recorrido < (rapido ? UMBRAL_DESLIZAR / 2 : UMBRAL_DESLIZAR) || recorrido <= Math.abs(dy)) return;
+    const nombre = dx < 0 ? 'lista' : 'ajustes';
+    abrirVista(nombre, abridores[nombre]);
+  }
+
   // ---------- Hojas (paneles inferiores) ----------
 
   let panelAbierto = null; // Como mucho hay una hoja abierta: la de pasos o la de edición.
@@ -1999,6 +2076,10 @@
     abridores.lista.addEventListener('click', () => abrirVista('lista', abridores.lista));
     abridores.ajustes.addEventListener('click', () => abrirVista('ajustes', abridores.ajustes));
     for (const boton of document.querySelectorAll('[data-volver]')) boton.addEventListener('click', volver);
+    vistas.inicio.addEventListener('touchstart', alEmpezarTiron, { passive: true });
+    vistas.inicio.addEventListener('touchmove', alMoverTiron, { passive: true });
+    vistas.inicio.addEventListener('touchend', alSoltarTiron, { passive: true });
+    vistas.inicio.addEventListener('touchcancel', soltarTiron, { passive: true });
 
     for (const barra of escrituras) {
       barra.micro.hidden = !Reconocimiento;

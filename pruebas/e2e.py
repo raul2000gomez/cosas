@@ -695,6 +695,82 @@ def t_botones_redondos(e):
     igual(tramos, 3, "Número de líneas horizontales del icono del botón de lista")
 
 
+def tocar(cdp, tipo, puntos, pagina=None):
+    cdp.send("Input.dispatchTouchEvent", {"type": tipo, "touchPoints": [{"x": x, "y": y, "id": i} for i, (x, y) in enumerate(puntos)]})
+    if pagina:
+        pagina.wait_for_timeout(60)  # Chrome entrega los touchmove al ritmo de los fotogramas.
+
+
+def deslizar(pagina, desde, dx, dy=0, pasos=8, pausa=0, soltar=True, dedos=1):
+    """Un gesto táctil de verdad (CDP): pone el dedo en «desde», lo lleva dx/dy en «pasos» y lo levanta."""
+    cdp = pagina.context.new_cdp_session(pagina)
+    x0, y0 = desde
+    tocar(cdp, "touchStart", [(x0 + 30 * d, y0) for d in range(dedos)])
+    for i in range(1, pasos + 1):
+        tocar(cdp, "touchMove", [(x0 + 30 * d + dx * i / pasos, y0 + dy * i / pasos) for d in range(dedos)])
+        if pausa:
+            pagina.wait_for_timeout(pausa)
+    if soltar:
+        tocar(cdp, "touchEnd", [])
+    return cdp
+
+
+JS_TIRON = """() => Object.fromEntries(['abrir-lista', 'abrir-ajustes'].map((id) => { const b = document.getElementById(id), cs = getComputedStyle(b);
+    return [id, { tiron: b.getAttribute('data-tiron'), escala: new DOMMatrix(cs.transform).a, fondo: cs.backgroundColor }]; }))"""
+
+
+@prueba("inicio: deslizar hacia la izquierda abre la lista y hacia la derecha los ajustes; el botón de ese lado crece y se ilumina")
+def t_inicio_deslizar(e):
+    p = e.pagina()
+    esperar_vista(p, "inicio")
+    centro = (e.ancho / 2, e.alto * 0.45)
+    reposo = p.evaluate(JS_TIRON)
+    # A mitad de camino el botón de la izquierda crece; pasado el umbral se ilumina; volviendo atrás no se abre nada.
+    cdp = deslizar(p, centro, -40, soltar=False)
+    p.wait_for_timeout(60)
+    estado = p.evaluate(JS_TIRON)
+    comprobar(estado["abrir-lista"]["tiron"] == "" and 1.05 < estado["abrir-lista"]["escala"] < 1.16, f"A mitad de camino, el botón de la lista: {estado['abrir-lista']}")
+    igual(estado["abrir-ajustes"], reposo["abrir-ajustes"], "El botón del otro lado no se mueve")
+    tocar(cdp, "touchMove", [(centro[0] - 90, centro[1])], p)
+    estado = p.evaluate(JS_TIRON)
+    comprobar(estado["abrir-lista"]["tiron"] == "listo" and estado["abrir-lista"]["fondo"] != reposo["abrir-lista"]["fondo"],
+              f"Pasado el umbral, el botón de la lista no se ilumina: {estado['abrir-lista']}")
+    tocar(cdp, "touchMove", [(centro[0] + 20, centro[1])], p)
+    estado = p.evaluate(JS_TIRON)
+    comprobar(estado["abrir-lista"]["tiron"] is None and estado["abrir-ajustes"]["tiron"] == "", f"Al cambiar de lado cambia el botón: {estado}")
+    tocar(cdp, "touchMove", [centro])
+    tocar(cdp, "touchEnd", [])
+    p.wait_for_timeout(400)
+    igual(vista_visible(p), "inicio", "Soltar donde se empezó no abre nada")
+    comprobar(all(v["tiron"] is None for v in p.evaluate(JS_TIRON).values()), "Tras soltar, los botones siguen marcados")
+    # Hacia la izquierda: la lista, como su botón (una entrada de historial; al volver, el foco en ese botón).
+    antes = p.evaluate("() => history.length")
+    deslizar(p, centro, -90, pausa=40)
+    esperar_vista(p, "lista")
+    igual(p.evaluate("() => history.length"), antes + 1, "Historial tras abrir la lista deslizando")
+    p.go_back()
+    esperar_vista(p, "inicio")
+    igual(p.evaluate("() => document.activeElement.id"), "abrir-lista", "Foco al volver de la lista abierta deslizando")
+    p.wait_for_timeout(400)
+    # Hacia la derecha, con un golpe rápido y corto: los ajustes.
+    deslizar(p, centro, 40, pasos=3)
+    esperar_vista(p, "ajustes")
+    comprobar(all(v["tiron"] is None for v in p.evaluate(JS_TIRON).values()), "Tras abrir, los botones siguen marcados")
+    p.go_back()
+    esperar_vista(p, "inicio")
+    p.wait_for_timeout(400)
+    # Lo que no abre nada: corto y lento, vertical, en diagonal, desde la barra de escribir, desde el borde, con dos dedos.
+    barra = p.locator("#formulario .pildora").bounding_box()
+    for que, desde, dx, dy, dedos, pausa in (("corto y lento", centro, -50, 0, 1, 40), ("vertical", centro, 0, -150, 1, 0),
+                                              ("en diagonal", centro, -80, 70, 1, 0), ("desde la barra de escribir", (e.ancho / 2, barra["y"] + barra["height"] / 2), -120, 0, 1, 0),
+                                              ("desde el borde izquierdo", (8, e.alto * 0.45), 150, 0, 1, 0), ("desde el borde derecho", (e.ancho - 8, e.alto * 0.45), -150, 0, 1, 0),
+                                              ("con dos dedos", (e.ancho / 2 - 15, e.alto * 0.45), -120, 0, 2, 0)):
+        deslizar(p, desde, dx, dy, pausa=pausa, dedos=dedos)
+        p.wait_for_timeout(400)
+        igual(vista_visible(p), "inicio", f"Deslizar {que}")
+    igual(p.evaluate("() => history.length"), antes + 1, "Historial tras los gestos que no abren nada")
+
+
 @prueba("inicio: atributos de la barra de escribir")
 def t_atributos_campo(e):
     p = e.pagina()

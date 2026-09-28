@@ -6,7 +6,9 @@ Publicada en https://cosas-app.netlify.app
 
 ## Carpetas
 
-- `app/` — la app. Es lo único que se publica. En la pantalla de inicio, bajo los botones, van los
+- `app/` — la app. Es lo único que se publica. En la pantalla de inicio, deslizar el dedo hacia un
+  lado abre el botón de esa esquina (hacia la izquierda, la lista; hacia la derecha, los ajustes),
+  que crece mientras se desliza y se ilumina cuando al soltar se va a abrir. Bajo los botones van los
   accesos «Cosas con» y «Cosas de» a las listas compartidas de cosas.info (`?desde=app` hace que la
   flecha de esas páginas vuelva a la app). Se abren en este mismo dominio, en `/con/` y `/de/`:
   `netlify.toml` las trae de cosas.info (proxy, el código sigue solo en el repositorio `Web`), así la

@@ -212,6 +212,16 @@ button {
   transition: transform .18s ease-out;
 }
 
+/* Deslizar hacia un lado (app.js): el botón de esa esquina crece con el recorrido (--tiron, de 0 a 1)
+   y se ilumina al llegar al punto en que, al soltar, se abre. Sigue al dedo sin transición; al
+   soltar vuelve a su sitio con la de siempre. */
+.esquinas .redondo[data-tiron] {
+  transform: scale(calc(1 + var(--tiron, 0) * .16));
+  transition: none;
+}
+
+.esquinas .redondo[data-tiron="listo"] { background: var(--superficie-activa); }
+
 /* ---------- Accesos a «Cosas con» y «Cosas de» ---------- */
 
 /* Dos píldoras centradas bajo los botones de las esquinas. En el documento van después de la
