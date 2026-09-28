@@ -719,6 +719,9 @@ JS_ESQUINAS = """() => Object.fromEntries(['abrir-lista', 'abrir-ajustes'].map((
     return [id, { atributos: [...b.attributes].map((a) => a.name).sort(), estilo: b.getAttribute('style'), transform: cs.transform, fondo: cs.backgroundColor }]; }))"""
 
 
+JS_ARO = "() => getComputedStyle(document.activeElement).outlineStyle"
+
+
 @prueba("inicio: deslizar hacia la derecha abre la lista y hacia la izquierda los ajustes, sin marcas en pantalla ni gestos del navegador")
 def t_inicio_deslizar(e):
     p = e.pagina()
@@ -746,6 +749,16 @@ def t_inicio_deslizar(e):
     p.go_back()
     esperar_vista(p, "inicio")
     igual(p.evaluate("() => document.activeElement.id"), "abrir-lista", "Foco al volver de la lista abierta deslizando")
+    # Sin aro de foco en la esquina (es para el teclado, y en iPhone salía al volver); con la primera tecla, vuelve.
+    igual(p.evaluate(JS_ARO), "none", "Aro de foco en la esquina tras deslizar y volver")
+    p.keyboard.press("Tab")
+    igual((p.evaluate("() => document.activeElement.id"), p.evaluate(JS_ARO)), ("abrir-ajustes", "solid"), "Con el tabulador, el aro vuelve")
+    p.wait_for_timeout(400)
+    # Lo mismo tocando: el botón de la lista y «Volver». (Antes del golpe rápido de abajo: en la emulación, su inercia
+    # no se acaba nunca y el siguiente toque solo la para.)
+    abrir_lista(p)
+    volver(p)
+    igual((p.evaluate("() => document.activeElement.id"), p.evaluate(JS_ARO)), ("abrir-lista", "none"), "Aro de foco en la esquina tras tocar y volver")
     p.wait_for_timeout(400)
     # Hacia la izquierda, con un golpe rápido y corto: los ajustes, la esquina derecha.
     deslizar(p, centro, -40, pasos=3)
@@ -753,6 +766,7 @@ def t_inicio_deslizar(e):
     p.go_back()
     esperar_vista(p, "inicio")
     igual(p.evaluate("() => document.activeElement.id"), "abrir-ajustes", "Foco al volver de los ajustes abiertos deslizando")
+    igual(p.evaluate(JS_ARO), "none", "Aro de foco en la esquina tras un golpe rápido y volver")
     p.wait_for_timeout(400)
     # Lo que no abre nada: corto y lento, vertical, en diagonal, desde la barra de escribir, desde el borde, con dos dedos.
     barra = p.locator("#formulario .pildora").bounding_box()

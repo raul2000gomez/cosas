@@ -2117,6 +2117,12 @@
     document.addEventListener('visibilitychange', () => { if (document.hidden) cancelarDictado(); });
     // iOS solo aplica :active al tocar si existe algún oyente táctil (pasivo: no frena nada).
     document.addEventListener('touchstart', () => {}, { passive: true });
+    // El anillo de foco, solo con el teclado (styles.css): se apaga al tocar y vuelve con la primera tecla
+    // que no sea escribir en un campo.
+    document.addEventListener('pointerdown', () => raiz.setAttribute('data-puntero', ''), { capture: true, passive: true });
+    document.addEventListener('keydown', (evento) => {
+      if (evento.key === 'Tab' || !esCampoDeTexto(evento.target)) raiz.removeAttribute('data-puntero');
+    }, true);
 
     iniciarTeclado();
     iniciarNavegacion();

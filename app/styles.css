@@ -145,6 +145,12 @@ button {
   outline-offset: 3px;
 }
 
+/* El anillo de foco es para el teclado. Tras tocar la pantalla (data-puntero, lo pone app.js hasta la
+   siguiente tecla), el foco que coloca la app al cambiar de vista no se marca: deslizar y volver
+   dejaba un aro en el botón de la esquina (iPhone y Chrome lo enseñan con el foco por programa). */
+:root[data-puntero] :focus-visible,
+:root[data-puntero] .muestra input:focus-visible + .muestra-color { outline-style: none; }
+
 ::selection { background: var(--tinta); color: var(--fondo); }
 
 /* ---------- Vistas ---------- */
@@ -816,12 +822,17 @@ button {
   outline-offset: 8px;
 }
 
-/* Navegadores sin :has(): el anillo de foco se muestra con cualquier foco. */
+/* Aparte: un navegador sin :has() descartaría la regla entera. */
+:root[data-puntero] .rueda:has(:focus-visible) { outline-style: none; }
+
+/* Navegadores sin :has(): el anillo de foco se muestra con cualquier foco (con el teclado). */
 @supports not selector(:has(*)) {
   .rueda:focus-within {
     outline: 3px solid var(--tinta);
     outline-offset: 8px;
   }
+
+  :root[data-puntero] .rueda:focus-within { outline-style: none; }
 }
 
 .personalizado {
