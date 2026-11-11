@@ -13,10 +13,11 @@
 
    Aquí también se vigilan las novedades de Cosas con y Cosas de (vigilarNovedades): el punto verde de sus
    iconos en la pantalla principal. Y se da la sesión con la que este dispositivo recibe sus avisos
-   (sesionDeAvisos): las notificaciones.
+   (sesionDeAvisos): las notificaciones. Con esa misma sesión, los recordatorios del grupo Recordar se
+   llevan a la función de avisos, que es quien avisa a su hora (sincronizarRecordatorios).
 
-   Sin efectos al importarlo: Firebase se carga la primera vez que se pide (conectar, vigilarNovedades o
-   sesionDeAvisos). */
+   Sin efectos al importarlo: Firebase se carga la primera vez que se pide (conectar, vigilarNovedades,
+   sesionDeAvisos o sincronizarRecordatorios). */
 
 const VERSION_SDK = '12.4.0';
 const CDN = `https://www.gstatic.com/firebasejs/${VERSION_SDK}/`;
@@ -416,4 +417,239 @@ export async function sesionDeAvisos(intento = 0) {
   if (!autenticacion.currentUser) await sdkAuth.signInAnonymously(autenticacion);
   const usuario = autenticacion.currentUser;
   return { uid: usuario.uid, token: () => usuario.getIdToken() };
+}
+
+// ---------- Recordatorios (el grupo fijo Recordar) ----------
+
+/*
+ * Lo que se apunta en Recordar puede llevar un recordatorio, y quien avisa a su hora es la función de avisos
+ * (netlify/functions): guarda, de cada sesión, { nacido, v, zona, general, cosas: { id: { texto, hecha, r } } }
+ * (/api/avisos/recordar). No van en Firestore (sus reglas solo admiten cosas, grupos y ajustes), así que este es
+ * también el camino por el que los recordatorios llegan a otro dispositivo con la misma cuenta.
+ *
+ * Como con las cosas, se recuerda lo último en que este dispositivo y la función coincidían (la «base») y se junta
+ * cosa a cosa: lo que solo cambió allí se trae (un «Hecho» pulsado en un aviso, un recordatorio puesto en otro
+ * dispositivo); lo que cambió aquí se sube; si cambió en los dos, gana este dispositivo, pero campo a campo: cambiar
+ * aquí la hora de una cosa no deshace el «Hecho» que se le dio en su aviso. A la función solo se le manda lo que
+ * cambia (qué poner y qué quitar: lo que no se nombra, ni se toca), y solo lo acepta sobre su última versión
+ * («siV»): si entretanto cambió (409), se vuelve a juntar con lo que tenga.
+ *
+ * «nacido» dice de qué documento es la base: si la función ya no tiene aquel (lo borró «olvidar», o caducó) y tiene
+ * otro, o ninguno, la base no vale. Entonces se junta como la primera vez: lo de los dos sitios, y sin dar por
+ * quitado aquí nada de lo que allí falte.
+ */
+const ESPERA_RECORDATORIOS = 15000;
+const VUELTAS_RECORDATORIOS = 4;
+
+const firmaDe = (valor) => JSON.stringify(valor === undefined ? null : valor);
+
+/** Las cosas con recordatorio de un objeto { id: { texto, hecha, r } }, como Map y con su forma exacta (lo que no vale, fuera). */
+function recordadasDe(brutas, recordatorio) {
+  const cosas = new Map();
+  for (const [id, bruta] of Object.entries(brutas && typeof brutas === 'object' ? brutas : {})) {
+    if (!bruta || typeof bruta !== 'object' || !esTexto(bruta.texto) || typeof bruta.hecha !== 'boolean') continue;
+    const r = recordatorio(bruta.r);
+    if (r) cosas.set(id, { texto: bruta.texto, hecha: bruta.hecha, r });
+  }
+  return cosas;
+}
+
+/**
+ * Junta lo de aquí («local»), la base y lo de la función («servidor»): cada uno, { general, cosas: Map }; sin base
+ * que valga (la primera vez, o si la función ya tiene otro documento), null. «conocidas» son las cosas que están en
+ * Recordar en este dispositivo. Devuelve:
+ *   parche   → { general (solo si cambia; null lo quita), poner: { id: cosa }, quitar: [id] } con lo que hay que
+ *              decirle a la función, o null si ya lo tiene todo;
+ *   aplicar  → { general (undefined: sin cambio), cosas: [[id, cosa | null]] } con lo que hay que traer aquí;
+ *   base     → { general, cosas: Map } con la base nueva: lo que la función tendrá de las cosas de este dispositivo.
+ * Lo que la función tiene de cosas que aquí aún no han llegado (las puso otro dispositivo) ni se toca ni se apunta:
+ * se adoptará cuando lleguen.
+ */
+export function reconciliarRecordatorios(local, base, servidor, conocidas) {
+  const poner = {};
+  const quitar = [];
+  const cosas = new Map();
+  const aplicar = [];
+  const ids = new Set([...local.cosas.keys(), ...(base ? base.cosas.keys() : []), ...servidor.cosas.keys()]);
+  for (const id of ids) {
+    const l = local.cosas.get(id);
+    const b = base ? base.cosas.get(id) : undefined;
+    const s = servidor.cosas.get(id);
+    if (!l && !b) {
+      // Solo la tiene la función: su recordatorio se puso en otro dispositivo.
+      if (!conocidas.has(id)) continue;
+      aplicar.push([id, s]);
+      cosas.set(id, s);
+    } else if (!l) {
+      // Aquí se le quitó el recordatorio (o la cosa ya no está en Recordar): se quita también allí, texto incluido.
+      if (s) quitar.push(id);
+    } else if (!s) {
+      // La función no la tiene: o se lo quitaron en otro dispositivo (y aquí no ha cambiado), o es de aquí y se sube.
+      if (b && firmaDe(l) === firmaDe(b)) {
+        aplicar.push([id, null]);
+      } else {
+        poner[id] = l;
+        cosas.set(id, l);
+      }
+    } else {
+      // En los dos sitios: de cada campo, lo que aquí no ha cambiado desde la base toma lo de la función. Sin base
+      // (la primera vez que este dispositivo ve esa cosa allí), hecha en cualquiera de los dos es hecha: un «Hecho»
+      // pulsado en un aviso no se deshace por llegar de nuevas.
+      const mezcla = {
+        texto: l.texto,
+        hecha: b ? (l.hecha === b.hecha ? s.hecha : l.hecha) : l.hecha || s.hecha,
+        r: b && firmaDe(l.r) === firmaDe(b.r) ? s.r : l.r,
+      };
+      cosas.set(id, mezcla);
+      if (firmaDe(mezcla) !== firmaDe(s)) poner[id] = mezcla;
+      if (firmaDe(mezcla) !== firmaDe(l)) aplicar.push([id, mezcla]);
+    }
+  }
+  // El de todas: con base, manda quien lo cambió desde ella (los dos: este dispositivo); sin ella, el de aquí y, si aquí no hay, el de allí.
+  let general = local.general || servidor.general;
+  if (base) general = firmaDe(local.general) === firmaDe(base.general) ? servidor.general : local.general;
+  const cambiaGeneral = firmaDe(general) !== firmaDe(servidor.general);
+  const hayParche = cambiaGeneral || quitar.length > 0 || Object.keys(poner).length > 0;
+  return {
+    parche: hayParche ? { ...(cambiaGeneral ? { general } : {}), poner, quitar } : null,
+    aplicar: { general: firmaDe(general) === firmaDe(local.general) ? undefined : general, cosas: aplicar },
+    base: { general, cosas },
+  };
+}
+
+/** La base guardada, si es de esta sesión y se entiende; si no, null (la primera vez, o tras entrar con otra cuenta). */
+function baseDeRecordatorios(guardada, uid, recordatorio) {
+  const esSuya = guardada && typeof guardada === 'object' && guardada.uid === uid && Number.isInteger(guardada.v) && guardada.v >= 0;
+  if (!esSuya) return null;
+  return {
+    nacido: esTexto(guardada.nacido) ? guardada.nacido : null,
+    v: guardada.v,
+    zona: esTexto(guardada.zona) ? guardada.zona : null,
+    zonaDeLaFuncion: esTexto(guardada.zonaDeLaFuncion) ? guardada.zonaDeLaFuncion : null,
+    general: recordatorio(guardada.general),
+    cosas: recordadasDe(guardada.cosas, recordatorio),
+  };
+}
+
+/** Lo que responde la función ({ nacido, v, zona, general, cosas }), o null si no es eso. */
+function recordatoriosDelServidor(datos, recordatorio) {
+  if (!datos || typeof datos !== 'object' || !Number.isInteger(datos.v) || datos.v < 0 || !datos.cosas || typeof datos.cosas !== 'object') return null;
+  return {
+    nacido: esTexto(datos.nacido) && datos.nacido ? datos.nacido : null,
+    v: datos.v,
+    zona: esTexto(datos.zona) && datos.zona ? datos.zona : null,
+    general: recordatorio(datos.general),
+    cosas: recordadasDe(datos.cosas, recordatorio),
+  };
+}
+
+/** ¿Sigue valiendo la base ante lo que tiene la función? No, si aquel documento ya no es este o ha vuelto atrás. */
+const baseAlDia = (base, servidor) => Boolean(base) && base.nacido === servidor.nacido && servidor.v >= base.v;
+
+/**
+ * La zona horaria que tiene que quedar en la función: las horas de los recordatorios son las del reloj de quien los
+ * puso. La pone el primer dispositivo que guarda algo y solo la cambia un dispositivo cuya propia zona ha cambiado
+ * desde la última vez (un viaje con el móvil): otro dispositivo, en otra zona o con un navegador que no dice la suya,
+ * no mueve la hora de todos los avisos por guardar un recordatorio.
+ */
+function zonaParaLaFuncion(base, servidor, zona) {
+  if (servidor.nacido === null) return zona; // Aún no hay documento (su «UTC» es de relleno): la pone este dispositivo.
+  if (base && base.zona !== null && base.zona !== zona) return zona;
+  return servidor.zona || zona;
+}
+
+/** Una llamada con la sesión a la función de avisos: { estado, datos }. Lanza si no hay red o tarda demasiado. */
+async function pedirAvisos(api, accion, sesion, metodo, cuerpo) {
+  const control = new AbortController();
+  const temporizador = setTimeout(() => control.abort(), ESPERA_RECORDATORIOS);
+  try {
+    const respuesta = await fetch(`${api}${accion}`, {
+      method: metodo,
+      headers: { Authorization: `Bearer ${await sesion.token()}`, ...(cuerpo ? { 'Content-Type': 'application/json' } : {}) },
+      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+      signal: control.signal,
+    });
+    return { estado: respuesta.status, datos: await respuesta.json().catch(() => null) };
+  } finally {
+    clearTimeout(temporizador);
+  }
+}
+
+/**
+ * Una ronda con la función de avisos. «app» da:
+ *   api                 → la dirección de la función (…/api/avisos/);
+ *   leer                → si hay que preguntarle antes qué tiene (si no, se parte de la base y solo se le escribe);
+ *   zona                → la zona horaria de este dispositivo (ver zonaParaLaFuncion);
+ *   recordatorio(bruto) → un recordatorio con su forma exacta, o null;
+ *   local()             → lo de aquí ahora: { general, cosas: { id: { texto, hecha, r } } };
+ *   firma()             → una firma de lo de aquí (se guarda con la base: mientras no cambie, no hay nada que contar);
+ *   conocidas()         → Set con los ids de las cosas que están en Recordar en este dispositivo;
+ *   base() y guardarBase(base) → lo último en que coincidían este dispositivo y la función;
+ *   aplicar({ general, cosas }) → lo que llega de la función (ver reconciliarRecordatorios).
+ * Devuelve { uid } (la sesión con la que se ha hablado) si la ronda acaba bien, o null si no (se repetirá otra vez).
+ */
+export async function sincronizarRecordatorios(app, intento = 0) {
+  const sesion = await sesionDeAvisos(intento);
+  if (!sesion) return null;
+  const preguntar = async () => {
+    const leido = await pedirAvisos(app.api, 'recordar', sesion, 'GET');
+    return leido.estado === 200 ? recordatoriosDelServidor(leido.datos, app.recordatorio) : null;
+  };
+  let base = baseDeRecordatorios(app.base(), sesion.uid, app.recordatorio);
+  // Sin preguntar, la función tiene lo que dice la base; sin base, no queda otra que preguntarle.
+  let servidor = base && !app.leer ? { nacido: base.nacido, v: base.v, zona: base.zonaDeLaFuncion, general: base.general, cosas: base.cosas } : await preguntar();
+  for (let vuelta = 0; vuelta < VUELTAS_RECORDATORIOS && servidor; vuelta += 1) {
+    if (!baseAlDia(base, servidor)) base = null;
+    const { general, cosas } = app.local();
+    const resultado = reconciliarRecordatorios({ general, cosas: new Map(Object.entries(cosas)) }, base, servidor, app.conocidas());
+    if (resultado.aplicar.cosas.length > 0 || resultado.aplicar.general !== undefined) app.aplicar(resultado.aplicar);
+    // La firma de lo de aquí tal como se va a enviar: lo que cambie mientras se espera la respuesta es para la ronda siguiente.
+    const firma = app.firma();
+    const zona = zonaParaLaFuncion(base, servidor, app.zona);
+    // Aunque no cambie nada más, si este dispositivo ha cambiado de zona horaria la función tiene que saberlo.
+    const cambiaZona = servidor.nacido !== null && zona !== servidor.zona;
+    let { nacido, v } = servidor;
+    if (resultado.parche || cambiaZona) {
+      const respuesta = await pedirAvisos(app.api, 'recordar', sesion, 'POST', { siV: servidor.v, zona, ...(resultado.parche || {}) });
+      if (respuesta.estado === 409) {
+        // Entretanto ha cambiado allí (otro dispositivo, o un «Hecho» en un aviso): se junta otra vez con lo que tiene.
+        servidor = recordatoriosDelServidor(respuesta.datos, app.recordatorio);
+        continue;
+      }
+      if (respuesta.estado !== 200 || !respuesta.datos || !Number.isInteger(respuesta.datos.v)) return null;
+      nacido = esTexto(respuesta.datos.nacido) && respuesta.datos.nacido ? respuesta.datos.nacido : null;
+      if (servidor.nacido !== null && nacido !== servidor.nacido) {
+        // Se ha escrito sobre un documento que no era el que se creía (aquel se borró y hay otro): se mira qué tiene y se junta de nuevas.
+        base = null;
+        servidor = await preguntar();
+        continue;
+      }
+      v = respuesta.datos.v;
+      // Lo que la función no admite («rechazadas»: no le caben más) queda en la base como enviado: no se le repite sin fin.
+    }
+    app.guardarBase({
+      uid: sesion.uid,
+      nacido,
+      v,
+      zona: app.zona,
+      zonaDeLaFuncion: resultado.parche || cambiaZona ? zona : servidor.zona,
+      firma,
+      general: resultado.base.general,
+      cosas: Object.fromEntries(resultado.base.cosas),
+    });
+    return { uid: sesion.uid };
+  }
+  return null;
+}
+
+/**
+ * Borra de la función de avisos los recordatorios de esta sesión (y nada más). Lo pide la app al desactivar las
+ * notificaciones sin cuenta de Google: ya no hay a quién avisar, y el texto de las cosas no tiene por qué seguir allí.
+ * Devuelve si la función lo ha hecho.
+ */
+export async function olvidarRecordatorios(api, intento = 0) {
+  const sesion = await sesionDeAvisos(intento);
+  if (!sesion) return false;
+  const respuesta = await pedirAvisos(api, 'olvidar', sesion, 'POST', {});
+  return respuesta.estado === 200;
 }

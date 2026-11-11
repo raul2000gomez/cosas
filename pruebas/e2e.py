@@ -51,7 +51,8 @@ PALETA = [
 # Lo único que la app dice sobre la privacidad del dictado: el audio puede salir del móvil (Google en Android, Apple en iOS).
 AYUDA_DICTADO = "El dictado usa el servicio de voz de tu móvil, que puede enviar el audio a Google o Apple."
 AYUDA_SESION = ("Inicia sesión con Google para tener tus cosas, tus grupos y tus listas de Cosas con y Cosas de en todos tus dispositivos. "
-                "Sin sesión, todo se queda en este dispositivo.")
+                "Sin sesión, todo se queda en este dispositivo, menos lo que tenga recordatorio en Recordar: "
+                "eso se guarda también en el servidor de Cosas para poder avisarte.")
 CLAVE_CUENTA = "cosascon:cuenta"  # La cuenta de Google con la que se entró en Cosas con / Cosas de / Tu cuenta.
 DETALLE = False
 
@@ -333,9 +334,10 @@ JS_UTIL = r"""
   const redondear = (c) => c.slice(0, 3).map((v) => Math.round(v));
 """
 
+# El aviso se busca por su id: no es el único role="status" de la página (la nota de Recordar también lo es, y va antes).
 JS_TOAST = r"""
 () => {
-  const t = document.querySelector('[role="status"]');
+  const t = document.querySelector('#toast[role="status"]');
   if (!t) return null;
   const cs = getComputedStyle(t);
   const r = t.getBoundingClientRect();
@@ -943,14 +945,14 @@ def t_toast_guardado(e):
     comprobar(aviso["x"] >= 0 and aviso["y"] >= 0 and aviso["x"] + aviso["ancho"] <= e.ancho
               and aviso["y"] + aviso["alto"] <= e.alto, f"El aviso se sale de la pantalla: {aviso}")
     solapes = p.evaluate("""() => {
-        const t = document.querySelector('[role="status"]').getBoundingClientRect();
+        const t = document.querySelector('#toast[role="status"]').getBoundingClientRect();
         const choca = (sel) => { const r = document.querySelector(sel).getBoundingClientRect();
             return !(r.right <= t.left || r.left >= t.right || r.bottom <= t.top || r.top >= t.bottom); };
         return { barra: choca('#formulario .pildora'), lista: choca('#abrir-lista'), ajustes: choca('#abrir-ajustes') };
     }""")
     igual(solapes, {"barra": False, "lista": False, "ajustes": False}, "Solapes del aviso")
     # El aviso lleva pointer-events:none: que nada lo tapa se comprueba con píxeles reales.
-    fondo_aviso = rgb_css(p.evaluate("() => getComputedStyle(document.querySelector('[role=status]')).backgroundColor"))
+    fondo_aviso = rgb_css(p.evaluate("() => getComputedStyle(document.querySelector('#toast[role=status]')).backgroundColor"))
     medio = aviso["y"] + aviso["alto"] / 2
     pintado = muestrear(p, [(aviso["x"] + 7, medio), (aviso["x"] + aviso["ancho"] - 8, medio)])
     igual(pintado, [fondo_aviso] * 2, "El aviso no se ve en la captura (algo lo tapa)")
@@ -1063,7 +1065,7 @@ def t_check_alterna(e):
     igual(boton.get_attribute("aria-label"), "Marcar como pendiente", "aria-label del check hecho")
     esperar(p, "(b) => getComputedStyle(b.querySelector('svg')).stroke === 'rgb(255, 255, 255)'", arg=boton.element_handle(), que="el icono del check hecho es blanco")
     estilo = fila.locator("p").evaluate("(t) => { const cs = getComputedStyle(t); return { linea: cs.textDecorationLine, opacidad: parseFloat(cs.opacity) }; }")
-    comprobar("line-through" in estilo["linea"], f"El texto hecho no va tachado: {estilo}")
+    igual(estilo["linea"], "none", "El texto hecho va tachado (hecha es el check verde y el texto atenuado, sin tachar)")
     p.wait_for_timeout(300)
     opacidad = fila.locator("p").evaluate("(t) => parseFloat(getComputedStyle(t).opacity)")
     comprobar(0.3 <= opacidad < 1, f"El texto hecho no baja de opacidad: {opacidad}")
@@ -1079,8 +1081,8 @@ def t_check_alterna(e):
     comprobar_gris(boton, p, "de vuelta a pendiente")
     igual(boton.get_attribute("aria-label"), "Marcar como hecha", "aria-label al volver a pendiente")
     igual(leer_estado(p)["cosas"][0]["hecha"], False, "hecha vuelve a false en el almacenamiento")
-    linea = fila.locator("p").evaluate("(t) => getComputedStyle(t).textDecorationLine")
-    comprobar("line-through" not in linea, "El texto sigue tachado al volver a pendiente")
+    esperar(p, "(t) => getComputedStyle(t).opacity === '1'", arg=fila.locator("p").element_handle(), que="el texto recupera su opacidad al volver a pendiente")
+    igual(fila.locator("p").evaluate("(t) => getComputedStyle(t).textDecorationLine"), "none", "El texto va tachado al volver a pendiente")
 
 
 @prueba("check pendiente se lee gris sobre cualquier fondo")
@@ -1424,7 +1426,7 @@ JS_CONTRASTES = "() => {" + JS_UTIL + r"""
   const q = (s) => document.querySelector(s);
   const svg = (s) => q(s + ' svg') || q(s);
   const seleccionada = [...document.querySelectorAll('[role=radiogroup] label')].find((l) => l.querySelector('input').checked);
-  const toastEl = q('[role="status"]');
+  const toastEl = q('#toast[role="status"]');
   return {
     tono: document.documentElement.dataset.tono,
     texto: {
@@ -2024,7 +2026,7 @@ JS_RECORTADO = "(el) => el.scrollWidth > el.clientWidth + 0.5 || el.scrollHeight
 JS_CAJAS_AVISO = r"""
 () => {
   const caja = (el) => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, d: r.right, b: r.bottom }; };
-  const aviso = document.querySelector('[role="status"]');
+  const aviso = document.querySelector('#toast[role="status"]');
   const texto = aviso.querySelector('span');
   const boton = aviso.querySelector('button');
   return {
@@ -4743,7 +4745,8 @@ def t_pagina_grupo_anadir(e):
         comprobar(caja_mas["width"] >= 44 and abs(caja_mas["width"] - caja_mas["height"]) < 0.5 and mas.locator("svg").count() == 1, f"«+» no es redondo de 44px con icono: {caja_mas}")
         comprobar(texto["x"] + texto["width"] <= caja_mas["x"] + 0.5 and caja_fila["x"] + caja_fila["width"] - (caja_mas["x"] + caja_mas["width"]) <= 12, "«+» no está a la derecha del texto")
         igual(mas.evaluate("(b) => getComputedStyle(b).borderTopLeftRadius"), "50%", "border-radius de «+»")
-    comprobar("line-through" in p.locator("#lista-candidatas > li").last.locator(".texto").evaluate("(t) => getComputedStyle(t).textDecorationLine"), "Las hechas del desplegable no se ven tachadas")
+    hecha = p.locator("#lista-candidatas > li").last.locator(".texto").evaluate("(t) => { const cs = getComputedStyle(t); return { linea: cs.textDecorationLine, opacidad: parseFloat(cs.opacity) }; }")
+    comprobar(hecha["linea"] == "none" and 0.3 <= hecha["opacidad"] < 1, f"Las hechas del desplegable no se ven atenuadas y sin tachar: {hecha}")
     mas_de(p, "Vieja suelta").tap()
     esperar_pagina_grupo(p, "tras añadir «Vieja suelta»", miembros=["Vieja suelta"], candidatas=["Nueva suelta", "Hecha antes", "Hecha suelta"], desplegable=True, vacio=False)
     igual(next(c["grupo"] for c in leer_estado(p)["cosas"] if c["texto"] == "Vieja suelta"), "g-7", "La cosa añadida no cambia de grupo en el almacenamiento")
@@ -5941,7 +5944,7 @@ def t_novedades_puntos(e):
 CLAVE_AVISOS = "cosas:avisos"
 CLAVE_VAPID = bytes(range(1, 66))  # La clave pública de mentira de la función de avisos (65 bytes, como una de verdad).
 ENDPOINT_PRUEBA = "https://fcm.googleapis.com/fcm/send/"
-PARA_QUE_AVISOS = "te avisamos cuando alguien añada una cosa a tus listas de Cosas con y Cosas de."
+PARA_QUE_AVISOS = "te recordamos lo que tengas en Recordar y te avisamos cuando alguien añada una cosa a tus listas de Cosas con y Cosas de."
 AYUDA_AVISOS = {
     "apagados": f"Si las activas, {PARA_QUE_AVISOS}",
     "activos": f"Activadas en este dispositivo: {PARA_QUE_AVISOS}",

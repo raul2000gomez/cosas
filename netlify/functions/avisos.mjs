@@ -1,40 +1,61 @@
-/* Cosas · avisos: notificaciones cuando alguien añade una cosa a una lista de Cosas con o de Cosas de.
+/* Cosas · avisos: notificaciones cuando alguien añade una cosa a una lista de Cosas con o de Cosas de, y los
+   recordatorios de las cosas del grupo Recordar de la app.
 
    Una función de Netlify (https://cosas-app.netlify.app/api/avisos/…), sin servidor propio ni claves que
    guardar a mano:
-     GET  clave   → la clave pública (VAPID) con la que cada dispositivo se suscribe.
-     POST alta    → este dispositivo avisa a esta sesión.                          { suscripcion }
-     POST baja    → deja de avisarla.                                              { endpoint }
-     POST avisar  → acabo de añadir esta cosa: avisa a la demás gente de la lista.  { lista, cosa }
+     GET  clave     → la clave pública (VAPID) con la que cada dispositivo se suscribe.
+     POST alta      → este dispositivo avisa a esta sesión.                            { suscripcion }
+     POST baja      → deja de avisarla.                                                { endpoint }
+     POST avisar    → acabo de añadir esta cosa: avisa a la demás gente de la lista.    { lista, cosa }
+     GET  recordar  → los recordatorios de esta sesión.                                → { nacido, v, zona, general, cosas }
+     POST recordar  → lo que cambia en ellos, si la app los ha visto en su última versión.
+                      { siV, zona, general?, poner?, quitar? }                         → { nacido, v, rechazadas }
+     POST hecho     → «Hecho» en el aviso de una cosa (lo llama el service worker).     { uid, id, ficha }
+     POST olvidar   → borra los recordatorios de esta sesión.
 
    Quien llama se identifica con su sesión de Firebase (la de Cosas con y Cosas de, anónima o de Google):
    «Authorization: Bearer <token de Firebase>», comprobado con las claves públicas de Google. Para avisar,
    la lista y la cosa se leen de Firestore con ese mismo token, así que mandan las reglas: solo quien está
    en la lista puede leer sus cosas. Y solo se avisa de una cosa suya, recién añadida, y una sola vez.
 
-   Lo guardado vive en Netlify Blobs (almacén «avisos»):
-     vapid                         { publicKey, privateKey }: se crean solas la primera vez.
-     dispositivos/{uid}/{huella}   la suscripción push de uno de los dispositivos de esa persona.
-     suscripciones/{huella}        de quién es ahora ese dispositivo (avisa a una sola sesión).
+   Los recordatorios son de cada sesión: la app guarda aquí los de las cosas de su grupo Recordar (qué cosa, a qué
+   hora y cada cuánto) y la función programada (recordatorios.mjs) avisa de cada una a su hora, a los dispositivos de
+   esa sesión. Desde aquí no sale ningún recordatorio: guardar solo deja la sesión en la agenda de la programada.
+   - «recordar» (POST) es un cambio, no el documento entero: «poner» ({ id: { texto, hecha, r } }) añade o sustituye
+     esas cosas, «quitar» ([id]) las quita y «general» solo viaja si cambia (null lo quita); lo que no se nombra no
+     se toca. Si «siV» no es la versión que hay, 409 con lo mismo que da el GET, y no cambia nada. Una cosa que no
+     vale (o que no cabe: hasta 100 por sesión) no tumba el envío: su id vuelve en «rechazadas». «v» solo sube si
+     cambia algo, así que repetir un envío no hace daño. «nacido» distingue un documento del que se creara después
+     de borrarlo.
+   - «hecho» no lleva sesión (el service worker no la tiene): lleva la ficha que venía en el aviso. Como puede
+     llamarlo cualquiera, lo primero que se mira es lo que ocupa (más de 1000 bytes, 413); y todo lo que no sea una
+     ficha buena es un 403, sin más pistas (no dice si esa sesión o esa cosa existen).
+   - «olvidar» borra el documento de la sesión y nada más (la app lo pide al desactivar las notificaciones en un
+     dispositivo sin cuenta de Google). Una sesión que se queda sin dispositivos a los que avisar se pone sola en
+     pausa; «alta», y leer o guardar los recordatorios, la despiertan.
+
+   Lo guardado vive en Netlify Blobs (almacén «avisos»; ver también ../lib/envio.mjs y ../lib/recordatorios.mjs):
      enviados/{lista}              lo último ya avisado de esa lista: { idCosa: cuándo }. */
 
-import { createHash } from 'node:crypto';
-import { getStore } from '@netlify/blobs';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import webpush from 'web-push';
+import { SERVICIOS_PUSH, almacen, clavesVapid, enviarA, fichaValida, huella, limpiar, olvidar } from '../lib/envio.mjs';
+import { envioDe, esIdDeCosa } from '../lib/recordar.mjs';
+import { despertar, guardarRecordatorios, leerRecordatorios, marcarHecha, olvidarRecordatorios } from '../lib/recordatorios.mjs';
 
 export const config = { path: '/api/avisos/:accion' };
 
 const PROYECTO = 'cosas-info';
 const FIRESTORE = `https://firestore.googleapis.com/v1/projects/${PROYECTO}/databases/(default)/documents`;
 const CLAVES_DE_GOOGLE = createRemoteJWKSet(new URL('https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com'));
-// Solo se envía a los servicios push de los navegadores (Chrome y Android, Safari, Firefox, Edge): a ninguna otra dirección.
-const SERVICIOS_PUSH = ['fcm.googleapis.com', 'android.googleapis.com', 'push.apple.com', 'push.services.mozilla.com', 'notify.windows.com'];
 const ID = /^[A-Za-z0-9]{1,40}$/;
 const esId = (v) => typeof v === 'string' && ID.test(v);
 const RECIENTE = 15 * 60 * 1000; // Una cosa se avisa si se añadió hace menos de esto.
 const MAX_DISPOSITIVOS = 20;
 const LINEA_MAX = 120;
+// Lo que puede ocupar lo que se envía, en bytes.
+const MAX_CUERPO = 5000;
+const MAX_CUERPO_RECORDAR = 100000; // Hasta 100 cosas con su texto.
+const MAX_CUERPO_HECHO = 1000; // Una sesión, un id y una ficha: la única llamada que no pide sesión, la más corta.
 const CORS = {
   'Access-Control-Allow-Origin': '*', // Sin cookies: lo que identifica es el token, y cosas.info llama desde otro dominio.
   'Access-Control-Allow-Headers': 'Authorization, Content-Type',
@@ -54,18 +75,11 @@ const respuesta = (estado, datos) => new Response(JSON.stringify(datos), {
   headers: { ...CORS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
 });
 
-const almacen = () => getStore({ name: 'avisos', consistency: 'strong' });
-const huella = (endpoint) => createHash('sha256').update(endpoint).digest('hex').slice(0, 40);
-
-function limpiar(texto, max = 40) {
-  if (typeof texto !== 'string') return '';
-  const t = texto.replace(/\s+/g, ' ').trim();
-  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
-}
-
-async function cuerpo(peticion) {
+/** Lo enviado, como objeto. Si dice lo que ocupa y es demasiado, ni se lee; y leído, se mide de verdad. */
+async function cuerpo(peticion, maximo = MAX_CUERPO) {
+  if (Number(peticion.headers.get('content-length')) > maximo) throw new Rechazo(413, 'demasiado-grande');
   const texto = await peticion.text();
-  if (texto.length > 5000) throw new Rechazo(413, 'demasiado-grande');
+  if (Buffer.byteLength(texto) > maximo) throw new Rechazo(413, 'demasiado-grande');
   try {
     const datos = JSON.parse(texto);
     if (datos && typeof datos === 'object') return datos;
@@ -110,22 +124,6 @@ async function leer(ruta, token) {
   return valorDe({ mapValue: { fields: (await r.json()).fields || {} } });
 }
 
-// ---------- Claves VAPID ----------
-
-let vapid = null;
-
-/** Las del almacén; la primera vez se crean (si dos llamadas lo intentan a la vez, se quedan las que llegaron antes). */
-async function clavesVapid(store) {
-  if (vapid) return vapid;
-  let claves = await store.get('vapid', { type: 'json' });
-  if (!claves) {
-    await store.setJSON('vapid', webpush.generateVAPIDKeys(), { onlyIfNew: true });
-    claves = await store.get('vapid', { type: 'json' });
-  }
-  vapid = claves;
-  return claves;
-}
-
 // ---------- Acciones ----------
 
 async function clave() {
@@ -157,12 +155,9 @@ async function alta(peticion) {
   if (blobs.length >= MAX_DISPOSITIVOS && !blobs.some((b) => b.key.endsWith(`/${h}`))) throw new Rechazo(429, 'demasiados-dispositivos');
   await store.setJSON(`dispositivos/${uid}/${h}`, { ...suscripcion, desde: Date.now() });
   await store.set(`suscripciones/${h}`, uid);
+  // Si sus recordatorios estaban en pausa por no tener a quién avisar, ya lo tienen. Si esto falla, el alta vale igual.
+  await despertar(store, uid).catch((error) => console.warn('Al despertar los recordatorios', error));
   return respuesta(200, { ok: true });
-}
-
-async function olvidar(store, uid, h) {
-  await store.delete(`dispositivos/${uid}/${h}`);
-  if ((await store.get(`suscripciones/${h}`)) === uid) await store.delete(`suscripciones/${h}`);
 }
 
 async function baja(peticion) {
@@ -186,29 +181,6 @@ async function marcarAvisada(store, lista, cosa) {
     if (modified) return true;
   }
   throw new Error('No se pudo apuntar el aviso');
-}
-
-async function enviarA(store, claves, uid, aviso) {
-  const { blobs } = await store.list({ prefix: `dispositivos/${uid}/` });
-  const resultados = await Promise.all(blobs.map(async ({ key }) => {
-    const suscripcion = await store.get(key, { type: 'json' });
-    if (!suscripcion) return 0;
-    try {
-      await webpush.sendNotification(suscripcion, aviso, {
-        vapidDetails: { subject: 'https://cosas.info', publicKey: claves.publicKey, privateKey: claves.privateKey },
-        TTL: 24 * 60 * 60,
-        urgency: 'normal',
-        timeout: 8000,
-      });
-      return 1;
-    } catch (error) {
-      // 404 y 410: esa suscripción ya no existe (se desactivaron o se borró la app): se olvida.
-      if (error && (error.statusCode === 404 || error.statusCode === 410)) await olvidar(store, uid, key.split('/').pop());
-      else console.warn('No se pudo enviar un aviso', error && error.statusCode, error && error.body);
-      return 0;
-    }
-  }));
-  return resultados.reduce((a, b) => a + b, 0);
 }
 
 async function avisar(peticion) {
@@ -240,15 +212,59 @@ async function avisar(peticion) {
   return respuesta(200, { enviados });
 }
 
-const ACCIONES = { clave: ['GET', clave], alta: ['POST', alta], baja: ['POST', baja], avisar: ['POST', avisar] };
+// ---------- Recordatorios ----------
+
+async function leerRecordar(peticion) {
+  const { uid } = await quienLlama(peticion);
+  return respuesta(200, await leerRecordatorios(almacen(), uid));
+}
+
+async function guardarRecordar(peticion) {
+  const { uid } = await quienLlama(peticion);
+  const envio = envioDe(await cuerpo(peticion, MAX_CUERPO_RECORDAR));
+  if (!envio) throw new Rechazo(400, 'recordatorios');
+  const resultado = await guardarRecordatorios(almacen(), uid, envio, Date.now());
+  // 409: la app escribía sobre una versión que ya no es la que hay; lleva lo que hay ahora para que vuelva a mirar.
+  if (resultado.conflicto) return respuesta(409, resultado.conflicto);
+  return respuesta(200, resultado);
+}
+
+/**
+ * Lo llama el service worker al pulsar «Hecho» en un aviso: sin sesión, con la ficha que venía en ese aviso. Como
+ * puede llamarlo cualquiera, lo primero es el tamaño; y repetirlo no cambia nada.
+ */
+async function hecho(peticion) {
+  const { uid, id, ficha } = await cuerpo(peticion, MAX_CUERPO_HECHO);
+  const store = almacen();
+  if (!esId(uid) || !esIdDeCosa(id) || !(await fichaValida(store, uid, id, ficha))) throw new Rechazo(403, 'ficha');
+  await marcarHecha(store, uid, id);
+  return respuesta(200, { ok: true });
+}
+
+async function olvidarRecordar(peticion) {
+  const { uid } = await quienLlama(peticion);
+  await olvidarRecordatorios(almacen(), uid);
+  return respuesta(200, { ok: true });
+}
+
+const ACCIONES = {
+  clave: { GET: clave },
+  alta: { POST: alta },
+  baja: { POST: baja },
+  avisar: { POST: avisar },
+  recordar: { GET: leerRecordar, POST: guardarRecordar },
+  hecho: { POST: hecho },
+  olvidar: { POST: olvidarRecordar },
+};
 
 export default async function (peticion, contexto) {
   if (peticion.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
-  const accion = ACCIONES[contexto.params && contexto.params.accion];
+  const nombre = contexto.params && contexto.params.accion;
+  const accion = Object.hasOwn(ACCIONES, nombre) ? ACCIONES[nombre] : null;
   if (!accion) return respuesta(404, { error: 'no-existe' });
-  if (peticion.method !== accion[0]) return respuesta(405, { error: 'metodo' });
+  if (!Object.hasOwn(accion, peticion.method)) return respuesta(405, { error: 'metodo' });
   try {
-    return await accion[1](peticion);
+    return await accion[peticion.method](peticion);
   } catch (error) {
     if (error instanceof Rechazo) return respuesta(error.estado, { error: error.message });
     console.error(error);

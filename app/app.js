@@ -19,6 +19,28 @@
   const CLAVE_LISTAS = 'cosascon:ids';
   // Las notificaciones de este dispositivo ({ uid, endpoint, en }); sin ellas, no existe. Ver «Notificaciones».
   const CLAVE_AVISOS = 'cosas:avisos';
+  // Los recordatorios de las cosas del grupo Recordar: { general, cosas: { idCosa: recordatorio }, base, activar }. Van
+  // en su propia clave: una versión anterior de la app aún abierta (que no los conoce) no los pierde al guardar lo suyo.
+  const CLAVE_RECORDAR = 'cosas:recordar';
+  // El grupo fijo. Para lo guardado y para la nube es un grupo más, con este id (una versión anterior lo enseña como
+  // tal y no pierde lo que tiene dentro); aquí va aparte, arriba de la lista, y ni se borra ni se edita. Solo se
+  // guarda desde que tiene algo: mientras tanto, la app lo da por puesto (grupoPorId).
+  const ID_RECORDAR = 'recordar';
+  const GRUPO_RECORDAR = Object.freeze({ id: ID_RECORDAR, nombre: 'Recordar', color: null, creada: 1, abierto: false });
+  const FRECUENCIAS = ['dia', 'laborables', 'semana', 'mes'];
+  const HORA_POR_DEFECTO = '09:00';
+  // La función de avisos mira cada cinco minutos a quién le toca: las horas se eligen de cinco en cinco.
+  const PASO_MINUTOS = 5;
+  const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  const ULTIMO_DIA_DE_TODOS = 28; // Del 29 en adelante no todos los meses llegan: avisa el último día.
+  // Lo que admite la función de avisos de una sesión (netlify/lib/recordar.mjs).
+  const MAX_RECORDADAS = 100;
+  const MAX_ID_RECORDADA = 100;
+  // La caché donde el service worker deja lo que pasa con los avisos (sw.js): la app lo lee al abrirse.
+  const DATOS_DE_AVISOS = 'recordar-de-cosas';
+  const AVISADA_RECIENTE = 24 * 60 * 60 * 1000; // Pasado un día, ya no se pregunta por un aviso sin contestar.
+  const RETARDO_RECORDATORIOS = 700; // Los cambios seguidos viajan juntos a la función de avisos.
+  const ENTRE_LECTURAS = 60 * 1000; // Al volver a la app, no se le pregunta a la función más que una vez por minuto.
   const DURACION_AVISO = 1800;
   const DURACION_DESHACER = 4000;
   const DURACION_SALIDA = 220;
@@ -79,6 +101,8 @@
   };
   const titulos = { lista: $('#titulo-lista'), ajustes: $('#titulo-ajustes'), grupo: $('#titulo-grupo') };
   const abridores = { lista: $('#abrir-lista'), ajustes: $('#abrir-ajustes') };
+  const accesoRecordar = $('#acceso-recordar');
+  const cuentaRecordar = $('#cuenta-recordar');
   const zonaLista = $('#zona-lista');
   const listaEl = $('#lista-cosas');
   const vacio = $('#vacio');
@@ -87,6 +111,10 @@
   const campoGrupo = $('#campo-grupo');
   const botonConfirmarGrupo = $('#confirmar-grupo');
   const botonEditarGrupo = $('#editar-grupo');
+  const botonConfigurar = $('#configurar-recordar');
+  const notaRecordar = $('#nota-recordar');
+  const textoNotaRecordar = $('#texto-nota-recordar');
+  const botonNotaRecordar = $('#boton-nota-recordar');
   const zonaGrupo = $('#zona-grupo');
   const cuerpoGrupo = $('#cuerpo-grupo');
   const botonAnadir = $('#anadir-cosas');
@@ -122,10 +150,36 @@
   const formularioEdicion = $('#formulario-edicion');
   const campoNombreGrupo = $('#nombre-grupo');
   const muestrasGrupo = $('#muestras-grupo');
+  const hojaRecordar = $('#hoja-recordar');
+  const veloHojaRecordar = $('#velo-hoja-recordar');
+  const tituloHojaRecordar = $('#titulo-hoja-recordar');
+  const botonCerrarHojaRecordar = $('#cerrar-hoja-recordar');
+  const formularioRecordar = $('#formulario-recordar');
+  const cosaRecordar = $('#cosa-recordar');
+  const alcanceRecordar = $('#alcance-recordar');
+  const elegirRecordar = $('#elegir-recordar');
+  const selectorHora = $('#hora-recordar');
+  const selectorMinuto = $('#minuto-recordar');
+  const diaRecordar = $('#dia-recordar');
+  const mesRecordar = $('#mes-recordar');
+  const selectorDiaMes = $('#dia-mes-recordar');
+  const ayudaDiaMes = $('#ayuda-dia-mes');
+  const resumenRecordar = $('#resumen-recordar');
+  const botonGuardarRecordar = $('#guardar-recordar');
+  const botonQuitarRecordar = $('#quitar-recordar');
+  const ayudaRecordar = $('#ayuda-recordar');
+  const hojaAvisada = $('#hoja-avisada');
+  const veloHojaAvisada = $('#velo-hoja-avisada');
+  const tituloHojaAvisada = $('#titulo-hoja-avisada');
+  const botonCerrarHojaAvisada = $('#cerrar-hoja-avisada');
+  const listaAvisadas = $('#lista-avisadas');
   const toast = $('#toast');
   const plantillaFila = $('#plantilla-fila');
   const plantillaGrupo = $('#plantilla-grupo');
   const plantillaMiembro = $('#plantilla-miembro');
+  const plantillaRecordada = $('#plantilla-recordada');
+  const plantillaElegible = $('#plantilla-elegible');
+  const plantillaAvisada = $('#plantilla-avisada');
   const plantillaCandidata = $('#plantilla-candidata');
   const plantillaMuestra = $('#plantilla-muestra');
   const plantillaToast = $('#plantilla-toast');
@@ -272,6 +326,8 @@
       estadoNuevo.grupos = bruto.grupos
         .map((brutoGrupo) => normalizarGrupo(brutoGrupo, idsVistos))
         .filter(Boolean)
+        // Recordar es siempre Recordar, aunque una versión anterior lo haya renombrado o coloreado.
+        .map((grupo) => (grupo.id === ID_RECORDAR ? { ...GRUPO_RECORDAR } : grupo))
         .sort(porFecha);
     }
     if (Array.isArray(bruto.cosas)) {
@@ -281,6 +337,12 @@
         .map((bruta) => normalizarCosa(bruta, idsVistos))
         .filter(Boolean)
         .sort(porFecha);
+      // Recordar existe siempre: si llegan cosas suyas antes que él (de la nube, por partes), se pone.
+      if (!idsGrupos.has(ID_RECORDAR) && estadoNuevo.cosas.some((cosa) => cosa.grupo === ID_RECORDAR)) {
+        estadoNuevo.grupos.push({ ...GRUPO_RECORDAR });
+        estadoNuevo.grupos.sort(porFecha);
+        idsGrupos.add(ID_RECORDAR);
+      }
       // Una cosa cuyo grupo ya no existe vuelve al nivel superior: no se pierde.
       for (const cosa of estadoNuevo.cosas) if (cosa.grupo !== null && !idsGrupos.has(cosa.grupo)) cosa.grupo = null;
     }
@@ -350,6 +412,7 @@
   /** Guarda el estado; devuelve false si el almacenamiento falla (modo privado, cuota…). */
   function guardarEstado() {
     if (nube) nube.cambio(); // Aunque aquí no se pueda guardar, la nube sí puede llevárselo.
+    programarRecordatorios(); // Y si cambia algo de Recordar (una cosa hecha, una nueva), la función de avisos lo sabrá.
     try {
       window.localStorage.setItem(CLAVE, JSON.stringify(estado));
     } catch (error) {
@@ -393,9 +456,152 @@
 
   const ultimaHecha = () => estado.cosas.reduce((mayor, cosa) => (cosa.hechaEn > mayor ? cosa.hechaEn : mayor), 0);
 
-  const grupoPorId = (id) => estado.grupos.find((grupo) => grupo.id === id) || null;
+  /** El grupo con ese id. Recordar, el grupo fijo, existe siempre: aunque aún no se haya guardado (no tiene nada). */
+  const grupoPorId = (id) => estado.grupos.find((grupo) => grupo.id === id) || (id === ID_RECORDAR ? GRUPO_RECORDAR : null);
+
+  const esRecordar = (grupo) => Boolean(grupo) && grupo.id === ID_RECORDAR;
+
+  /** Los grupos que crea quien usa la app (todos menos Recordar, que va aparte). */
+  const gruposPropios = () => estado.grupos.filter((grupo) => grupo.id !== ID_RECORDAR);
 
   const cosasDe = (grupo) => estado.cosas.filter((cosa) => cosa.grupo === grupo);
+
+  /** Recordar pasa a guardarse (y a viajar a la nube) como un grupo más: va a tener algo dentro. */
+  function asegurarRecordar() {
+    if (estado.grupos.some((grupo) => grupo.id === ID_RECORDAR)) return;
+    estado.grupos.push({ ...GRUPO_RECORDAR });
+    estado.grupos.sort(porFecha);
+  }
+
+  // ---------- Recordatorios (el grupo fijo Recordar) ----------
+
+  /*
+   * Lo que se apunta en Recordar puede llevar un recordatorio: a qué hora y cada cuánto avisar. Se repite siempre,
+   * hasta que la cosa está hecha:
+   *   { hora: 'HH:MM', frec: 'dia' } | { …, frec: 'laborables' } | { …, frec: 'semana', dia: 0..6 } (0 = domingo)
+   *   | { …, frec: 'mes', diaMes: 1..31 } (en los meses más cortos, el último día)
+   * Avisa la función de avisos (netlify/functions), con una notificación por cosa: nube.js le lleva los
+   * recordatorios (y trae los que se pusieron en otro dispositivo con la misma sesión) y sw.js enseña cada aviso
+   * con sus botones «Hecho» y «Mantener».
+   *
+   * «general» es el que se puso para todas: lo sigue toda cosa de Recordar que no tenga otra cosa dicha, también
+   * las que se apunten después o lleguen de otro dispositivo. «cosas» guarda solo lo que una cosa tiene de propio:
+   * su recordatorio, o false si no lo tiene aunque haya uno para todas (se le quitó a ella sola).
+   */
+
+  /** Un recordatorio con su forma exacta (la misma que en la función de avisos: mismos campos, mismo orden), o null. */
+  function recordatorioDe(bruto) {
+    if (!bruto || typeof bruto !== 'object' || typeof bruto.hora !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(bruto.hora) || !FRECUENCIAS.includes(bruto.frec)) return null;
+    const { hora, frec } = bruto;
+    if (frec === 'semana') return Number.isInteger(bruto.dia) && bruto.dia >= 0 && bruto.dia <= 6 ? { hora, frec, dia: bruto.dia } : null;
+    if (frec === 'mes') return Number.isInteger(bruto.diaMes) && bruto.diaMes >= 1 && bruto.diaMes <= 31 ? { hora, frec, diaMes: bruto.diaMes } : null;
+    return { hora, frec };
+  }
+
+  function recordarPorDefecto() {
+    return { general: null, cosas: {}, base: null, activar: false };
+  }
+
+  /** Los recordatorios guardados (lo que no vale se descarta; nunca lanza). */
+  function leerRecordar() {
+    const leido = recordarPorDefecto();
+    try {
+      const bruto = JSON.parse(window.localStorage.getItem(CLAVE_RECORDAR));
+      if (!bruto || typeof bruto !== 'object') return leido;
+      leido.general = recordatorioDe(bruto.general);
+      for (const [id, brutoR] of Object.entries(bruto.cosas && typeof bruto.cosas === 'object' ? bruto.cosas : {})) {
+        const r = brutoR === false ? false : recordatorioDe(brutoR);
+        if (r !== null) leido.cosas[id] = r;
+      }
+      // La base es cosa de nube.js (lo último en que este dispositivo y la función de avisos coincidían): aquí solo se guarda.
+      leido.base = bruto.base && typeof bruto.base === 'object' ? bruto.base : null;
+      // Se dio permiso para las notificaciones pero el alta de este dispositivo se quedó a medias (ver reintentarAvisos).
+      leido.activar = bruto.activar === true;
+    } catch (error) { /* Sin almacenamiento o datos corruptos: sin recordatorios. */ }
+    return leido;
+  }
+
+  let recordar = leerRecordar();
+
+  /** Guarda los recordatorios; devuelve false si el almacenamiento falla. */
+  function escribirRecordar() {
+    try {
+      window.localStorage.setItem(CLAVE_RECORDAR, JSON.stringify(recordar));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /** Los guarda y, si hace falta, se los cuenta a la función de avisos. */
+  function guardarRecordar() {
+    const correcto = escribirRecordar();
+    programarRecordatorios();
+    return correcto;
+  }
+
+  /** ¿Hay algo dicho de esa cosa en particular? (Sin Object.hasOwn: Safari anterior a 15.4 no lo conoce.) */
+  const tieneLoSuyo = (id) => Object.prototype.hasOwnProperty.call(recordar.cosas, id);
+
+  /** El recordatorio de una cosa de Recordar: el suyo, si tiene uno propio (o ninguno, si se le quitó); si no, el de todas. */
+  function recordatorioDeCosa(id) {
+    if (tieneLoSuyo(id)) return recordar.cosas[id] || null;
+    return recordar.general;
+  }
+
+  /** Quita el recordatorio de una cosa sola: si hay uno para todas, queda dicho que ella no lo sigue. */
+  function quitarRecordatorioDe(id) {
+    if (recordar.general) recordar.cosas[id] = false;
+    else delete recordar.cosas[id];
+  }
+
+  /** Deja dicho en la propia cosa el recordatorio que tiene ahora (o que no tiene): cambiar el de todas ya no la toca. */
+  function fijarRecordatorioDe(id) {
+    const r = recordatorioDeCosa(id);
+    recordar.cosas[id] = r ? { ...r } : false;
+  }
+
+  /** Las cosas de Recordar (el orden de siempre: pendientes primero). */
+  const recordadas = () => ordenar(cosasDe(ID_RECORDAR));
+
+  /** Las que siguen pendientes: de las hechas no se avisa, y lo que se diga para varias cosas no las toca. */
+  const recordadasPendientes = () => recordadas().filter((cosa) => !cosa.hecha);
+
+  /** ¿Queda en Recordar algo pendiente de lo que haya que avisar? */
+  const hayRecordatoriosPendientes = () => cosasDe(ID_RECORDAR).some((cosa) => !cosa.hecha && recordatorioDeCosa(cosa.id) !== null);
+
+  /**
+   * Olvida lo propio de las cosas que ya no existen. Solo al arrancar: mientras tanto se conserva (lo que sale de
+   * Recordar y vuelve —con «Deshacer», o desde otro dispositivo— recupera su recordatorio; fuera de Recordar no cuenta).
+   */
+  function olvidarRecordatoriosSinCosa() {
+    const existen = new Set(estado.cosas.map((cosa) => cosa.id));
+    const sobran = Object.keys(recordar.cosas).filter((id) => !existen.has(id));
+    for (const id of sobran) delete recordar.cosas[id];
+    if (sobran.length > 0) escribirRecordar();
+  }
+
+  const dosCifras = (n) => String(n).padStart(2, '0');
+
+  /** «9:05» (la hora, sin el cero de delante). */
+  const horaLegible = (hora) => `${Number(hora.slice(0, 2))}:${hora.slice(3)}`;
+
+  /** Cada cuánto avisa: «cada día», «de lunes a viernes», «cada lunes», «el día 1 de cada mes». */
+  function cadaCuanto(r) {
+    if (r.frec === 'laborables') return 'de lunes a viernes';
+    if (r.frec === 'semana') return `cada ${DIAS[r.dia]}`;
+    if (r.frec === 'mes') return `el día ${r.diaMes} de cada mes`;
+    return 'cada día';
+  }
+
+  /** Cuándo avisa, dicho de corrido: «cada día a las 9:05» («a la 1:00»). */
+  const cuandoDe = (r) => `${cadaCuanto(r)} ${Number(r.hora.slice(0, 2)) === 1 ? 'a la' : 'a las'} ${horaLegible(r.hora)}`;
+
+  /** Y en corto, para la fila de la cosa: «9:00 · Cada día», «9:00 · Día 1 de cada mes». */
+  function resumenDe(r) {
+    const cada = r.frec === 'mes' ? `día ${r.diaMes} de cada mes` : cadaCuanto(r);
+    return `${horaLegible(r.hora)} · ${cada.charAt(0).toLocaleUpperCase('es-ES')}${cada.slice(1)}`;
+  }
 
   // ---------- Aviso (toast) ----------
 
@@ -404,7 +610,7 @@
   let accionAviso = null;
 
   function avisar(texto, opciones = {}) {
-    const { icono = false, accion = null, duracion = DURACION_AVISO } = opciones;
+    const { icono = false, accion = null, duracion = DURACION_AVISO, entero = false } = opciones;
     clearTimeout(temporizadorAviso);
     clearTimeout(temporizadorVaciado);
 
@@ -420,6 +626,7 @@
     toast.replaceChildren(contenido);
     toast.classList.toggle('con-icono', icono);
     toast.classList.toggle('solo-texto', !icono && !accion);
+    toast.classList.toggle('entero', entero); // Con «Deshacer» y un texto largo que hay que leer entero: en dos líneas antes que recortado.
     // Reinicia la transición para que avisos seguidos se vean de nuevo.
     toast.classList.remove('visible');
     void toast.offsetWidth;
@@ -520,6 +727,8 @@
     if (anterior === 'grupo') vaciarBarra(escrituraGrupo);
     cerrarHoja(false); // El foco lo coloca la vista que llega.
     cerrarHojaGrupo(false);
+    cerrarHojaRecordar(false);
+    cerrarHojaAvisada(false);
 
     for (const clave of VISTAS) {
       const activa = clave === nombre;
@@ -570,7 +779,8 @@
     if (nombre === 'inicio') destino = abridor || abridores[anterior];
     else if (nombre === 'lista' && anterior === 'grupo') destino = enlaceDeGrupo(grupoAbridor) || titulos.lista;
     if (destino) destino.focus({ preventScroll: true });
-    if (nombre === 'lista' && destino && destino !== titulos.lista) asegurarVisibleEnLista(destino);
+    // (La fila de Recordar no está en la zona que se desplaza: siempre se ve.)
+    if (nombre === 'lista' && destino && zonaLista.contains(destino)) asegurarVisibleEnLista(destino);
     if (nombre === 'inicio') abridor = null;
   }
 
@@ -739,7 +949,9 @@
     const grupo = barra === escrituraGrupo ? grupoMostrado() : null;
     if (barra === escrituraGrupo && !grupo) return;
 
-    estado.cosas.unshift({ id: nuevoId(), texto, hecha: false, creada: marcaDeTiempo(ultimaCreacion()), hechaEn: null, grupo: grupo ? grupo.id : null });
+    const id = nuevoId();
+    if (esRecordar(grupo)) asegurarRecordar();
+    estado.cosas.unshift({ id, texto, hecha: false, creada: marcaDeTiempo(ultimaCreacion()), hechaEn: null, grupo: grupo ? grupo.id : null });
     const correcto = guardarEstado();
 
     barra.campo.value = '';
@@ -1046,16 +1258,32 @@
   /** Cuando una fila se va, el foco pasa al mismo botón de la fila vecina (o a «respaldo» si no queda ninguna). */
   function enfocarVecina(fila, respaldo) {
     const vecina = hermana(fila, 'nextElementSibling') || hermana(fila, 'previousElementSibling');
-    (vecina ? vecina.querySelector('.borrar') : respaldo).focus({ preventScroll: true });
+    // (En Recordar la fila tiene dos botones en ese sitio y solo enseña uno.)
+    (vecina ? vecina.querySelector('.borrar:not([hidden])') : respaldo).focus({ preventScroll: true });
+  }
+
+  /**
+   * Marca o desmarca una cosa (con su check, o con «Hecho» en su recordatorio) y repinta lo que se ve. De una cosa
+   * de Recordar hecha ya no se avisa (su aviso, si sigue a la vista, sobra); desmarcada, se le vuelve a avisar con
+   * el recordatorio que tenía. Devuelve si se ha podido guardar.
+   */
+  function ponerHecha(cosa, hecha) {
+    cosa.hecha = hecha;
+    cosa.hechaEn = hecha ? marcaDeTiempo(ultimaHecha()) : null;
+    const correcto = guardarEstado();
+    if (!correcto) avisarFallo();
+    if (cosa.grupo === ID_RECORDAR) {
+      if (hecha) cerrarAvisoDe(cosa.id);
+      else olvidarHechoDe(cosa.id);
+    }
+    sincronizar(true); // La hecha baja al final (o la pendiente vuelve a su sitio) deslizándose.
+    return correcto;
   }
 
   function alternarHecha(id) {
     const cosa = estado.cosas.find((candidata) => candidata.id === id);
     if (!cosa || !filasPorId.has(id)) return;
-    cosa.hecha = !cosa.hecha;
-    cosa.hechaEn = cosa.hecha ? marcaDeTiempo(ultimaHecha()) : null;
-    if (!guardarEstado()) avisarFallo();
-    sincronizar(true); // La hecha baja al final (o la pendiente vuelve a su sitio) deslizándose.
+    ponerHecha(cosa, !cosa.hecha);
   }
 
   /** Intro mantenido sobre un botón de una lista no repite la pulsación fila tras fila. */
@@ -1068,8 +1296,19 @@
   const ultimosOjos = new WeakMap(); // Último toque en el ojo de cada fila de grupo.
   const temporizadoresPliegue = new WeakMap();
 
+  /** Sin cosas sueltas ni grupos propios, la lista lo dice; y si es porque todo está en Recordar (que va aparte, arriba), dice eso. */
   function actualizarVacio() {
-    vacio.hidden = estado.cosas.length > 0 || estado.grupos.length > 0;
+    vacio.hidden = cosasDe(null).length > 0 || gruposPropios().length > 0;
+    vacio.textContent = cosasDe(ID_RECORDAR).length > 0 ? 'Lo que tienes apuntado está en Recordar.' : 'No tienes cosas apuntadas.';
+  }
+
+  /** La fila fija de Recordar: cuántas cosas suyas siguen pendientes (sin número si no hay ninguna). */
+  function actualizarAccesoRecordar() {
+    const pendientes = cosasDe(ID_RECORDAR).filter((cosa) => !cosa.hecha).length;
+    cuentaRecordar.hidden = pendientes === 0;
+    cuentaRecordar.textContent = pendientes ? String(pendientes) : '';
+    if (pendientes) accesoRecordar.setAttribute('aria-label', `Recordar. ${pendientes === 1 ? 'Una cosa pendiente' : `${pendientes} cosas pendientes`}`);
+    else accesoRecordar.removeAttribute('aria-label');
   }
 
   function actualizarTituloLista() {
@@ -1123,17 +1362,19 @@
   }
 
   const enlaceDeGrupo = (id) => {
+    if (id === ID_RECORDAR) return accesoRecordar;
     const fila = filasDeGrupo.get(id);
     return fila && fila.isConnected ? fila.querySelector('.enlace-grupo') : null;
   };
 
-  /** Mueve, crea y retira filas para que la lista (grupos incluidos) refleje el estado. */
+  /** Mueve, crea y retira filas para que la lista (grupos incluidos) refleje el estado. Recordar va aparte, en su fila fija. */
   function sincronizarLista(nuevas = true) {
-    const nivel = ordenar([...estado.grupos, ...cosasDe(null)]);
+    const grupos = gruposPropios();
+    const nivel = ordenar([...grupos, ...cosasDe(null)]);
     colocar(listaEl, nivel.map((elemento) => (esGrupo(elemento)
       ? filaDeGrupo(elemento, nuevas)
       : filaDeCosa(elemento, listaEl, plantillaFila, nuevas))));
-    for (const grupo of estado.grupos) {
+    for (const grupo of grupos) {
       const fila = filasDeGrupo.get(grupo.id);
       const anidada = fila.querySelector('.anidada');
       const miembros = ordenar(cosasDe(grupo.id));
@@ -1142,6 +1383,15 @@
     }
     podarFilas();
     actualizarVacio();
+    actualizarAccesoRecordar();
+  }
+
+  /** La fila fija de Recordar abre su pantalla, como el nombre de cualquier grupo. */
+  function alPulsarRecordar(evento) {
+    // Con una tecla modificadora o el botón central se deja al navegador (pestaña nueva).
+    if (evento.metaKey || evento.ctrlKey || evento.shiftKey || evento.altKey || evento.button !== 0) return;
+    evento.preventDefault();
+    abrirGrupo(ID_RECORDAR);
   }
 
   /** Pinta la lista de cero y la deja desplazada donde se pide (arriba, o donde estaba al pasar a un grupo). */
@@ -1162,9 +1412,11 @@
     const [cosa] = estado.cosas.splice(indice, 1);
     ultimoBorrado = performance.now();
     guardarEstado();
+    if (cosa.grupo === ID_RECORDAR) cerrarAvisoDe(id); // Ya no hay de qué avisar.
     filasPorId.delete(id);
     const grupo = fila.parentElement.closest('li');
-    enfocarVecina(fila, grupo ? grupo.querySelector('.ojo') : titulos.lista);
+    const respaldo = vistaActual === 'grupo' ? botonAnadir : titulos.lista; // En Recordar, sus cosas hechas se eliminan desde su página.
+    enfocarVecina(fila, grupo ? grupo.querySelector('.ojo') : respaldo);
     retirarFila(fila);
     sincronizar();
 
@@ -1220,10 +1472,11 @@
     return true;
   }
 
-  /** Devuelve a su grupo una cosa quitada de él (si sigue suelta y el grupo existe). */
+  /** Devuelve a su grupo una cosa quitada de él (si sigue suelta y el grupo existe). A Recordar vuelve con su recordatorio. */
   function devolverAlGrupo(id, grupo) {
     const cosa = estado.cosas.find((candidata) => candidata.id === id);
     if (!cosa || cosa.grupo !== null || !grupoPorId(grupo)) return false;
+    if (grupo === ID_RECORDAR) asegurarRecordar();
     cosa.grupo = grupo;
     return true;
   }
@@ -1403,7 +1656,11 @@
     const grupo = grupoMostrado();
     if (!grupo) return;
     const miembros = ordenar(cosasDe(grupo.id));
-    colocar(listaGrupo, miembros.map((cosa) => filaDeCosa(cosa, listaGrupo, plantillaMiembro, nuevas)));
+    // En Recordar, cada fila lleva además su recordatorio.
+    const plantilla = esRecordar(grupo) ? plantillaRecordada : plantillaMiembro;
+    colocar(listaGrupo, miembros.map((cosa) => filaDeCosa(cosa, listaGrupo, plantilla, nuevas)));
+    if (esRecordar(grupo)) for (const cosa of miembros) pintarRecordada(filasPorId.get(cosa.id), cosa);
+    pintarNotaRecordar();
     if (candidatasAbiertas) {
       // Solo las cosas sueltas: una cosa que ya está en otro grupo no se ofrece (antes hay que quitarla de él con «−»).
       const resto = ordenar(estado.cosas.filter((cosa) => cosa.grupo === null));
@@ -1420,6 +1677,12 @@
     if (!grupo) return;
     titulos.grupo.textContent = grupo.nombre;
     pintarColorGrupo(grupo);
+    // Recordar no tiene nombre ni color que editar: en el sitio del lápiz va la campana de sus recordatorios.
+    const fijo = esRecordar(grupo);
+    vistas.grupo.toggleAttribute('data-recordar', fijo);
+    botonEditarGrupo.hidden = fijo;
+    botonConfigurar.hidden = !fijo;
+    grupoVacio.textContent = fijo ? 'Apunta aquí lo que quieras que te recuerde y ponle hora.' : 'Este grupo está vacío.';
     filasPorId.clear();
     listaGrupo.replaceChildren();
     if (candidatasAbiertas) listaCandidatas.replaceChildren(); // Se vuelve a llenar al sincronizar.
@@ -1488,6 +1751,7 @@
     const cosa = estado.cosas.find((candidata) => candidata.id === id);
     const fila = filasPorId.get(id);
     if (!cosa || !fila || cosa.grupo === grupoDestino) return false;
+    if (grupoDestino === ID_RECORDAR) asegurarRecordar();
     cosa.grupo = grupoDestino;
     ultimoMovimiento = performance.now();
     const correcto = guardarEstado();
@@ -1503,8 +1767,10 @@
   function quitarDelGrupo(id) {
     const grupo = grupoEnPagina;
     if (!moverCosa(id, null, botonAnadir)) return;
+    // Lo que sale de Recordar deja de avisarse (su aviso, si sigue a la vista, sobra); si vuelve, sigue con su recordatorio.
+    if (grupo === ID_RECORDAR) cerrarAvisoDe(id);
     eliminados.push({ quitada: id, deGrupo: grupo });
-    avisar('Quitado del grupo', {
+    avisar(grupo === ID_RECORDAR ? 'Quitado de Recordar' : 'Quitado del grupo', {
       accion: { texto: 'Deshacer', alPulsar: deshacerEliminado },
       duracion: DURACION_DESHACER,
     });
@@ -1525,10 +1791,15 @@
       alternarHecha(fila.dataset.id);
       return;
     }
-    // Al añadir o quitar, la fila vecina sube y su botón queda bajo el dedo: el segundo toque no se la lleva.
-    if (ahora - ultimoMovimiento < GUARDA_DOBLE_TOQUE) return;
+    // Al añadir, quitar o eliminar, la fila vecina sube y su botón queda bajo el dedo: el segundo toque no se la lleva.
+    if (ahora - ultimoMovimiento < GUARDA_DOBLE_TOQUE || ahora - ultimoBorrado < GUARDA_DOBLE_TOQUE) return;
+    if (accion === 'recordatorio') {
+      abrirHojaRecordar(fila.dataset.id);
+      return;
+    }
     if (accion === 'anadir') moverCosa(fila.dataset.id, grupoEnPagina, botonAnadir);
     else if (accion === 'quitar') quitarDelGrupo(fila.dataset.id);
+    else if (accion === 'eliminar') eliminarCosa(fila.dataset.id); // En Recordar, las hechas: como en la lista, con su «Deshacer».
   }
 
   // ---------- Hoja de edición del grupo ----------
@@ -1566,6 +1837,418 @@
     pintarColorGrupo(grupo);
     actualizarTema();
     cerrarHojaGrupo();
+  }
+
+  // ---------- Recordar: el recordatorio de cada cosa y su hoja ----------
+
+  let recordandoA = null; // La cosa cuyo recordatorio se edita en la hoja (null: el de todas, o el de las que se elijan).
+
+  /** Pone el texto de una región viva (role="status", aria-live) solo si cambia: repetido, se volvería a leer en voz alta. */
+  function decir(elemento, texto) {
+    if (elemento.textContent !== texto) elemento.textContent = texto;
+  }
+
+  /**
+   * La fila de una cosa en Recordar: su recordatorio (o el botón para ponérselo) y, a la derecha, «−» si sigue
+   * pendiente (sale de Recordar) o la papelera si está hecha (se elimina: no hay otro sitio desde el que borrarla).
+   */
+  function pintarRecordada(fila, cosa) {
+    if (!fila) return;
+    const r = recordatorioDeCosa(cosa.id);
+    const cuando = fila.querySelector('.cuando');
+    cuando.classList.toggle('sin', !r);
+    cuando.querySelector('.cuando-texto').textContent = r ? resumenDe(r) : 'Poner recordatorio';
+    cuando.setAttribute('aria-label', r ? `Recordatorio: ${cuandoDe(r)}. Cambiar` : 'Poner recordatorio');
+    const quitar = fila.querySelector('[data-accion="quitar"]');
+    const eliminar = fila.querySelector('[data-accion="eliminar"]');
+    const conFoco = document.activeElement === quitar || document.activeElement === eliminar;
+    quitar.hidden = cosa.hecha;
+    eliminar.hidden = !cosa.hecha;
+    if (conFoco) (cosa.hecha ? eliminar : quitar).focus({ preventScroll: true }); // El foco no se queda en el botón que se esconde.
+  }
+
+  /** ¿Enseña este navegador botones en los avisos? (iPhone, iPad y Firefox no: allí se contesta en la app.) */
+  const avisosConBotones = () => 'Notification' in window && 'maxActions' in window.Notification && window.Notification.maxActions >= 2;
+
+  // Por qué este dispositivo no va a avisar de lo que hay en Recordar, y lo que se puede hacer aquí mismo para arreglarlo.
+  const PEGAS_DE_RECORDAR = {
+    apagados: 'Para que te avise, activa las notificaciones en este dispositivo.',
+    instalar: `En ${/iPhone|iPod/.test(window.navigator.userAgent) ? 'iPhone' : 'iPad'}, los recordatorios llegan a la aplicación: conviértela en aplicación y ponlos desde ella.`,
+    bloqueados: 'Las notificaciones de Cosas están bloqueadas en este dispositivo. Para que te avise, permítelas en los ajustes del móvil o del navegador.',
+    imposible: 'Este navegador no puede recibir notificaciones: aquí no te avisará.',
+    'sin-conexion': 'Sin conexión: tus recordatorios empezarán a avisar cuando vuelva.',
+  };
+  const ARREGLOS_DE_RECORDAR = { apagados: 'Activar notificaciones', instalar: 'Convertir en aplicación' };
+
+  /**
+   * La pega de este dispositivo para avisar ('' si va a hacerlo): el estado de sus notificaciones (las de Ajustes) o,
+   * con el permiso ya dado, 'sin-conexion': el alta se quedó a medias o los recordatorios no han podido subirse.
+   * Eso se reintenta solo (al volver la conexión, al volver a la app y al abrirla): no hay nada que pulsar.
+   */
+  function pegaDeRecordar() {
+    const avisos = estadoAvisos();
+    if (avisos === 'activos') return recordatoriosSinSubir() && (rondaFallida || window.navigator.onLine === false) ? 'sin-conexion' : '';
+    return avisos === 'apagados' && recordar.activar ? 'sin-conexion' : avisos;
+  }
+
+  /**
+   * La nota de arriba de Recordar: mientras haya algo pendiente con recordatorio y este dispositivo no vaya a avisar,
+   * dice por qué y, si se arregla aquí, ofrece el botón. Un recordatorio que se ve puesto pero nunca llega es peor
+   * que no tenerlo: por eso no es un aviso que se va, sino una nota que se queda.
+   */
+  function pintarNotaRecordar() {
+    const pega = esRecordar(grupoMostrado()) && hayRecordatoriosPendientes() ? pegaDeRecordar() : '';
+    const arreglo = ARREGLOS_DE_RECORDAR[pega] || '';
+    decir(textoNotaRecordar, PEGAS_DE_RECORDAR[pega] || '');
+    notaRecordar.hidden = pega === '';
+    notaRecordar.dataset.pega = pega;
+    // El foco no puede quedarse en un botón que va a desaparecer.
+    if (!arreglo && document.activeElement === botonNotaRecordar) titulos.grupo.focus({ preventScroll: true });
+    botonNotaRecordar.hidden = !arreglo;
+    if (!cambiandoAvisos) botonNotaRecordar.textContent = arreglo; // Mientras se activan, el botón dice lo que está haciendo.
+  }
+
+  function alPulsarNotaRecordar() {
+    if (notaRecordar.dataset.pega === 'instalar') abrirHoja(botonNotaRecordar);
+    else alPulsarAvisos(); // El mismo botón que en Ajustes: el permiso se pide dentro de este toque.
+  }
+
+  /** Las filas de Recordar (si se están viendo) vuelven a decir cuándo avisa cada cosa. */
+  function repintarRecordatorios() {
+    if (vistaActual === 'grupo' && esRecordar(grupoMostrado())) sincronizarGrupo(false);
+  }
+
+  /** Los desplegables de la hoja: las horas (0 a 23), los minutos (de cinco en cinco) y los días del mes. */
+  function construirSelectores() {
+    for (let hora = 0; hora < 24; hora += 1) selectorHora.append(new Option(String(hora), dosCifras(hora)));
+    for (let minuto = 0; minuto < 60; minuto += PASO_MINUTOS) selectorMinuto.append(new Option(dosCifras(minuto), dosCifras(minuto)));
+    for (let dia = 1; dia <= 31; dia += 1) selectorDiaMes.append(new Option(String(dia), String(dia)));
+  }
+
+  function radioElegido(nombre) {
+    const radio = formularioRecordar.querySelector(`input[name="${nombre}"]:checked`);
+    return radio ? radio.value : '';
+  }
+
+  function elegirRadio(nombre, valor) {
+    for (const radio of formularioRecordar.querySelectorAll(`input[name="${nombre}"]`)) radio.checked = radio.value === String(valor);
+  }
+
+  /** ¿Se están eligiendo las cosas una a una? (Solo desde la campana: desde una fila, la cosa ya está dicha.) */
+  const eligiendo = () => recordandoA === null && radioElegido('alcance') === 'elegir';
+
+  /** El recordatorio que dice la hoja ahora mismo. */
+  function recordatorioDeLaHoja() {
+    return recordatorioDe({
+      hora: `${selectorHora.value}:${selectorMinuto.value}`,
+      frec: radioElegido('frecuencia'),
+      dia: Number(radioElegido('dia')),
+      diaMes: Number(selectorDiaMes.value),
+    });
+  }
+
+  /** Las cosas a las que se aplica lo que diga la hoja: esa, las elegidas o todas las pendientes de Recordar (las hechas no se tocan). */
+  function cosasDeLaHoja() {
+    if (recordandoA !== null) return [recordandoA];
+    if (eligiendo()) return Array.from(elegirRecordar.querySelectorAll('input:checked'), (casilla) => casilla.value);
+    return recordadasPendientes().map((cosa) => cosa.id);
+  }
+
+  /** Las cosas pendientes de Recordar, cada una con su casilla (ninguna marcada: se elige de cero). */
+  function llenarElegibles() {
+    const fragmento = document.createDocumentFragment();
+    for (const cosa of recordadasPendientes()) {
+      const elemento = plantillaElegible.content.firstElementChild.cloneNode(true);
+      elemento.querySelector('input').value = cosa.id;
+      elemento.querySelector('.elegible-texto').textContent = cosa.texto; // Nunca innerHTML con texto del usuario.
+      fragmento.append(elemento);
+    }
+    elegirRecordar.replaceChildren(fragmento);
+  }
+
+  /** La frase de la hoja: lo que va a pasar al guardar. Para todas, también a quién más alcanza y a cuántas les cambia el que tenían. */
+  function resumenDeLaHoja(r, ids) {
+    if (!r) return '';
+    const frase = `Te lo recordaré ${cuandoDe(r)}.`;
+    if (recordandoA !== null) return frase;
+    if (eligiendo()) return ids.length > 0 ? frase : 'Elige al menos una cosa.';
+    if (ids.length === 0) return 'Te recordaré a esa hora lo que apuntes aquí.'; // Aún no hay nada pendiente: es para lo que venga.
+    const firma = JSON.stringify(r);
+    const pisadas = ids.map(recordatorioDeCosa).filter((suyo) => suyo !== null && JSON.stringify(suyo) !== firma).length;
+    const cambio = pisadas === 0 ? '' : ` Cambiará el recordatorio de ${pisadas === 1 ? '1 cosa que tenía' : `${pisadas} cosas que tenían`} otro.`;
+    return `${frase} También lo que apuntes después.${cambio}`;
+  }
+
+  /** Lo que la hoja dice antes de «Guardar»: cómo llegará el aviso, o por qué aquí no llegará. (Dónde se guarda lo dice la propia hoja.) */
+  function ayudaDeLaHoja() {
+    const avisos = estadoAvisos();
+    if (avisos !== 'activos' && avisos !== 'apagados') return PEGAS_DE_RECORDAR[avisos];
+    const como = avisosConBotones()
+      ? 'Te llegará una notificación por cada cosa, con «Hecho» y «Mantener».'
+      : 'Te llegará una notificación por cada cosa: al tocarla, dices si ya está hecha o si la mantienes.';
+    if (avisos === 'activos') return como;
+    // Sin activar aquí: se activan al guardar. Si el permiso ya está dado, el navegador no vuelve a preguntar.
+    const alGuardar = window.Notification.permission === 'granted' ? 'Al guardar se activarán las notificaciones en este dispositivo.' : 'Al guardar te pediremos permiso para enviarte notificaciones.';
+    return `${alGuardar} ${como}`;
+  }
+
+  /** La hoja, según lo elegido: el día (de la semana o del mes), las cosas que se pueden elegir, la frase y los botones. */
+  function pintarHojaRecordar() {
+    const frecuencia = radioElegido('frecuencia');
+    diaRecordar.hidden = frecuencia !== 'semana';
+    mesRecordar.hidden = frecuencia !== 'mes';
+    // Del 29 al 31 se avisa de lo que pasa en los meses cortos; la nota solo describe al desplegable mientras se ve
+    // (una descripción escondida, un lector de pantalla la leería igual).
+    const hastaElFinal = Number(selectorDiaMes.value) > ULTIMO_DIA_DE_TODOS;
+    ayudaDiaMes.hidden = !hastaElFinal;
+    if (hastaElFinal) selectorDiaMes.setAttribute('aria-describedby', ayudaDiaMes.id);
+    else selectorDiaMes.removeAttribute('aria-describedby');
+    const eligen = eligiendo();
+    if (eligen && elegirRecordar.hidden) llenarElegibles();
+    else if (!eligen) elegirRecordar.replaceChildren();
+    elegirRecordar.hidden = !eligen;
+    const ids = cosasDeLaHoja();
+    decir(resumenRecordar, resumenDeLaHoja(recordatorioDeLaHoja(), ids));
+    // Sin ninguna cosa elegida no hay nada que guardar.
+    botonGuardarRecordar.disabled = eligen && ids.length === 0;
+    // Quitar: el de esa cosa, si lo tiene; desde la campana, todos de una vez (el de todas y el de cada cosa pendiente).
+    const deTodas = recordandoA === null;
+    botonQuitarRecordar.textContent = deTodas ? 'Quitar todos los recordatorios' : 'Quitar recordatorio';
+    botonQuitarRecordar.hidden = eligen || !(ids.some((id) => recordatorioDeCosa(id) !== null) || (deTodas && recordar.general !== null));
+    ayudaRecordar.textContent = ayudaDeLaHoja();
+  }
+
+  /** Abre la hoja del recordatorio: el de esa cosa (desde su fila) o, sin «id» (desde la campana), el de todas o el de las que se elijan. */
+  function abrirHojaRecordar(id = null) {
+    if (panelAbierto || !esRecordar(grupoMostrado()) || performance.now() - cierreHoja < GUARDA_DOBLE_TOQUE) return;
+    const cosa = id === null ? null : estado.cosas.find((candidata) => candidata.id === id && candidata.grupo === ID_RECORDAR);
+    if (id !== null && !cosa) return;
+    cerrarCandidatas(); // Antes de que la hoja tome el foco: así su cierre no lo devuelve a «Añadir cosas».
+    recordandoA = cosa ? cosa.id : null;
+    const hoy = new Date();
+    const r = (cosa ? recordatorioDeCosa(cosa.id) : recordar.general) || { hora: HORA_POR_DEFECTO, frec: 'dia' };
+    cosaRecordar.textContent = cosa ? cosa.texto : '';
+    cosaRecordar.hidden = !cosa;
+    // «Todas» o «Elegir», solo desde la campana y si hay alguna cosa pendiente (las hechas no se tocan).
+    alcanceRecordar.hidden = Boolean(cosa) || recordadasPendientes().length === 0;
+    elegirRadio('alcance', 'todas');
+    elegirRecordar.hidden = true;
+    selectorHora.value = r.hora.slice(0, 2);
+    // Los minutos van de cinco en cinco: uno que no lo sea (puesto de otra forma) baja al anterior.
+    selectorMinuto.value = dosCifras(Math.floor(Number(r.hora.slice(3)) / PASO_MINUTOS) * PASO_MINUTOS);
+    elegirRadio('frecuencia', r.frec);
+    // Lo que no dice el recordatorio que se edita, por hoy: el día de la semana y el del mes.
+    elegirRadio('dia', r.frec === 'semana' ? r.dia : hoy.getDay());
+    selectorDiaMes.value = String(r.frec === 'mes' ? r.diaMes : hoy.getDate());
+    pintarHojaRecordar();
+    abrirPanel(hojaRecordar, tituloHojaRecordar);
+    hojaRecordar.querySelector('.hoja-panel').scrollTop = 0; // Siempre por el principio.
+  }
+
+  /** Cerrar sin guardar descarta lo elegido. El foco vuelve a lo que abrió la hoja: la fila de la cosa o la campana. */
+  function cerrarHojaRecordar(devolverFoco = true) {
+    if (hojaRecordar.hidden) return;
+    const id = recordandoA;
+    cerrarPanel(hojaRecordar);
+    elegirRecordar.replaceChildren();
+    recordandoA = null;
+    cierreHoja = performance.now();
+    if (!devolverFoco) return;
+    const fila = id === null ? null : filasPorId.get(id);
+    const boton = fila && fila.isConnected ? fila.querySelector('.cuando') : null;
+    (boton || botonConfigurar).focus({ preventScroll: true });
+  }
+
+  /**
+   * Lo que se cambia de una vez en los recordatorios de varias cosas se puede deshacer mientras se ve el aviso:
+   * todo vuelve a como estaba («previo»: el de todas y lo propio de cada cosa).
+   */
+  function avisarConVuelta(texto, previo) {
+    eliminados = []; // Lo que quedara por deshacer de un aviso anterior ya no se ofrece.
+    avisar(texto, { accion: { texto: 'Deshacer', alPulsar: () => deshacerRecordatorios(previo) }, duracion: DURACION_DESHACER, entero: true });
+  }
+
+  function deshacerRecordatorios(previo) {
+    ocultarAviso();
+    recordar.general = previo.general;
+    recordar.cosas = previo.cosas;
+    if (!guardarRecordar()) avisarFallo();
+    repintarRecordatorios();
+    if (vistaActual === 'grupo' && !botonConfigurar.hidden) botonConfigurar.focus({ preventScroll: true });
+  }
+
+  function guardarHojaRecordar(evento) {
+    evento.preventDefault();
+    if (hojaRecordar.hidden) return;
+    const r = recordatorioDeLaHoja();
+    const ids = cosasDeLaHoja();
+    const deVarias = recordandoA === null;
+    const todas = deVarias && !eligiendo();
+    if (!r || (!todas && ids.length === 0)) return;
+    const previo = { general: recordar.general, cosas: { ...recordar.cosas } };
+    if (todas) {
+      // El de todas: lo siguen las pendientes y las que se apunten después. Las hechas se quedan como están.
+      for (const cosa of cosasDe(ID_RECORDAR)) if (cosa.hecha) fijarRecordatorioDe(cosa.id);
+      recordar.general = { ...r };
+      for (const id of ids) delete recordar.cosas[id];
+    } else {
+      for (const id of ids) recordar.cosas[id] = { ...r };
+    }
+    const correcto = guardarRecordar();
+    const sinActivar = estadoAvisos() === 'apagados';
+    cerrarHojaRecordar();
+    repintarRecordatorios();
+    // Solo se dice que está guardado: si este dispositivo no va a avisar, lo explica la nota de Recordar, que no se va.
+    if (!correcto) avisarFallo();
+    else if (deVarias && ids.length > 0) avisarConVuelta(`Recordatorio puesto a ${ids.length === 1 ? '1 cosa' : `${ids.length} cosas`}`, previo);
+    else avisar('Recordatorio guardado', { icono: true });
+    pedirPersistencia();
+    // El permiso se pide aquí mismo, mientras dura el toque en «Guardar»: iPhone y iPad no lo preguntan después.
+    if (sinActivar) activarAvisosAlRecordar();
+  }
+
+  function quitarDesdeLaHoja() {
+    if (hojaRecordar.hidden) return;
+    const ids = cosasDeLaHoja();
+    const deTodas = recordandoA === null;
+    const previo = { general: recordar.general, cosas: { ...recordar.cosas } };
+    if (deTodas) {
+      // Todos de una vez: el de todas y el de cada cosa pendiente. Las hechas se quedan como están.
+      for (const cosa of cosasDe(ID_RECORDAR)) if (cosa.hecha) fijarRecordatorioDe(cosa.id);
+      recordar.general = null;
+      for (const id of ids) delete recordar.cosas[id];
+      // Sin uno para todas, «esta no lo sigue» ya no dice nada.
+      for (const [id, suyo] of Object.entries(recordar.cosas)) if (suyo === false) delete recordar.cosas[id];
+    } else {
+      for (const id of ids) quitarRecordatorioDe(id);
+    }
+    const correcto = guardarRecordar();
+    for (const id of ids) cerrarAvisoDe(id);
+    cerrarHojaRecordar();
+    repintarRecordatorios();
+    if (!correcto) avisarFallo();
+    else if (deTodas) avisarConVuelta('Recordatorios quitados', previo);
+    else avisar('Recordatorio quitado');
+  }
+
+  /**
+   * Al guardar un recordatorio con las notificaciones sin activar aquí, se activan (lo mismo que su botón), sin
+   * más avisos: lo que pase lo dice la nota de Recordar.
+   */
+  async function activarAvisosAlRecordar() {
+    if (cambiandoAvisos) return;
+    ocuparBotonesDeAvisos('Activando…');
+    try {
+      await activarAvisos();
+    } catch (error) {
+      guardarAvisos(null); // Con el permiso dado, el alta se reintenta sola (reintentarAvisos).
+    } finally {
+      soltarBotonesDeAvisos();
+      programarRecordatorios(true); // Ya hay sesión con la que contarle los recordatorios a la función de avisos.
+    }
+  }
+
+  // ---------- Recordar: «Hecho» o «Mantener» en la app ----------
+
+  /*
+   * Donde los avisos no tienen botones (iPhone, iPad, Firefox), y siempre que se toca un aviso en vez de sus
+   * botones, se contesta aquí: una hoja con cada cosa de la que se ha avisado y sus dos respuestas. Se abre sobre lo
+   * que haya en pantalla, sin cambiar de vista (lo que se estuviera escribiendo sigue ahí); si hay otra hoja abierta,
+   * espera a que se cierre.
+   */
+  let contadorAvisadas = 0;
+  let focoAntesDeAvisadas = null; // Lo que tenía el foco cuando la hoja apareció: al cerrarla, vuelve ahí.
+  let preguntaAplazada = null; // { tocada }: había otra hoja abierta cuando tocaba preguntar.
+  let ultimaRespuesta = -Infinity;
+
+  const pendienteEnRecordar = (id) => estado.cosas.find((cosa) => cosa.id === id && cosa.grupo === ID_RECORDAR && !cosa.hecha) || null;
+
+  function elementoDeAvisada(cosa) {
+    const elemento = plantillaAvisada.content.firstElementChild.cloneNode(true);
+    const texto = elemento.querySelector('.avisada-texto');
+    contadorAvisadas += 1;
+    texto.id = `avisada-${contadorAvisadas}`;
+    texto.textContent = cosa.texto; // Nunca innerHTML con texto del usuario.
+    elemento.dataset.id = cosa.id;
+    // Los botones se llaman igual en todas: cada uno dice de qué cosa es.
+    for (const boton of elemento.querySelectorAll('button')) boton.setAttribute('aria-describedby', texto.id);
+    return elemento;
+  }
+
+  function pintarTituloAvisadas() {
+    tituloHojaAvisada.textContent = listaAvisadas.childElementCount === 1 ? 'Recordatorio' : 'Recordatorios';
+  }
+
+  /**
+   * Pregunta por esas cosas («Hecho» o «Mantener»); las que ya están hechas, borradas o fuera de Recordar se saltan.
+   * «tocada» es la del aviso que se acaba de tocar: va la primera.
+   */
+  function preguntarPorAvisadas(ids, tocada) {
+    const cosas = ids.map(pendienteEnRecordar).filter(Boolean);
+    if (cosas.length === 0) return;
+    if (panelAbierto && panelAbierto !== hojaAvisada) {
+      preguntaAplazada = { tocada }; // Cuando se cierre esa hoja (cerrarPanel).
+      return;
+    }
+    const preguntadas = new Set(Array.from(listaAvisadas.children, (elemento) => elemento.dataset.id));
+    for (const cosa of cosas) {
+      if (preguntadas.has(cosa.id)) continue;
+      if (cosa.id === tocada) listaAvisadas.prepend(elementoDeAvisada(cosa));
+      else listaAvisadas.append(elementoDeAvisada(cosa));
+    }
+    pintarTituloAvisadas();
+    if (panelAbierto === hojaAvisada) return; // Ya estaba preguntando: solo se añaden las que faltaban.
+    focoAntesDeAvisadas = document.activeElement;
+    abrirPanel(hojaAvisada, tituloHojaAvisada);
+    hojaAvisada.querySelector('.hoja-panel').scrollTop = 0;
+  }
+
+  /** Cerrar sin contestar es mantener: de esos avisos ya no se vuelve a preguntar (cada cosa sigue con su recordatorio). */
+  function cerrarHojaAvisada(devolverFoco = true) {
+    if (hojaAvisada.hidden) return;
+    for (const elemento of listaAvisadas.children) cerrarAvisoDe(elemento.dataset.id);
+    cerrarPanel(hojaAvisada);
+    listaAvisadas.replaceChildren();
+    cierreHoja = performance.now();
+    const previo = focoAntesDeAvisadas;
+    focoAntesDeAvisadas = null;
+    if (!devolverFoco) return;
+    const destino = previo && previo !== document.body && previo.isConnected && principal.contains(previo) ? previo : titulos[vistaActual];
+    if (destino) destino.focus({ preventScroll: true });
+  }
+
+  /** Quita de la hoja lo que ya no hay que preguntar (se contestó en el aviso, o la cosa ya no está pendiente en Recordar). */
+  function podarHojaAvisada() {
+    if (hojaAvisada.hidden) return;
+    for (const elemento of Array.from(listaAvisadas.children)) if (!pendienteEnRecordar(elemento.dataset.id)) elemento.remove();
+    if (listaAvisadas.childElementCount === 0) {
+      cerrarHojaAvisada();
+      return;
+    }
+    pintarTituloAvisadas();
+    if (!hojaAvisada.contains(document.activeElement)) tituloHojaAvisada.focus({ preventScroll: true });
+  }
+
+  function alResponderAvisada(evento) {
+    const boton = evento.target.closest('button[data-respuesta]');
+    const elemento = boton && boton.closest('.avisada');
+    // Al contestar una, la siguiente sube y sus botones quedan bajo el dedo: el segundo toque de un doble toque no la contesta también.
+    if (!elemento || performance.now() - ultimaRespuesta < GUARDA_DOBLE_TOQUE) return;
+    ultimaRespuesta = performance.now();
+    const { id } = elemento.dataset;
+    const cosa = pendienteEnRecordar(id);
+    // «Hecho» es tocar su check; «Mantener», dejarla como está (se avisará la próxima vez). En los dos casos, su aviso ya está contestado.
+    if (boton.dataset.respuesta === 'hecho' && cosa && ponerHecha(cosa, true)) avisar('Hecho', { icono: true });
+    cerrarAvisoDe(id);
+    elemento.remove();
+    // Con más cosas por contestar, el foco pasa a la siguiente; sin ninguna, la hoja se cierra.
+    const siguiente = listaAvisadas.querySelector('button');
+    if (!siguiente) {
+      cerrarHojaAvisada();
+      return;
+    }
+    pintarTituloAvisadas();
+    siguiente.focus({ preventScroll: true });
   }
 
   // ---------- Ajustes ----------
@@ -1662,7 +2345,7 @@
     botonSesion.textContent = cuenta ? 'Cerrar sesión' : 'Iniciar sesión';
     botonSesion.href = rutaDeCosasInfo(`cuenta/?desde=app&accion=${cuenta ? 'salir' : 'entrar'}`);
     if (!cuenta) {
-      ayudaSesion.textContent = 'Inicia sesión con Google para tener tus cosas, tus grupos y tus listas de Cosas con y Cosas de en todos tus dispositivos. Sin sesión, todo se queda en este dispositivo.';
+      ayudaSesion.textContent = 'Inicia sesión con Google para tener tus cosas, tus grupos y tus listas de Cosas con y Cosas de en todos tus dispositivos. Sin sesión, todo se queda en este dispositivo, menos lo que tenga recordatorio en Recordar: eso se guarda también en el servidor de Cosas para poder avisarte.';
     } else {
       const quien = cuenta.nombre && cuenta.correo ? `${cuenta.nombre} (${cuenta.correo})` : cuenta.nombre || cuenta.correo;
       ayudaSesion.textContent = `Has iniciado sesión como ${quien}: tus cosas, tus grupos, tu nombre y tu color te siguen a cualquier dispositivo, igual que tus listas de Cosas con y Cosas de.`;
@@ -1705,6 +2388,8 @@
   function aplicarDeLaNube(bruto) {
     estado = normalizarEstado(bruto);
     guardarEstado();
+    // De lo que otro dispositivo haya metido en Recordar, la función de avisos puede saber cuándo avisa.
+    programarRecordatorios(true);
     aplicarColor(estado.ajustes.colorFondo);
     actualizarTituloLista();
     if (vistaActual === 'ajustes') sincronizarAjustes();
@@ -1839,8 +2524,9 @@
 
   // ---------- Hojas (paneles inferiores) ----------
 
-  let panelAbierto = null; // Como mucho hay una hoja abierta: la de pasos o la de edición.
+  let panelAbierto = null; // Como mucho hay una hoja abierta: la de pasos, la de edición o una de las de Recordar.
   let aperturaHoja = -Infinity;
+  let temporizadorApertura = 0;
 
   /**
    * Mientras una hoja está abierta el resto de la página no cuenta: inerte donde se puede y, donde no
@@ -1853,20 +2539,35 @@
     principal.setAttribute('aria-hidden', 'true');
     document.addEventListener('keydown', alTeclearConHoja);
     aperturaHoja = performance.now();
+    // La hoja sube bajo el dedo que la abrió (o aparece sola, si pregunta por un recordatorio): durante un instante
+    // su panel no recibe toques (CSS), y el segundo toque de un doble toque no acciona lo que acaba de aparecer.
+    panel.toggleAttribute('data-abriendo', true);
+    clearTimeout(temporizadorApertura);
+    temporizadorApertura = setTimeout(() => panel.removeAttribute('data-abriendo'), GUARDA_DOBLE_TOQUE);
     titulo.focus({ preventScroll: true });
   }
 
   function cerrarPanel(panel) {
     panel.hidden = true;
+    panel.removeAttribute('data-abriendo');
+    clearTimeout(temporizadorApertura);
     panelAbierto = null;
     principal.removeAttribute('inert');
     principal.removeAttribute('aria-hidden');
     document.removeEventListener('keydown', alTeclearConHoja);
+    // Había que preguntar por un recordatorio y esta hoja estaba en medio: ahora sí.
+    if (preguntaAplazada && panel !== hojaAvisada) {
+      const { tocada } = preguntaAplazada;
+      preguntaAplazada = null;
+      revisarAvisos(tocada);
+    }
   }
 
   function cerrarHojaAbierta() {
     if (panelAbierto === hoja) cerrarHoja();
     else if (panelAbierto === hojaGrupo) cerrarHojaGrupo();
+    else if (panelAbierto === hojaRecordar) cerrarHojaRecordar();
+    else if (panelAbierto === hojaAvisada) cerrarHojaAvisada();
   }
 
   function alTeclearConHoja(evento) {
@@ -1876,7 +2577,7 @@
     }
     if (evento.key !== 'Tab' || !panelAbierto) return;
     // El tabulador da vueltas dentro de la hoja y no sale a la página.
-    const focables = Array.from(panelAbierto.querySelectorAll('button, input'))
+    const focables = Array.from(panelAbierto.querySelectorAll('button, input, select'))
       .filter((elemento) => !elemento.disabled && elemento.offsetParent !== null);
     if (!focables.length) return;
     const indice = focables.indexOf(document.activeElement);
@@ -1902,6 +2603,7 @@
   const esIOS = /iPhone|iPad|iPod/.test(window.navigator.userAgent)
     || (/Macintosh/.test(window.navigator.userAgent) && window.navigator.maxTouchPoints > 1);
   let eventoInstalar = null; // El «beforeinstallprompt» retenido: con él se abre el diálogo del sistema.
+  let abridorDeHoja = botonInstalar; // El botón que abrió la hoja de pasos: el de Ajustes o el de la nota de Recordar.
   let instalando = false;
   let recienInstalada = false;
 
@@ -1922,7 +2624,8 @@
   }
 
   /** Hoja con los pasos a mano (iPhone y iPad no tienen otra forma; otros navegadores, a veces). */
-  function abrirHoja() {
+  function abrirHoja(desde = botonInstalar) {
+    abridorDeHoja = desde;
     pasosIos.hidden = !esIOS;
     pasosGenericos.hidden = esIOS;
     // En iOS la app instalada guarda sus datos aparte de Safari: quien ya tiene algo apuntado debe saberlo antes.
@@ -1934,7 +2637,8 @@
   function cerrarHoja(devolverFoco = true) {
     if (hoja.hidden) return;
     cerrarPanel(hoja);
-    if (devolverFoco) botonInstalar.focus({ preventScroll: true });
+    if (devolverFoco) abridorDeHoja.focus({ preventScroll: true });
+    abridorDeHoja = botonInstalar;
   }
 
   function alPoderInstalar(evento) {
@@ -2022,14 +2726,15 @@
     }
   }
 
-  // ---------- Notificaciones (avisos de Cosas con y Cosas de) ----------
+  // ---------- Notificaciones (recordatorios de Recordar y avisos de Cosas con y Cosas de) ----------
 
   /*
    * Con las notificaciones activadas, la función de avisos (netlify/functions/avisos.mjs, en /api/avisos/ de
-   * este dominio) avisa a este dispositivo cuando alguien añade una cosa a una de tus listas de Cosas con o de
-   * Cosas de, y sw.js enseña el aviso. El dispositivo se suscribe (push) con la clave pública de la función y
-   * se da de alta con la sesión de esas páginas (nube.js). Lo recuerda en CLAVE_AVISOS ({ uid, endpoint, en }),
-   * que también leen ellas: si allí se entra con otra cuenta, los avisos pasan a la nueva.
+   * este dominio) avisa a este dispositivo a la hora de cada recordatorio de Recordar y cuando alguien añade una
+   * cosa a una de tus listas de Cosas con o de Cosas de, y sw.js enseña el aviso. El dispositivo se suscribe
+   * (push) con la clave pública de la función y se da de alta con la sesión de esas páginas (nube.js). Lo
+   * recuerda en CLAVE_AVISOS ({ uid, endpoint, en }), que también leen ellas: si allí se entra con otra cuenta,
+   * los avisos pasan a la nueva.
    */
   const API_AVISOS = new URL('api/avisos/', new URL('./', window.location.href)).href;
   const RENOVAR_AVISOS = 24 * 60 * 60 * 1000; // Cada día, la función vuelve a oír que este dispositivo sigue ahí.
@@ -2061,7 +2766,7 @@
     return Notification.permission === 'granted' && leerAvisos() ? 'activos' : 'apagados';
   }
 
-  const PARA_QUE_AVISOS = 'te avisamos cuando alguien añada una cosa a tus listas de Cosas con y Cosas de.';
+  const PARA_QUE_AVISOS = 'te recordamos lo que tengas en Recordar y te avisamos cuando alguien añada una cosa a tus listas de Cosas con y Cosas de.';
 
   function pintarAvisos() {
     if (cambiandoAvisos) return; // Hasta que termine, el botón dice lo que está haciendo.
@@ -2148,71 +2853,455 @@
     return suscripcion || registro.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: clave });
   }
 
+  /** Se apunta (con los recordatorios) si el alta de este dispositivo se ha quedado a medias con el permiso ya dado. */
+  function apuntarAltaAMedias(aMedias) {
+    if (recordar.activar === aMedias) return;
+    recordar.activar = aMedias;
+    escribirRecordar();
+  }
+
   /** true si quedan activadas; false si no se ha dado permiso. */
   async function activarAvisos() {
     // Lo primero, el permiso: iPhone y iPad solo lo preguntan mientras dura el toque.
     const permiso = await Notification.requestPermission();
     if (permiso !== 'granted') return false;
-    const [registro, sesion] = await Promise.all([conTiempo(navigator.serviceWorker.ready), sesionDeAvisos()]);
-    await darDeAltaAvisos(await suscribirse(registro), sesion);
+    try {
+      const [registro, sesion] = await Promise.all([conTiempo(navigator.serviceWorker.ready), sesionDeAvisos()]);
+      await darDeAltaAvisos(await suscribirse(registro), sesion);
+    } catch (error) {
+      // Con el permiso dado ya no hace falta ningún toque: lo que falta (sin conexión, lo más seguro) se reintenta solo.
+      apuntarAltaAMedias(true);
+      throw error;
+    }
+    apuntarAltaAMedias(false);
     return true;
   }
 
   async function desactivarAvisos() {
     const guardado = leerAvisos();
     guardarAvisos(null);
+    // Sin cuenta de Google, los recordatorios solo estaban en la función para avisar a este dispositivo: se le pide
+    // que los olvide. Y aquí se olvida la base: si se vuelven a activar, se le cuentan todos otra vez.
+    const olvidar = !leerCuenta() && (recordar.base !== null || recordar.general !== null || Object.keys(recordar.cosas).length > 0);
+    clearTimeout(temporizadorRecordatorios);
+    if (olvidar) {
+      recordar.base = null;
+      olvidoAplazado = sincronizandoRecordatorios; // Una ronda a medias volvería a dejar allí lo olvidado: al acabar, se olvida otra vez.
+    }
+    if (olvidar || recordar.activar) {
+      recordar.activar = false;
+      escribirRecordar();
+    }
     const registro = await navigator.serviceWorker.getRegistration();
     const suscripcion = registro ? await registro.pushManager.getSubscription() : null;
     if (suscripcion) await suscripcion.unsubscribe().catch(() => {});
-    // Que la función lo olvide ya (sin esto, lo olvidaría sola la primera vez que el aviso no llegara).
+    // Que la función lo olvide ya (sin esto, lo olvidaría sola la primera vez que el aviso no llegara). Los
+    // recordatorios, antes que el dispositivo: mientras aún es de esa sesión.
     const endpoint = (suscripcion && suscripcion.endpoint) || (guardado && guardado.endpoint);
-    if (endpoint) sesionDeAvisos().then((sesion) => llamarAvisos('baja', sesion, { endpoint })).catch(() => {});
+    const olvidados = olvidar ? olvidarEnLaFuncion() : Promise.resolve();
+    if (endpoint) olvidados.then(() => sesionDeAvisos()).then((sesion) => llamarAvisos('baja', sesion, { endpoint })).catch(() => {});
+  }
+
+  /** Pide a la función de avisos que olvide los recordatorios de esta sesión (si no se puede, sin conexión, no se insiste). */
+  function olvidarEnLaFuncion() {
+    return import('./nube.js').then((modulo) => modulo.olvidarRecordatorios(API_AVISOS)).catch(() => {});
+  }
+
+  /** Mientras se activan o desactivan, sus botones (el de Ajustes y el de la nota de Recordar) dicen lo que se está haciendo. */
+  function ocuparBotonesDeAvisos(texto) {
+    cambiandoAvisos = true;
+    for (const boton of [botonAvisos, botonNotaRecordar]) {
+      boton.textContent = texto;
+      boton.setAttribute('aria-busy', 'true');
+    }
+  }
+
+  function soltarBotonesDeAvisos() {
+    cambiandoAvisos = false;
+    for (const boton of [botonAvisos, botonNotaRecordar]) boton.removeAttribute('aria-busy');
+    pintarAvisos();
+    pintarNotaRecordar();
   }
 
   async function alPulsarAvisos() {
     if (cambiandoAvisos) return; // Ya se está activando o desactivando (doble toque).
     const activar = estadoAvisos() !== 'activos';
-    cambiandoAvisos = true;
     // La primera vez, suscribirse puede tardar unos segundos (el móvil se da de alta en su servicio de avisos).
-    botonAvisos.textContent = activar ? 'Activando…' : 'Desactivando…';
-    botonAvisos.setAttribute('aria-busy', 'true');
+    ocuparBotonesDeAvisos(activar ? 'Activando…' : 'Desactivando…');
     try {
       if (!activar) {
         await desactivarAvisos();
-        avisar('Notificaciones desactivadas');
+        // Con algo pendiente en Recordar, que no pase inadvertido: de eso tampoco se avisará.
+        if (hayRecordatoriosPendientes()) avisar('Notificaciones desactivadas: Recordar no te avisará', { duracion: DURACION_DESHACER });
+        else avisar('Notificaciones desactivadas');
       } else if (await activarAvisos()) {
         avisar('Notificaciones activadas', { icono: true });
+        programarRecordatorios(true); // Ya hay sesión con la que contarle los recordatorios a la función de avisos.
       }
     } catch (error) {
       if (activar) guardarAvisos(null);
       avisar(activar ? 'No se pudieron activar las notificaciones' : 'No se pudieron desactivar las notificaciones');
     } finally {
-      cambiandoAvisos = false;
-      botonAvisos.removeAttribute('aria-busy');
-      pintarAvisos();
+      soltarBotonesDeAvisos();
+    }
+  }
+
+  /**
+   * El permiso se dio, pero el alta de este dispositivo se quedó a medias (sin conexión, o la función no contestó).
+   * Con algo pendiente en Recordar se reintenta sola: al volver la conexión, al volver a la app y al abrirla.
+   */
+  async function reintentarAvisos() {
+    if (!recordar.activar || cambiandoAvisos || !puedeAvisar || window.location.protocol !== 'https:') return;
+    if (Notification.permission !== 'granted' || leerAvisos()) {
+      apuntarAltaAMedias(false); // Ya no hay nada a medias: se quitó el permiso, o se activaron por otro camino.
+      pintarNotaRecordar();
+      return;
+    }
+    if (!hayRecordatoriosPendientes()) return;
+    ocuparBotonesDeAvisos('Activando…');
+    try {
+      await activarAvisos();
+    } catch (error) { /* Sigue sin poderse: la próxima vez. */ } finally {
+      soltarBotonesDeAvisos();
+      programarRecordatorios(true);
     }
   }
 
   /**
    * Al abrir la app con las notificaciones activadas: que la función siga teniendo este dispositivo. Si el
    * navegador ha cambiado la suscripción, o ha pasado un día, se da de alta otra vez; si se ha quitado el
-   * permiso en los ajustes del móvil, quedan desactivadas.
+   * permiso en los ajustes del móvil, quedan desactivadas. Con «forzar», se da de alta sin esperar a nada de eso.
    */
-  async function renovarAvisos() {
+  async function renovarAvisos(forzar = false) {
     const guardado = leerAvisos();
     if (!guardado || !puedeAvisar || window.location.protocol !== 'https:') return;
     if (Notification.permission !== 'granted') {
       guardarAvisos(null);
       pintarAvisos();
+      pintarNotaRecordar();
       return;
     }
     try {
       const registro = await conTiempo(navigator.serviceWorker.ready);
       const actual = await registro.pushManager.getSubscription();
-      if (actual && actual.endpoint === guardado.endpoint && Date.now() - guardado.en < RENOVAR_AVISOS) return;
+      if (!forzar && actual && actual.endpoint === guardado.endpoint && Date.now() - guardado.en < RENOVAR_AVISOS) return;
       const [suscripcion, sesion] = await Promise.all([suscribirse(registro), sesionDeAvisos()]);
       await darDeAltaAvisos(suscripcion, sesion);
     } catch (error) { /* Sin conexión, por ejemplo: la próxima vez. */ }
+  }
+
+  // ---------- Recordar: lo que pasa con los avisos ----------
+
+  /*
+   * El service worker (sw.js) deja apuntado, en una caché que comparte con la app, lo que pasa con los avisos de
+   * Recordar mientras la app no mira: «hechas» (se pulsó «Hecho» en el aviso de una cosa) y «avisadas» (se avisó de
+   * una cosa y aún no se ha contestado). La app lo lee al abrirse, al volver a primer plano y cuando él la avisa.
+   * Cada cosa, en su propia entrada (así la app y él no se pisan). Él guarda además, para sí, los «Hecho» que aún
+   * no ha podido decirle a la función de avisos («por-decir»).
+   */
+  const raizDeLaApp = () => new URL('./', window.location.href);
+  const urlDeDato = (tipo, id) => new URL(`__recordar/${tipo}/${encodeURIComponent(id)}`, raizDeLaApp()).href;
+
+  /** La caché de los avisos, si existe (no se crea por mirar): sin almacenamiento, null. */
+  async function cacheDeAvisos() {
+    try {
+      if (!('caches' in window) || !(await window.caches.has(DATOS_DE_AVISOS))) return null;
+      return await window.caches.open(DATOS_DE_AVISOS);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /** Lo apuntado de ese tipo («hechas», «avisadas»): [{ id, … }]. */
+  async function datosDeAvisos(tipo) {
+    const datos = [];
+    try {
+      const cache = await cacheDeAvisos();
+      if (!cache) return datos;
+      const prefijo = new URL(`__recordar/${tipo}/`, raizDeLaApp()).pathname;
+      for (const peticion of await cache.keys()) {
+        if (!new URL(peticion.url).pathname.startsWith(prefijo)) continue;
+        const respuesta = await cache.match(peticion);
+        const dato = respuesta ? await respuesta.json().catch(() => null) : null;
+        if (dato && typeof dato.id === 'string') datos.push(dato);
+      }
+    } catch (error) { /* Sin poder leerla: como si no hubiera nada. */ }
+    return datos;
+  }
+
+  async function olvidarDato(tipo, id) {
+    try {
+      const cache = await cacheDeAvisos();
+      if (cache) await cache.delete(urlDeDato(tipo, id));
+    } catch (error) { /* Sin caché no había nada apuntado. */ }
+  }
+
+  /**
+   * Una cosa vuelve a estar pendiente: el «Hecho» que se le dio en un aviso ya no cuenta. Si el service worker aún
+   * lo tenía por decir, que no llegue ahora a la función y la vuelva a dar por hecha.
+   */
+  function olvidarHechoDe(id) {
+    olvidarDato('hechas', id);
+    olvidarDato('por-decir', id);
+  }
+
+  /** Quita de la vista el aviso de esa cosa (ya está contestado, o ya no procede) y deja de preguntar por él. */
+  function cerrarAvisoDe(id) {
+    olvidarDato('avisadas', id);
+    if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) return;
+    navigator.serviceWorker.ready
+      .then((registro) => (typeof registro.getNotifications === 'function' ? registro.getNotifications({ tag: `recordar-${id}` }) : []))
+      .then((avisos) => {
+        for (const aviso of avisos) aviso.close();
+      })
+      .catch(() => {});
+  }
+
+  /** «?recordada=ID»: se llega desde el aviso de esa cosa. Se quita de la dirección: recargar no vuelve a preguntar. */
+  function recordadaDeLaDireccion() {
+    try {
+      const parametros = new URLSearchParams(window.location.search);
+      const id = parametros.get('recordada');
+      if (id === null) return null;
+      parametros.delete('recordada');
+      const resto = parametros.toString();
+      conHistorial(() => window.history.replaceState(window.history.state, '', `${window.location.pathname}${resto ? `?${resto}` : ''}${window.location.hash}`));
+      return id;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /** «Hecho» en el aviso de una cosa: queda marcada, como con su check (aunque entretanto haya salido de Recordar). */
+  function marcarHechaPorAviso(id) {
+    const cosa = estado.cosas.find((candidata) => candidata.id === id);
+    if (cosa && !cosa.hecha) ponerHecha(cosa, true);
+    olvidarDato('hechas', id);
+    cerrarAvisoDe(id); // También si ya estaba hecha o ha salido de Recordar: ese aviso está contestado.
+  }
+
+  let revisandoAvisos = false;
+  let otraRevision = null; // { tocada }: se pidió revisar mientras ya se revisaba.
+
+  /**
+   * Pone al día lo de los avisos: las cosas con «Hecho» pulsado en su aviso quedan marcadas y, si toca, se pregunta
+   * en la app («Hecho» o «Mantener») por las avisadas del último día que sigan sin contestar: al tocar un aviso
+   * («tocada», la suya, la primera) y, donde los avisos no tienen botones, también al abrir la app o volver a ella.
+   */
+  async function revisarAvisos(tocada = null) {
+    if (revisandoAvisos) {
+      // Al acabar se mira otra vez, sin perder la cosa del aviso tocado.
+      otraRevision = { tocada: tocada !== null || !otraRevision ? tocada : otraRevision.tocada };
+      return;
+    }
+    revisandoAvisos = true;
+    try {
+      for (const { id } of await datosDeAvisos('hechas')) marcarHechaPorAviso(id);
+      const avisadas = [];
+      for (const { id, en } of await datosDeAvisos('avisadas')) {
+        if (pendienteEnRecordar(id) && Date.now() - en < AVISADA_RECIENTE) avisadas.push({ id, en });
+        else olvidarDato('avisadas', id); // Ya está hecha, ya no está en Recordar o el aviso es de hace mucho.
+      }
+      avisadas.sort((a, b) => b.en - a.en); // La más reciente, antes.
+      podarHojaAvisada();
+      if (tocada !== null || !avisosConBotones()) {
+        const resto = avisadas.map((avisada) => avisada.id).filter((id) => id !== tocada);
+        preguntarPorAvisadas(tocada !== null ? [tocada, ...resto] : resto, tocada);
+      }
+    } finally {
+      revisandoAvisos = false;
+      if (otraRevision) {
+        const pedida = otraRevision;
+        otraRevision = null;
+        revisarAvisos(pedida.tocada);
+      }
+    }
+  }
+
+  /**
+   * Lo que dice el service worker con la app abierta: se ha pulsado «Hecho» en el aviso de una cosa (se marca ya,
+   * sin esperar a leerlo de la caché, que puede no estar), o se ha tocado un aviso y hay que preguntar por él aquí.
+   */
+  function alMensajeDelServiceWorker(evento) {
+    const mensaje = evento.data;
+    if (!mensaje || typeof mensaje !== 'object' || typeof mensaje.id !== 'string') return;
+    if (mensaje.tipo === 'recordar-hecho') {
+      marcarHechaPorAviso(mensaje.id);
+      revisarAvisos();
+    } else if (mensaje.tipo === 'recordar-abrir') {
+      revisarAvisos(mensaje.id);
+    }
+  }
+
+  // ---------- Recordar: la función de avisos guarda los recordatorios ----------
+
+  /*
+   * Para avisar a su hora, la función de avisos tiene que saber qué cosas de Recordar tienen recordatorio (su texto,
+   * si están hechas y cuándo toca). nube.js se lo cuenta con la sesión de las notificaciones de este dispositivo (o
+   * la de la cuenta de Google) y trae lo que haya cambiado allí: un «Hecho» pulsado en un aviso, o los recordatorios
+   * que se pusieron en otro dispositivo con la misma cuenta. Solo en la app publicada (https) y solo si hay algo de
+   * Recordar que contar o que preguntar: sin nada de eso, ni se carga la nube. Solo sube el texto de lo que tiene
+   * recordatorio, y la función lo borra cuando deja de tenerlo (o la cosa sale de Recordar, o se elimina).
+   */
+  let temporizadorRecordatorios = 0;
+  let sincronizandoRecordatorios = false;
+  let recordatoriosPendientes = false; // Algo ha cambiado mientras se sincronizaba: otra ronda al acabar.
+  let leerRecordatorios = false; // La próxima ronda pregunta antes a la función qué tiene.
+  let ultimaLecturaRecordatorios = -Infinity;
+  let intentosRecordatorios = 0;
+  let rondaFallida = false; // La última ronda no llegó a buen fin (sin conexión, lo más seguro): la nota de Recordar lo dice.
+  let olvidoAplazado = false; // Se desactivaron las notificaciones (sin cuenta) con una ronda a medias: ver desactivarAvisos.
+
+  function zonaHoraria() {
+    try {
+      return new Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    } catch (error) {
+      return 'UTC';
+    }
+  }
+
+  /** Lo que la función de avisos tiene que saber: { general, cosas: { id: { texto, hecha, r } } } (hasta donde ella admite). */
+  function recordatoriosLocales() {
+    const cosas = {};
+    let cuantas = 0;
+    for (const cosa of recordadas()) { // Las pendientes primero: si no cupieran todas, se quedan fuera las hechas.
+      const r = recordatorioDeCosa(cosa.id);
+      if (!r || cosa.id.length > MAX_ID_RECORDADA || cuantas >= MAX_RECORDADAS) continue;
+      cosas[cosa.id] = { texto: cosa.texto.trim(), hecha: cosa.hecha, r }; // Como lo guarda la función: sin espacios en las puntas.
+      cuantas += 1;
+    }
+    return { general: recordar.general, cosas };
+  }
+
+  /** Una firma de eso (y de la zona horaria): si es la misma que la de la última ronda, no hay nada nuevo que contar. */
+  function firmaDeRecordatorios() {
+    const { general, cosas } = recordatoriosLocales();
+    return JSON.stringify([zonaHoraria(), general, Object.keys(cosas).sort().map((id) => [id, cosas[id]])]);
+  }
+
+  function hayBaseDeRecordatorios() {
+    const { base } = recordar;
+    return Boolean(base && (base.general || Object.keys(base.cosas || {}).length > 0));
+  }
+
+  /** ¿Hay algo de Recordar que la función de avisos aún no sabe? (Lo que lleva la firma de la última ronda, lo sabe.) */
+  const recordatoriosSinSubir = () => !recordar.base || recordar.base.firma !== firmaDeRecordatorios();
+
+  /** Pide una ronda con la función de avisos (los cambios seguidos viajan juntos); con «leer», preguntándole antes qué tiene. */
+  function programarRecordatorios(leer = false) {
+    if (window.location.protocol !== 'https:' || !(leerAvisos() || leerCuenta())) return;
+    const hayAlgo = recordar.general !== null || Object.keys(recordar.cosas).length > 0 || hayBaseDeRecordatorios();
+    // Sin recordatorios aquí solo hay algo que preguntar si en Recordar hay cosas (pueden tenerlos de otro dispositivo).
+    if (!hayAlgo && !(leer && cosasDe(ID_RECORDAR).length > 0)) return;
+    if (!leer && !leerRecordatorios && recordar.base && recordar.base.firma === firmaDeRecordatorios()) return; // Nada nuevo.
+    leerRecordatorios = leerRecordatorios || leer;
+    clearTimeout(temporizadorRecordatorios);
+    temporizadorRecordatorios = setTimeout(sincronizarRecordatorios, RETARDO_RECORDATORIOS);
+  }
+
+  /** Lo que llega de la función: recordatorios puestos o quitados en otro dispositivo, y cosas hechas (o vueltas a pendientes) allí o en un aviso. */
+  function aplicarRecordatorios({ general, cosas }) {
+    let cambianCosas = false;
+    if (general !== undefined) {
+      // Otro para todas (o ninguno): es para lo que se apunte desde ahora. Cada cosa de aquí sigue con el que tenía,
+      // salvo que la función diga otra cosa de ella (abajo).
+      for (const cosa of cosasDe(ID_RECORDAR)) if (!tieneLoSuyo(cosa.id)) fijarRecordatorioDe(cosa.id);
+      recordar.general = general;
+    }
+    for (const [id, documento] of cosas) {
+      if (!documento) {
+        quitarRecordatorioDe(id); // Se lo quitaron en otro dispositivo.
+        continue;
+      }
+      const cosa = estado.cosas.find((candidata) => candidata.id === id && candidata.grupo === ID_RECORDAR);
+      if (!cosa) continue;
+      // Si es el de todas, no hace falta apuntárselo: ya lo sigue.
+      if (JSON.stringify(documento.r) === JSON.stringify(recordar.general)) delete recordar.cosas[id];
+      else recordar.cosas[id] = documento.r;
+      if (cosa.hecha === documento.hecha) continue;
+      cosa.hecha = documento.hecha;
+      cosa.hechaEn = documento.hecha ? marcaDeTiempo(ultimaHecha()) : null;
+      if (documento.hecha) cerrarAvisoDe(id);
+      else olvidarHechoDe(id);
+      cambianCosas = true;
+    }
+    escribirRecordar();
+    if (cambianCosas) guardarEstado();
+    if (cambianCosas) sincronizar(true);
+    else repintarRecordatorios();
+    actualizarAccesoRecordar();
+    podarHojaAvisada();
+  }
+
+  function guardarBaseDeRecordatorios(base) {
+    recordar.base = base;
+    escribirRecordar();
+  }
+
+  async function sincronizarRecordatorios() {
+    if (sincronizandoRecordatorios) {
+      recordatoriosPendientes = true;
+      return;
+    }
+    sincronizandoRecordatorios = true;
+    const leer = leerRecordatorios;
+    leerRecordatorios = false;
+    if (leer) ultimaLecturaRecordatorios = performance.now();
+    try {
+      const modulo = await import('./nube.js');
+      const ronda = await modulo.sincronizarRecordatorios({
+        api: API_AVISOS,
+        leer,
+        zona: zonaHoraria(),
+        recordatorio: recordatorioDe,
+        local: recordatoriosLocales,
+        firma: firmaDeRecordatorios,
+        conocidas: () => new Set(cosasDe(ID_RECORDAR).map((cosa) => cosa.id)),
+        base: () => recordar.base,
+        guardarBase: guardarBaseDeRecordatorios,
+        aplicar: aplicarRecordatorios,
+      }, intentosRecordatorios);
+      // Los avisos de este dispositivo tienen que ir a la sesión que guarda los recordatorios: si se entró con
+      // otra cuenta y aún avisa a la de antes, se da de alta con esta.
+      const avisos = leerAvisos();
+      if (ronda && avisos && avisos.uid !== ronda.uid) renovarAvisos(true);
+      rondaFallida = !ronda;
+    } catch (error) {
+      intentosRecordatorios += 1; // Sin conexión, por ejemplo: la próxima vez.
+      leerRecordatorios = leerRecordatorios || leer;
+      rondaFallida = true;
+    } finally {
+      sincronizandoRecordatorios = false;
+      if (olvidoAplazado) {
+        olvidoAplazado = false;
+        guardarBaseDeRecordatorios(null);
+        olvidarEnLaFuncion();
+      }
+      pintarNotaRecordar(); // Si no se han podido subir, que se sepa; y si ya están arriba, que deje de decirlo.
+      if (recordatoriosPendientes) {
+        recordatoriosPendientes = false;
+        programarRecordatorios();
+      }
+    }
+  }
+
+  /**
+   * Al volver a la app: lo que haya pasado con los avisos y, como mucho una vez por minuto (o ya, si la última ronda
+   * falló), lo que diga la función. El permiso ha podido cambiar en los ajustes del móvil: la nota de Recordar se repinta.
+   */
+  function alVolverALaApp() {
+    if (document.hidden) return;
+    revisarAvisos();
+    reintentarAvisos();
+    if (rondaFallida || performance.now() - ultimaLecturaRecordatorios > ENTRE_LECTURAS) programarRecordatorios(true);
+    pintarNotaRecordar();
+  }
+
+  /** Vuelve la conexión: lo que se quedó sin hacer por falta de ella (el alta de este dispositivo, subir los recordatorios). */
+  function alVolverLaConexion() {
+    reintentarAvisos();
+    programarRecordatorios(true);
+    pintarNotaRecordar();
   }
 
   // ---------- Teclado en pantalla ----------
@@ -2256,6 +3345,7 @@
   /** Vuelve a leer el almacenamiento (otra pestaña lo ha cambiado) y repinta. */
   function recargarEstado() {
     estado = leerEstado();
+    recordar = leerRecordar();
     consolidarRescate();
     if (nube) nube.cambio();
     if (accionAviso) ocultarAviso();
@@ -2267,16 +3357,22 @@
       if (grupoMostrado()) pintarGrupo();
       else irALaLista(); // El grupo ya no existe (borrado desde otra pestaña).
     }
+    actualizarAccesoRecordar();
   }
 
   function alCambiarAlmacenamiento(evento) {
-    if (evento.key === null || evento.key === CLAVE) recargarEstado();
+    if (evento.key === null || evento.key === CLAVE || evento.key === CLAVE_RECORDAR) recargarEstado();
     if (evento.key === null || evento.key === CLAVE_CUENTA) {
       pintarSesion();
       cargarNube(); // Se acaba de entrar con Google en otra pestaña.
     }
     if (evento.key === null || evento.key === CLAVE_LISTAS) cargarNovedades(); // La primera lista, en otra pestaña.
-    if (evento.key === null || evento.key === CLAVE_AVISOS) pintarAvisos();
+    if (evento.key === null || evento.key === CLAVE_AVISOS) {
+      pintarAvisos();
+      pintarNotaRecordar();
+    }
+    // Otra sesión (o la primera) con la que contarle los recordatorios a la función de avisos.
+    if (evento.key === null || evento.key === CLAVE_CUENTA || evento.key === CLAVE_AVISOS) programarRecordatorios(true);
   }
 
   function registrarServiceWorker() {
@@ -2312,6 +3408,10 @@
     ayudaDictado.hidden = !Reconocimiento;
     pintarInstalacion();
     pintarAvisos();
+    construirSelectores();
+    olvidarRecordatoriosSinCosa();
+    actualizarAccesoRecordar();
+    const recordada = recordadaDeLaDireccion(); // Antes de mirar la dirección para navegar.
 
     abridores.lista.addEventListener('click', () => abrirVista('lista', abridores.lista));
     abridores.ajustes.addEventListener('click', () => abrirVista('ajustes', abridores.ajustes));
@@ -2332,6 +3432,7 @@
     }
     listaEl.addEventListener('click', alPulsarLista);
     listaEl.addEventListener('keydown', alTeclearEnLista);
+    accesoRecordar.addEventListener('click', alPulsarRecordar);
     toast.addEventListener('click', alPulsarAviso);
     toast.addEventListener('focusin', pausarAviso);
     toast.addEventListener('pointerenter', pausarAviso);
@@ -2354,6 +3455,18 @@
     botonCerrarHojaGrupo.addEventListener('click', alPulsarCierreDeHoja);
     veloHojaGrupo.addEventListener('click', alPulsarCierreDeHoja);
 
+    botonConfigurar.addEventListener('click', () => abrirHojaRecordar());
+    botonNotaRecordar.addEventListener('click', alPulsarNotaRecordar);
+    formularioRecordar.addEventListener('submit', guardarHojaRecordar);
+    formularioRecordar.addEventListener('change', pintarHojaRecordar);
+    botonQuitarRecordar.addEventListener('click', quitarDesdeLaHoja);
+    botonCerrarHojaRecordar.addEventListener('click', alPulsarCierreDeHoja);
+    veloHojaRecordar.addEventListener('click', alPulsarCierreDeHoja);
+    listaAvisadas.addEventListener('click', alResponderAvisada);
+    botonCerrarHojaAvisada.addEventListener('click', alPulsarCierreDeHoja);
+    veloHojaAvisada.addEventListener('click', alPulsarCierreDeHoja);
+    if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', alMensajeDelServiceWorker);
+
     muestras.addEventListener('change', (evento) => cambiarColor(evento.target.value));
     selectorColor.addEventListener('input', () => cambiarColor(selectorColor.value));
     selectorColor.addEventListener('change', () => cambiarColor(selectorColor.value));
@@ -2373,6 +3486,9 @@
     window.addEventListener('storage', alCambiarAlmacenamiento);
     window.addEventListener('online', cargarNube);
     window.addEventListener('online', cargarNovedades);
+    window.addEventListener('online', alVolverLaConexion);
+    window.addEventListener('offline', pintarNotaRecordar);
+    document.addEventListener('visibilitychange', alVolverALaApp);
     window.addEventListener('pageshow', (evento) => { if (evento.persisted) recargarEstado(); });
     window.addEventListener('pagehide', guardarDatosPersonales);
     window.addEventListener('pagehide', cancelarDictado);
@@ -2392,6 +3508,9 @@
     cargarNube();
     cargarNovedades();
     renovarAvisos();
+    reintentarAvisos();
+    revisarAvisos(recordada);
+    programarRecordatorios(true);
   }
 
   iniciar();

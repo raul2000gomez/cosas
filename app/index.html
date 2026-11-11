@@ -127,6 +127,15 @@
         </button>
         <h1 id="titulo-lista" class="titulo" tabindex="-1">Cosas</h1>
       </header>
+      <!-- Recordar: el grupo fijo. Va fuera de la zona que se desplaza, siempre arriba, y es rectangular (los
+           demás grupos son píldoras). Lo que se apunta en él puede llevar un recordatorio: una notificación a su
+           hora. Su pantalla es la de cualquier grupo (#grupo/recordar); app.js pone la cuenta de lo pendiente. -->
+      <a class="recordar-fijo" id="acceso-recordar" href="#grupo/recordar">
+        <svg class="recordar-campana" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9zM10 20a2.2 2.2 0 0 0 4 0"/></svg>
+        <span class="recordar-nombre">Recordar</span>
+        <span class="recordar-cuenta" id="cuenta-recordar" aria-hidden="true" hidden></span>
+        <svg class="recordar-flecha" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9.5 5.5 16 12l-6.5 6.5"/></svg>
+      </a>
       <div class="desplazable" id="zona-lista">
         <ul id="lista-cosas" class="lista" role="list"></ul>
         <p id="vacio" class="vacio" hidden>No tienes cosas apuntadas.</p>
@@ -155,9 +164,21 @@
         <button type="button" class="redondo" id="editar-grupo" aria-label="Editar grupo">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3zM13.5 8.5l2 2"/></svg>
         </button>
+        <!-- En Recordar (el grupo fijo) no hay nombre ni color que editar: en este sitio va el recordatorio de
+             todas sus cosas o de las que se elijan. El de una sola está en su fila. -->
+        <button type="button" class="redondo" id="configurar-recordar" aria-label="Configurar recordatorio" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9zM10 20a2.2 2.2 0 0 0 4 0"/></svg>
+        </button>
       </header>
       <div class="desplazable" id="zona-grupo">
         <div class="cuerpo-grupo" id="cuerpo-grupo">
+          <!-- Solo en Recordar, mientras haya algo pendiente con recordatorio y este dispositivo no vaya a avisar (o
+               no haya podido contárselo aún a la función de avisos): por qué y, si tiene arreglo aquí mismo, el botón
+               que lo arregla. app.js pone el texto y el botón. -->
+          <div id="nota-recordar" class="nota nota-recordar" role="status" hidden>
+            <p id="texto-nota-recordar"></p>
+            <button type="button" class="boton-ancho" id="boton-nota-recordar" hidden></button>
+          </div>
           <ul id="lista-grupo" class="lista" role="list"></ul>
           <p id="grupo-vacio" class="nota" hidden>Este grupo está vacío.</p>
         </div>
@@ -226,11 +247,12 @@
                  Con sesión, nube.js lleva también las cosas, los grupos y estos ajustes a la nube.
                  app.js cambia el texto y la acción según haya sesión o no. -->
             <a class="boton-ancho" id="sesion" href="cuenta/?desde=app&amp;accion=entrar" aria-describedby="ayuda-datos">Iniciar sesión</a>
-            <p id="ayuda-datos" class="ayuda"><span id="ayuda-sesion">Inicia sesión con Google para tener tus cosas, tus grupos y tus listas de Cosas con y Cosas de en todos tus dispositivos. Sin sesión, todo se queda en este dispositivo.</span> <span id="ayuda-dictado">El dictado usa el servicio de voz de tu móvil, que puede enviar el audio a Google o Apple.</span></p>
+            <p id="ayuda-datos" class="ayuda"><span id="ayuda-sesion">Inicia sesión con Google para tener tus cosas, tus grupos y tus listas de Cosas con y Cosas de en todos tus dispositivos. Sin sesión, todo se queda en este dispositivo, menos lo que tenga recordatorio en Recordar: eso se guarda también en el servidor de Cosas para poder avisarte.</span> <span id="ayuda-dictado">El dictado usa el servicio de voz de tu móvil, que puede enviar el audio a Google o Apple.</span></p>
           </section>
 
-          <!-- Avisos de Cosas con y Cosas de (notificaciones push). app.js pone el texto del botón y de la
-               ayuda según se pueda, esté activado o esté bloqueado; sin poder, solo queda la ayuda. -->
+          <!-- Los recordatorios de Recordar y los avisos de Cosas con y Cosas de (notificaciones push). app.js pone
+               el texto del botón y de la ayuda según se pueda, esté activado o esté bloqueado; sin poder, solo
+               queda la ayuda. -->
           <section class="grupo" aria-labelledby="titulo-avisos">
             <h2 id="titulo-avisos" class="subtitulo">Notificaciones</h2>
             <button type="button" class="boton-ancho" id="avisos" aria-describedby="ayuda-avisos">Activar notificaciones</button>
@@ -312,6 +334,92 @@
     </section>
   </div>
 
+  <!-- Hoja del recordatorio: a qué hora y cada cuánto (se repite hasta que la cosa está hecha). Se abre desde la
+       fila de una cosa (solo para ella) o desde la campana de Recordar (para todas sus cosas pendientes y las que
+       se apunten después, o para las que se elijan). app.js rellena las horas, los minutos (de cinco en cinco: es
+       cada cuánto mira la función de avisos), los días del mes y las cosas que se pueden elegir. «Guardar» va en
+       un pie que no se desplaza: siempre a la vista, por larga que sea la hoja. -->
+  <div id="hoja-recordar" class="hoja" hidden>
+    <div class="hoja-velo" id="velo-hoja-recordar"></div>
+    <section class="hoja-panel" role="dialog" aria-modal="true" aria-labelledby="titulo-hoja-recordar">
+      <header class="hoja-cabecera">
+        <h2 id="titulo-hoja-recordar" class="hoja-titulo" tabindex="-1">Recordatorio</h2>
+        <button type="button" class="redondo" id="cerrar-hoja-recordar" aria-label="Cerrar">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <form id="formulario-recordar" class="datos" novalidate>
+        <p id="cosa-recordar" class="cosa-recordada" hidden></p>
+        <fieldset id="alcance-recordar" class="opciones" hidden>
+          <legend class="etiqueta">Para qué cosas</legend>
+          <div class="pastillas">
+            <label class="pastilla"><input type="radio" name="alcance" value="todas" checked><span>Todas</span></label>
+            <label class="pastilla"><input type="radio" name="alcance" value="elegir"><span>Elegir</span></label>
+          </div>
+        </fieldset>
+        <ul id="elegir-recordar" class="elegibles" role="list" aria-label="Cosas que quieres que te recuerde" hidden></ul>
+        <fieldset class="opciones">
+          <legend class="etiqueta">Hora</legend>
+          <div class="hora">
+            <select id="hora-recordar" class="selector" aria-label="Hora"></select>
+            <span aria-hidden="true">:</span>
+            <select id="minuto-recordar" class="selector" aria-label="Minutos"></select>
+          </div>
+        </fieldset>
+        <fieldset class="opciones">
+          <legend class="etiqueta">Frecuencia</legend>
+          <div class="pastillas" id="frecuencia-recordar">
+            <label class="pastilla"><input type="radio" name="frecuencia" value="dia" checked><span>Cada día</span></label>
+            <label class="pastilla"><input type="radio" name="frecuencia" value="laborables"><span>De lunes a viernes</span></label>
+            <label class="pastilla"><input type="radio" name="frecuencia" value="semana"><span>Cada semana</span></label>
+            <label class="pastilla"><input type="radio" name="frecuencia" value="mes"><span>Cada mes</span></label>
+          </div>
+        </fieldset>
+        <fieldset id="dia-recordar" class="opciones" hidden>
+          <legend class="etiqueta">Día</legend>
+          <div class="pastillas pastillas-dia">
+            <label class="pastilla"><input type="radio" name="dia" value="1" aria-label="Lunes"><span aria-hidden="true">L</span></label>
+            <label class="pastilla"><input type="radio" name="dia" value="2" aria-label="Martes"><span aria-hidden="true">M</span></label>
+            <label class="pastilla"><input type="radio" name="dia" value="3" aria-label="Miércoles"><span aria-hidden="true">X</span></label>
+            <label class="pastilla"><input type="radio" name="dia" value="4" aria-label="Jueves"><span aria-hidden="true">J</span></label>
+            <label class="pastilla"><input type="radio" name="dia" value="5" aria-label="Viernes"><span aria-hidden="true">V</span></label>
+            <label class="pastilla"><input type="radio" name="dia" value="6" aria-label="Sábado"><span aria-hidden="true">S</span></label>
+            <label class="pastilla"><input type="radio" name="dia" value="0" aria-label="Domingo"><span aria-hidden="true">D</span></label>
+          </div>
+        </fieldset>
+        <fieldset id="mes-recordar" class="opciones" hidden>
+          <legend class="etiqueta">Día del mes</legend>
+          <select id="dia-mes-recordar" class="selector" aria-label="Día del mes"></select>
+          <p id="ayuda-dia-mes" class="ayuda" hidden>En los meses más cortos, el último día.</p>
+        </fieldset>
+        <p id="resumen-recordar" class="resumen-recordar" aria-live="polite"></p>
+        <button type="button" class="boton-ancho" id="quitar-recordar" hidden>Quitar recordatorio</button>
+        <!-- Cómo llegará el aviso (o por qué aquí no), que lo pone app.js, y dónde se guarda lo que se recuerda. -->
+        <p id="ayuda-recordar" class="ayuda"></p>
+        <p class="ayuda">Para avisarte a su hora, el texto de lo que tenga recordatorio se guarda también en el servidor de Cosas, aunque no hayas iniciado sesión. Se borra de allí al quitar el recordatorio o al eliminar la cosa.</p>
+        <div class="pie-hoja">
+          <button type="submit" class="boton-ancho boton-lleno" id="guardar-recordar">Guardar</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <!-- Hoja «Hecho o mantener»: donde se contesta en la app a los recordatorios de los que se ha avisado. Se abre al
+       tocar un aviso (y, donde los avisos no tienen botones, al abrir la app con alguno sin contestar), sobre lo
+       que haya en pantalla. Cerrarla sin contestar es mantener. -->
+  <div id="hoja-avisada" class="hoja" hidden>
+    <div class="hoja-velo" id="velo-hoja-avisada"></div>
+    <section class="hoja-panel" role="dialog" aria-modal="true" aria-labelledby="titulo-hoja-avisada">
+      <header class="hoja-cabecera">
+        <h2 id="titulo-hoja-avisada" class="hoja-titulo" tabindex="-1">Recordatorio</h2>
+        <button type="button" class="redondo" id="cerrar-hoja-avisada" aria-label="Cerrar">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <ul id="lista-avisadas" class="avisadas" role="list"></ul>
+    </section>
+  </div>
+
   <!-- Aviso breve (Guardado / Eliminado). Vacío = invisible y sin tamaño. -->
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
@@ -359,6 +467,54 @@
       <button type="button" class="borrar quitar" data-accion="quitar" aria-label="Quitar del grupo">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14"/></svg>
       </button>
+    </li>
+  </template>
+
+  <!-- Una cosa en Recordar: como en cualquier grupo, más su recordatorio (cuándo avisa, o «Poner recordatorio»), que
+       es un botón y ocupa su propia línea bajo el texto: va el último, y así el foco sigue el orden en que se ve.
+       De los dos botones de la derecha solo se enseña uno (lo decide app.js): pendiente, «−» (sale de Recordar);
+       hecha, la papelera (se elimina, como en la lista). -->
+  <template id="plantilla-recordada">
+    <li class="fila fila-recordada">
+      <button type="button" class="hecho" data-accion="alternar" aria-pressed="false" aria-label="Marcar como hecha">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 7 10 16.5 5 12"/></svg>
+      </button>
+      <p class="texto"></p>
+      <button type="button" class="borrar quitar" data-accion="quitar" aria-label="Quitar de Recordar">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14"/></svg>
+      </button>
+      <button type="button" class="borrar" data-accion="eliminar" aria-label="Eliminar" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9.5 7V5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2M6.5 7l.8 11.2a2 2 0 0 0 2 1.8h5.4a2 2 0 0 0 2-1.8L17.5 7M10 11v5M14 11v5"/></svg>
+      </button>
+      <button type="button" class="cuando" data-accion="recordatorio">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9zM10 20a2.2 2.2 0 0 0 4 0"/></svg>
+        <span class="cuando-texto"></span>
+      </button>
+    </li>
+  </template>
+
+  <!-- Una cosa de Recordar que se puede elegir en la hoja del recordatorio. -->
+  <template id="plantilla-elegible">
+    <li>
+      <label class="elegible">
+        <input type="checkbox" name="cosa">
+        <span class="elegible-marca" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false"><path d="M19 7 10 16.5 5 12"/></svg>
+        </span>
+        <span class="elegible-texto"></span>
+      </label>
+    </li>
+  </template>
+
+  <!-- Una cosa de la que se ha avisado: «Hecho» o «Mantener» (app.js une cada botón con el texto de su cosa:
+       aria-describedby). -->
+  <template id="plantilla-avisada">
+    <li class="avisada">
+      <p class="avisada-texto"></p>
+      <div class="respuestas">
+        <button type="button" class="boton-ancho boton-lleno" data-respuesta="hecho">Hecho</button>
+        <button type="button" class="boton-ancho" data-respuesta="mantener">Mantener</button>
+      </div>
     </li>
   </template>
 
