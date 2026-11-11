@@ -436,7 +436,13 @@ export async function sesionDeAvisos(intento = 0) {
  *
  * «nacido» dice de qué documento es la base: si la función ya no tiene aquel (lo borró «olvidar», o caducó) y tiene
  * otro, o ninguno, la base no vale. Entonces se junta como la primera vez: lo de los dos sitios, y sin dar por
- * quitado aquí nada de lo que allí falte.
+ * quitado aquí nada de lo que allí falte. De lo que está en los dos gana lo de aquí, menos lo hecho (lo es si lo
+ * dice cualquiera) y el recordatorio que aquí sea solo el de todas (no pisa el que la función tiene de esa cosa).
+ *
+ * Un envío puede llegar a la función sin que su respuesta vuelva (se va la cobertura justo entonces). Por eso, antes
+ * de enviar, queda apuntado en la base qué se envía («enDuda»: si va el de todas, y de qué cosas). Mientras siga
+ * apuntado no se sabe qué tiene la función: la ronda siguiente empieza preguntándoselo, y de lo dudoso manda lo de
+ * aquí, porque lo que ella tenga puede ser ese mismo envío y no algo que cambió otro dispositivo.
  */
 const ESPERA_RECORDATORIOS = 15000;
 const VUELTAS_RECORDATORIOS = 4;
@@ -459,7 +465,8 @@ function recordadasDe(brutas, recordatorio) {
 /**
  * Junta lo de aquí («local»), la base y lo de la función («servidor»): cada uno, { general, cosas: Map }; sin base
  * que valga (la primera vez, o si la función ya tiene otro documento), null. «conocidas» son las cosas que están en
- * Recordar en este dispositivo. Devuelve:
+ * Recordar en este dispositivo (Map: id → si aquí está hecha); «enDuda», lo que iba en un envío que se quedó sin respuesta ({ general, ids: Set }).
+ * Devuelve:
  *   parche   → { general (solo si cambia; null lo quita), poner: { id: cosa }, quitar: [id] } con lo que hay que
  *              decirle a la función, o null si ya lo tiene todo;
  *   aplicar  → { general (undefined: sin cambio), cosas: [[id, cosa | null]] } con lo que hay que traer aquí;
@@ -467,7 +474,7 @@ function recordadasDe(brutas, recordatorio) {
  * Lo que la función tiene de cosas que aquí aún no han llegado (las puso otro dispositivo) ni se toca ni se apunta:
  * se adoptará cuando lleguen.
  */
-export function reconciliarRecordatorios(local, base, servidor, conocidas) {
+export function reconciliarRecordatorios(local, base, servidor, conocidas, enDuda = null) {
   const poner = {};
   const quitar = [];
   const cosas = new Map();
@@ -477,11 +484,24 @@ export function reconciliarRecordatorios(local, base, servidor, conocidas) {
     const l = local.cosas.get(id);
     const b = base ? base.cosas.get(id) : undefined;
     const s = servidor.cosas.get(id);
-    if (!l && !b) {
-      // Solo la tiene la función: su recordatorio se puso en otro dispositivo.
+    const dudosa = Boolean(enDuda) && enDuda.ids.has(id);
+    if (dudosa && !(l && s)) {
+      // Que la función la tenga, o que no, puede ser cosa de aquel envío: se queda como está aquí.
+      if (l) {
+        poner[id] = l;
+        cosas.set(id, l);
+      } else if (s) {
+        quitar.push(id);
+      }
+    } else if (!l && !b) {
+      // Solo la tiene la función: su recordatorio se puso en otro dispositivo. Sin base, hecha en cualquiera de los dos
+      // es hecha (como abajo): la que aquí ya se marcó (su check, o «Hecho» en la hoja de un aviso mientras se
+      // preguntaba a la función) no vuelve a pendiente por lo que ella diga, y se le cuenta.
       if (!conocidas.has(id)) continue;
-      aplicar.push([id, s]);
-      cosas.set(id, s);
+      const traida = conocidas.get(id) === true && !s.hecha ? { ...s, hecha: true } : s;
+      aplicar.push([id, traida]);
+      cosas.set(id, traida);
+      if (traida !== s) poner[id] = traida;
     } else if (!l) {
       // Aquí se le quitó el recordatorio (o la cosa ya no está en Recordar): se quita también allí, texto incluido.
       if (s) quitar.push(id);
@@ -496,20 +516,24 @@ export function reconciliarRecordatorios(local, base, servidor, conocidas) {
     } else {
       // En los dos sitios: de cada campo, lo que aquí no ha cambiado desde la base toma lo de la función. Sin base
       // (la primera vez que este dispositivo ve esa cosa allí), hecha en cualquiera de los dos es hecha: un «Hecho»
-      // pulsado en un aviso no se deshace por llegar de nuevas.
+      // pulsado en un aviso no se deshace por llegar de nuevas. Y gana el recordatorio de aquí, salvo que sea solo
+      // el de todas: ese nadie lo eligió para ella, y el que la función tiene, sí. Si es dudosa, el de aquí siempre:
+      // el de allí puede ser el de aquel envío.
       const mezcla = {
         texto: l.texto,
         hecha: b ? (l.hecha === b.hecha ? s.hecha : l.hecha) : l.hecha || s.hecha,
-        r: b && firmaDe(l.r) === firmaDe(b.r) ? s.r : l.r,
+        r: !dudosa && (b ? firmaDe(l.r) === firmaDe(b.r) : firmaDe(l.r) === firmaDe(local.general)) ? s.r : l.r,
       };
       cosas.set(id, mezcla);
       if (firmaDe(mezcla) !== firmaDe(s)) poner[id] = mezcla;
       if (firmaDe(mezcla) !== firmaDe(l)) aplicar.push([id, mezcla]);
     }
   }
-  // El de todas: con base, manda quien lo cambió desde ella (los dos: este dispositivo); sin ella, el de aquí y, si aquí no hay, el de allí.
+  // El de todas: con base, manda quien lo cambió desde ella (los dos: este dispositivo); sin ella, el de aquí y, si aquí no hay, el de
+  // allí. Si es dudoso (iba en el envío sin respuesta), el de aquí, lo haya o no.
   let general = local.general || servidor.general;
   if (base) general = firmaDe(local.general) === firmaDe(base.general) ? servidor.general : local.general;
+  if (enDuda && enDuda.general) general = local.general;
   const cambiaGeneral = firmaDe(general) !== firmaDe(servidor.general);
   const hayParche = cambiaGeneral || quitar.length > 0 || Object.keys(poner).length > 0;
   return {
@@ -609,8 +633,9 @@ async function pedirAvisos(api, accion, sesion, metodo, cuerpo) {
  *   recordatorio(bruto) → un recordatorio con su forma exacta, o null;
  *   local()             → lo de aquí ahora: { general, cosas: { id: { texto, hecha, r } } };
  *   firma()             → una firma de lo de aquí (se guarda con la base: mientras no cambie, no hay nada que contar);
- *   conocidas()         → Set con los ids de las cosas que están en Recordar en este dispositivo;
- *   base() y guardarBase(base) → lo último en que coincidían este dispositivo y la función;
+ *   conocidas()         → Map con las cosas que están en Recordar en este dispositivo (id → si está hecha);
+ *   base() y guardarBase(base) → lo último en que coincidían este dispositivo y la función (y, con un envío por el
+ *                         camino, qué lleva: «enDuda»);
  *   aplicar({ general, cosas }) → lo que llega de la función (ver reconciliarRecordatorios).
  * Devuelve { uid } (la sesión con la que se ha hablado) si la ronda acaba bien, o null si no (se repetirá otra vez).
  */
@@ -621,13 +646,21 @@ export async function sincronizarRecordatorios(app, intento = 0) {
     const leido = await pedirAvisos(app.api, 'recordar', sesion, 'GET');
     return leido.estado === 200 ? recordatoriosDelServidor(leido.datos, app.recordatorio) : null;
   };
-  let base = baseDeRecordatorios(app.base(), sesion.uid, app.recordatorio);
-  // Sin preguntar, la función tiene lo que dice la base; sin base, no queda otra que preguntarle.
-  let servidor = base && !app.leer ? { nacido: base.nacido, v: base.v, zona: base.zonaDeLaFuncion, general: base.general, cosas: base.cosas } : await preguntar();
+  const guardada = app.base();
+  const suya = Boolean(guardada) && typeof guardada === 'object' && guardada.uid === sesion.uid;
+  let base = baseDeRecordatorios(guardada, sesion.uid, app.recordatorio);
+  // Lo que iba en un envío de esta sesión que se quedó sin respuesta.
+  let enDuda = suya && guardada.enDuda && Array.isArray(guardada.enDuda.ids) ? { general: guardada.enDuda.general === true, ids: new Set(guardada.enDuda.ids) } : null;
+  const dudasAlEmpezar = enDuda;
+  // Sin preguntar, la función tiene lo que dice la base; sin base, o con algo en duda, no queda otra que preguntarle.
+  const sinPreguntar = base && !app.leer && !enDuda;
+  let servidor = sinPreguntar ? { nacido: base.nacido, v: base.v, zona: base.zonaDeLaFuncion, general: base.general, cosas: base.cosas } : await preguntar();
+  // Un check tocado aquí mientras se preguntaba queda dicho en la base (ponerHecha, en app.js): se lee otra vez.
+  if (!sinPreguntar) base = baseDeRecordatorios(app.base(), sesion.uid, app.recordatorio);
   for (let vuelta = 0; vuelta < VUELTAS_RECORDATORIOS && servidor; vuelta += 1) {
     if (!baseAlDia(base, servidor)) base = null;
     const { general, cosas } = app.local();
-    const resultado = reconciliarRecordatorios({ general, cosas: new Map(Object.entries(cosas)) }, base, servidor, app.conocidas());
+    const resultado = reconciliarRecordatorios({ general, cosas: new Map(Object.entries(cosas)) }, base, servidor, app.conocidas(), enDuda);
     if (resultado.aplicar.cosas.length > 0 || resultado.aplicar.general !== undefined) app.aplicar(resultado.aplicar);
     // La firma de lo de aquí tal como se va a enviar: lo que cambie mientras se espera la respuesta es para la ronda siguiente.
     const firma = app.firma();
@@ -636,12 +669,18 @@ export async function sincronizarRecordatorios(app, intento = 0) {
     const cambiaZona = servidor.nacido !== null && zona !== servidor.zona;
     let { nacido, v } = servidor;
     let otraVuelta = false;
+    // Antes de enviar queda apuntado qué se envía, y sin firma: hasta que haya respuesta, hay algo que contar. (Sin nada
+    // que enviar, ya no hay duda: la función acaba de decir lo que tiene.)
+    enDuda = resultado.parche ? { general: 'general' in resultado.parche, ids: new Set([...Object.keys(resultado.parche.poner), ...resultado.parche.quitar]) } : null;
+    if (enDuda) app.guardarBase({ ...(suya ? app.base() : null), uid: sesion.uid, firma: '', enDuda: { general: enDuda.general, ids: [...enDuda.ids] } });
     // En un envío o, si en uno no cabe, en varios seguidos: cada uno sobre la versión que deja el anterior.
     for (const envio of resultado.parche || cambiaZona ? enviosDe(resultado.parche) : []) {
       const respuesta = await pedirAvisos(app.api, 'recordar', sesion, 'POST', { siV: v, zona, ...envio });
       if (respuesta.estado === 409) {
         // Entretanto ha cambiado allí (otro dispositivo, o un «Hecho» en un aviso): se junta otra vez con lo que tiene.
         servidor = recordatoriosDelServidor(respuesta.datos, app.recordatorio);
+        // Ese envío no se aplicó: lo que llevaba no queda en duda, y se junta campo a campo con lo que haya allí.
+        enDuda = dudasAlEmpezar;
         otraVuelta = true;
         break;
       }

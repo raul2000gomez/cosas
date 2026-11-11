@@ -4,7 +4,7 @@
 'use strict';
 
 // Sello de versión: lo actualiza herramientas/sellar_version.py; ejecútalo antes de publicar cualquier cambio.
-const VERSION_CACHE = 'cosas-v1.2.0-3ca50c4f';
+const VERSION_CACHE = 'cosas-v1.2.0-e380ef3a';
 const PREFIJO_CACHE = 'cosas-';
 const PORTADA = './index.html';
 // Rutas propias del alojamiento (Netlify), no de la app: ni se sirven ni se guardan desde aquí. /api/ es la
@@ -149,8 +149,8 @@ async function ensenarAviso(aviso) {
 const urlDeDato = (tipo, id) => new URL(`__recordar/${tipo}/${encodeURIComponent(id)}`, self.registration.scope).href;
 
 /**
- * Apunta algo: para la app, «hechas» (se pulsó «Hecho» en el aviso de esa cosa) y «avisadas» (se avisó y falta la
- * respuesta); para el propio service worker, «por-decir» (un «Hecho» que la función de avisos aún no sabe).
+ * Apunta algo: para la app, «hechas» (se pulsó «Hecho» en el aviso de esa cosa, y cuándo) y «avisadas» (se avisó y
+ * falta la respuesta); para el propio service worker, «por-decir» (un «Hecho» que la función de avisos aún no sabe).
  */
 async function apuntar(tipo, id, dato) {
   try {
@@ -219,11 +219,15 @@ async function decirLoPendiente(pendientes) {
   return dichos.every(Boolean);
 }
 
-/** Sin conexión, el «Hecho» se repetirá cuando vuelva (donde el navegador sabe avisar de eso) y, en todo caso, con el próximo aviso. */
+/**
+ * Sin conexión, el «Hecho» queda por decir. Se le pide al navegador que avise cuando vuelva, pero solo lo admite con
+ * la app abierta (y entonces ella ya se lo cuenta a la función): con la app cerrada se repite con el próximo aviso que
+ * llegue, sea de Recordar o de una lista, o lo sube la app al abrirse.
+ */
 async function repetirAlVolverLaConexion() {
   try {
     if (self.registration.sync) await self.registration.sync.register(HECHO_PENDIENTE);
-  } catch (error) { /* Sin permiso o sin soporte: con el próximo aviso. */ }
+  } catch (error) { /* Sin ventana, sin permiso o sin soporte: con el próximo aviso. */ }
 }
 
 /** El aviso de una cosa: título «Recordar» y, de texto, la cosa (lo que se despliega al abrirlo), con «Hecho» y «Mantener». */
@@ -253,7 +257,8 @@ async function ensenarRecordatorio(cosa, uid, suena) {
 /**
  * Los recordatorios que tocan ahora: { tipo: 'recordar', uid, cosas: [{ id, texto, ficha }] } (lo demás que trae es
  * para un service worker de antes de Recordar). Un aviso por cosa, cada uno con su etiqueta. La función de avisos
- * (netlify/functions) los manda cada vez que toca, hasta que se le dice «Hecho».
+ * (netlify/functions) los manda cada vez que toca, hasta que se le dice «Hecho». Acaba con los avisos a la vista y
+ * devuelve { diciendo }: lo que aún le está diciendo a la función (ver el oyente de «push»).
  */
 async function ensenarRecordatorios(aviso) {
   const cosas = aviso.cosas.filter((cosa) => cosa && typeof cosa === 'object' && texto(cosa.id, '') && texto(cosa.texto, ''));
@@ -267,7 +272,16 @@ async function ensenarRecordatorios(aviso) {
   for (const [indice, cosa] of visibles.entries()) await ensenarRecordatorio(cosa, texto(aviso.uid, ''), indice === 0);
   // Sin ninguna cosa que se entienda, lo que el envío trae para cualquier aviso (título, línea y enlace).
   if (visibles.length === 0) await ensenarAviso(aviso);
-  await diciendo;
+  return { diciendo }; // Dentro de un objeto: una promesa devuelta tal cual haría esperar a quien espera a esta función.
+}
+
+/**
+ * Un aviso de una lista. De paso se repiten los «Hecho» que la función aún no sabe, como con los recordatorios: que
+ * llegue un envío, sea de lo que sea, es la única señal de que hay conexión que el service worker recibe con la app cerrada.
+ */
+async function ensenarAvisoDeLista(aviso) {
+  await ensenarAviso(aviso);
+  return { diciendo: apuntados('por-decir').then(decirLoPendiente) };
 }
 
 /** Avisa a las ventanas de la app que haya abiertas. */
@@ -301,13 +315,14 @@ async function preguntarEnLaApp(datos) {
 }
 
 /**
- * La respuesta a un recordatorio. «Hecho»: la cosa queda apuntada como hecha para la app (que marca su check: al
- * momento si está abierta, o al abrirse) y la función de avisos deja de avisar de ella. «Mantener»: nada que hacer,
- * sigue con su recordatorio y se avisará la próxima vez que toque.
+ * La respuesta a un recordatorio. «Hecho»: la cosa queda apuntada como hecha para la app, con la hora (marca su
+ * check al momento si está abierta; si se abre más tarde, mira antes que no se haya deshecho en otro dispositivo),
+ * y la función de avisos deja de avisar de ella. «Mantener»: nada que hacer, sigue con su recordatorio y se avisará
+ * la próxima vez que toque.
  */
 async function responderRecordatorio(accion, datos) {
   if (accion === 'hecho') {
-    await apuntar('hechas', datos.id, { id: datos.id });
+    await apuntar('hechas', datos.id, { id: datos.id, en: Date.now() });
     await olvidar('avisadas', datos.id);
     const [, dicho] = await Promise.all([decirALaApp({ tipo: 'recordar-hecho', id: datos.id }).catch(() => {}), decirHecho(datos)]);
     if (!dicho) await repetirAlVolverLaConexion();
@@ -320,7 +335,8 @@ async function responderRecordatorio(accion, datos) {
   await preguntarEnLaApp(datos);
 }
 
-// De uno en uno: dos avisos seguidos de la misma lista no se pisan al juntarse.
+// De uno en uno: dos avisos seguidos de la misma lista no se pisan al juntarse. El turno de un envío acaba cuando sus
+// avisos están a la vista: lo que le quede por decir a la función (puede tardar, o no contestar) no retrasa al siguiente.
 let turnoDeAvisos = Promise.resolve();
 
 self.addEventListener('push', (evento) => {
@@ -329,8 +345,10 @@ self.addEventListener('push', (evento) => {
     aviso = (evento.data && evento.data.json()) || {};
   } catch (error) { /* Sin datos legibles: un aviso genérico. */ }
   const sonRecordatorios = aviso.tipo === 'recordar' && Array.isArray(aviso.cosas);
-  turnoDeAvisos = turnoDeAvisos.catch(() => {}).then(() => (sonRecordatorios ? ensenarRecordatorios(aviso) : ensenarAviso(aviso)));
-  evento.waitUntil(turnoDeAvisos);
+  const turno = turnoDeAvisos.catch(() => {}).then(() => (sonRecordatorios ? ensenarRecordatorios(aviso) : ensenarAvisoDeLista(aviso)));
+  turnoDeAvisos = turno;
+  // El service worker, en cambio, sigue despierto hasta que acaba de decírselo.
+  evento.waitUntil(turno.then((resultado) => resultado && resultado.diciendo));
 });
 
 /** Tocar un aviso abre esa lista: en la ventana de la app que ya haya abierta o en una nueva. */

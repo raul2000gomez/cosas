@@ -365,6 +365,14 @@ JS_TOAST = r"""
 
 
 def esperar(pagina, expresion, arg=None, ms=4000, que=None):
+    if expresion.lstrip().startswith("async"):
+        # wait_for_function no espera a una función asíncrona (su promesa ya le vale): esa se mira desde aquí.
+        fin = time.monotonic() + ms / 1000
+        while not pagina.evaluate(expresion, arg):
+            if time.monotonic() > fin:
+                raise Fallo(f"No se cumplió en {ms} ms: {que or expresion}")
+            pagina.wait_for_timeout(50)
+        return
     try:
         pagina.wait_for_function(expresion, arg=arg, timeout=ms)
     except TiempoAgotado:
@@ -7113,7 +7121,7 @@ JS_HOJA_RECORDAR = r"""
 AYUDA_HOJA_CON_BOTONES = "Te llegará una notificación por cada cosa, con «Hecho» y «Mantener»."
 AYUDA_HOJA_SIN_BOTONES = "Te llegará una notificación por cada cosa: al tocarla, dices si ya está hecha o si la mantienes."
 PRIVACIDAD_HOJA = ("Para avisarte a su hora, el texto de lo que tenga recordatorio se guarda también en el servidor de Cosas, aunque no hayas iniciado sesión. "
-                   "Se borra de allí al quitar el recordatorio o al eliminar la cosa.")
+                   "Se borra de allí al quitar el recordatorio o al eliminar la cosa; lo que quede de una sesión que ya no uses, al cabo de un mes.")
 DIAS_HOJA = [("Lunes", "L", "1", "lunes"), ("Martes", "M", "2", "martes"), ("Miércoles", "X", "3", "miércoles"), ("Jueves", "J", "4", "jueves"),
              ("Viernes", "V", "5", "viernes"), ("Sábado", "S", "6", "sábado"), ("Domingo", "D", "0", "domingo")]
 
@@ -7167,7 +7175,7 @@ def cerrar_hoja_recordar(pagina):
     pagina.wait_for_timeout(400)  # Lo que hay bajo la hoja acaba de aparecer: pasa su guarda.
 
 
-@prueba("hoja del recordatorio de una cosa: se abre desde su fila con el texto de la cosa, la hora en dos desplegables (minutos de cinco en cinco) y cuatro frecuencias (ya no hay «Una vez»); «Cada semana» pide el día (por defecto, hoy) y «Cada mes» el día del mes (hoy; del 29 al 31, «En los meses más cortos, el último día.»); la frase dice en vivo lo que pasará («a la 1:05»); «Guardar» deja exactamente ese recordatorio y la fila lo dice; al reabrir están sus valores y «Quitar recordatorio»; cerrar sin guardar no cambia nada")
+@prueba("hoja del recordatorio de una cosa: se abre desde su fila con el texto de la cosa, la hora en dos desplegables (minutos de cinco en cinco) y cuatro frecuencias (ya no hay «Una vez»); «Cada semana» pide el día (por defecto, hoy) y «Cada mes» el día del mes (hoy; del 29 al 31, «En los meses más cortos, el último día.»); la frase dice en vivo lo que pasará («a la 1:05»); «Guardar» deja exactamente ese recordatorio y la fila lo dice; al reabrir están sus valores y «Quitar recordatorio»; cerrar sin guardar no cambia nada; la hoja de una cosa hecha no promete un aviso: dice que no lo habrá hasta que se desmarque")
 def t_hoja_recordar_una(e):
     martes = recordatorio("21:30", "semana", dia=2)
     datos = estado_recordar([recordada(3, "Llamar al dentista"), recordada(2, "Sacar la basura"), recordada(1, "Regar las plantas", hecha=True)])
@@ -7270,9 +7278,22 @@ def t_hoja_recordar_una(e):
     igual((h["cosa"], h["hora"], h["minuto"], h["frecuencia"], h["dia"], h["resumen"], h["quitar"]), ("Sacar la basura", "21", "30", "semana", "2", "Te lo recordaré cada martes a las 21:30.", "Quitar recordatorio"), "La hoja de otra cosa")
     cerrar_hoja_recordar(p)
     h = abrir_hoja_recordar(p, "Regar las plantas")
-    igual((h["cosa"], h["hora"], h["minuto"], h["resumen"]), ("Regar las plantas", "09", "05", "Te lo recordaré cada día a las 9:05."), "La hoja de una cosa con una hora que no va de cinco en cinco")
+    # De una hecha no se avisa hasta que se desmarque: su hoja lo dice en vez de prometer un aviso, elija lo que elija.
+    igual((h["cosa"], h["hora"], h["minuto"], h["resumen"]), ("Regar las plantas", "09", "05", "Ya está hecha: no te lo recordaré hasta que la desmarques. Después, cada día a las 9:05."),
+          "La hoja de una cosa hecha, con una hora que no va de cinco en cinco")
+    pastilla(p, "Cada semana")
+    pastilla(p, "Martes")
+    elegir_hora(p, "01", "00")
+    esperar_hoja_recordar(p, "la frase de una cosa hecha sigue lo elegido", resumen="Ya está hecha: no te lo recordaré hasta que la desmarques. Después, cada martes a la 1:00.")
+    igual(p.evaluate(f"() => ({JS_RECORTADO})(document.querySelector('#resumen-recordar'))"), False, "La frase de una cosa hecha sale recortada")
     cerrar_hoja_recordar(p)
     igual(recordar_en_bruto(p), en_bruto(recordar_guardado(cosas={"id-2": martes, "id-1": recordatorio("09:07", "dia")})), "Abrir y cerrar hojas cambia lo guardado")
+    # Desmarcada, vuelve a ser una cosa de la que se avisa: su hoja lo promete como la de cualquier otra.
+    check_de(fila_recordada(p, "Regar las plantas")).tap()
+    esperar_recordadas(p, "la hecha, desmarcada, vuelve con las pendientes", hechas=[False, False, False])
+    p.wait_for_timeout(400)
+    h = abrir_hoja_recordar(p, "Regar las plantas")
+    igual(h["resumen"], "Te lo recordaré cada día a las 9:05.", "La hoja de una cosa que ya no está hecha")
 
 
 # Tres cosas pendientes (dos con recordatorio propio) y dos hechas (una con el suyo), además de una suelta.
@@ -7657,7 +7678,23 @@ def comprobar_pie_de_la_hoja(pagina, donde):
     return m
 
 
-@prueba("hoja del recordatorio: «Guardar» va en un pie que no se desplaza y está siempre a la vista (vertical, apaisado, 320 px, zoom al 200 % y «Elegir» con 40 cosas, que se desplazan por dentro); la hoja cabe pegada abajo, nada desborda ni se recorta, lo que toma el foco se ve sobre el pie y la nota de dónde se guarda queda encima de él")
+def comprobar_aviso_con_vuelta(pagina, ancho, alto, que):
+    """El aviso de lo que se cambia de una vez en varios recordatorios: se lee entero (en las líneas que haga falta), cabe en la pantalla y «Deshacer» queda dentro de la píldora, sin que el texto lo pise."""
+    esperar(pagina, f"() => ({JS_TOAST})().opacidad === 1", que=f"{que}: el aviso acaba de aparecer")
+    m = pagina.evaluate(f"""() => {{ const caja = (el) => {{ const r = el.getBoundingClientRect(); return {{ x: r.left, y: r.top, d: r.right, b: r.bottom }}; }};
+        const aviso = document.querySelector('#toast'), texto = aviso.querySelector('.toast-texto'), boton = aviso.querySelector('.toast-accion'), tinta = document.createRange();
+        tinta.selectNodeContents(texto);
+        const centro = boton.getBoundingClientRect();
+        return {{ aviso: caja(aviso), boton: caja(boton), tinta: caja(tinta), dice: boton.textContent, recortado: ({JS_RECORTADO})(texto),
+                 alDedo: document.elementFromPoint(centro.left + centro.width / 2, centro.top + centro.height / 2) === boton }}; }}""")
+    aviso, boton, tinta = m["aviso"], m["boton"], m["tinta"]
+    comprobar(not m["recortado"] and aviso["x"] >= 0 and aviso["y"] >= 0 and aviso["d"] <= ancho + 0.5 and aviso["b"] <= alto + 0.5, f"{que}: el aviso sale recortado o se sale de la pantalla: {m}")
+    comprobar(m["dice"] == "Deshacer" and boton["x"] >= aviso["x"] - 0.5 and boton["d"] <= aviso["d"] + 0.5 and boton["d"] <= ancho + 0.5 and boton["b"] - boton["y"] >= 44 and m["alDedo"],
+              f"{que}: «Deshacer» se sale de la píldora o de la pantalla, o no se alcanza: {m}")
+    comprobar(tinta["x"] >= aviso["x"] - 0.5 and tinta["d"] <= boton["x"] + 0.5, f"{que}: el texto del aviso se sale de la píldora o pisa «Deshacer»: {m}")
+
+
+@prueba("hoja del recordatorio: «Guardar» va en un pie que no se desplaza y está siempre a la vista (vertical, apaisado, 320 px, zoom al 200 % y «Elegir» con 40 cosas, que se desplazan por dentro); la hoja cabe pegada abajo, nada desborda ni se recorta, lo que toma el foco se ve sobre el pie y la nota de dónde se guarda queda encima de él; los avisos con «Deshacer» («Recordatorio puesto a N cosas», «Recordatorios quitados») se leen enteros con su botón dentro de la píldora y de la pantalla, también a 195 px")
 def t_hoja_recordar_pie(e):
     cuarenta = estado_recordar([recordada(i, f"Cosa número {i} de las que hay que acordarse", hecha=i % 8 == 0) for i in range(1, 41)])
     propios = recordar_guardado(cosas={"id-39": recordatorio("21:30", "semana", dia=2)})
@@ -7696,9 +7733,42 @@ def t_hoja_recordar_pie(e):
         esperar_hoja_recordar(p, "con la última elegida se puede guardar", guardar=True)
         comprobar(abs(p.evaluate(JS_MEDIDAS_HOJA_RECORDAR)["guardar"]["y"] - m["guardar"]["y"]) <= 1, f"[{etiqueta}] Al elegir una cosa, «Guardar» se mueve")
         guardar_hoja_recordar(p)
-        aviso = esperar_toast(p, "Recordatorio puesto a 1 cosa")
-        comprobar(aviso["x"] >= 0 and aviso["x"] + aviso["ancho"] <= ancho + 0.5 and not p.evaluate(f"() => ({JS_RECORTADO})(document.querySelector('#toast .toast-texto'))"), f"[{etiqueta}] El aviso con «Deshacer» se sale o sale recortado: {aviso}")
+        esperar_toast(p, "Recordatorio puesto a 1 cosa")
+        comprobar_aviso_con_vuelta(p, ancho, alto, f"[{etiqueta}] «Recordatorio puesto a 1 cosa»")
         igual(leer_recordar(p)["cosas"].get("id-1"), recordatorio(), f"[{etiqueta}] Lo guardado para la última cosa de la lista")
+        # El otro aviso con «Deshacer», el de quitarlos todos: su palabra más larga es la que menos cabe con el zoom al 200 %.
+        p.wait_for_timeout(400)
+        abrir_hoja_recordar(p)
+        p.locator("#hoja-recordar").get_by_role("button", name="Quitar todos los recordatorios", exact=True).tap()
+        esperar_toast(p, "Recordatorios quitados")
+        comprobar_aviso_con_vuelta(p, ancho, alto, f"[{etiqueta}] «Recordatorios quitados»")
+        p.get_by_role("button", name="Deshacer", exact=True).tap()
+        esperar(p, "(clave) => 'id-1' in JSON.parse(localStorage.getItem(clave)).cosas", arg=CLAVE_RECORDAR, que=f"[{etiqueta}] «Deshacer» devuelve los recordatorios quitados")
+        p.context.close()
+
+
+@prueba("hoja del recordatorio, los días de «Cada semana» según el ancho: desde 356 px (360, 375 y los móviles de las pruebas) los siete van en una fila, con 40 px de ancho o más; más estrecho (355 y 320 px) no cabrían con ese ancho y van en dos filas, de cuatro y de tres; siempre con 44 px de alto, separados, dentro de la hoja y al alcance del dedo, y «Guardar» sigue a la vista")
+def t_hoja_recordar_dias(e):
+    datos = estado_recordar([recordada(1, "Sacar la basura")])
+    propios = recordar_guardado(cosas={"id-1": recordatorio("21:30", "semana", dia=2)})
+    for ancho, alto, por_fila in ((320, 568, [4, 3]), (355, 640, [4, 3]), (356, 640, [7]), (360, 640, [7]), (375, 667, [7]), (e.ancho, e.alto, [7])):
+        p = sembrar_recordar(e, datos, propios, contexto=e.contexto(viewport={"width": ancho, "height": alto}))
+        esperar_vista(p, "grupo")
+        h = abrir_hoja_recordar(p, "Sacar la basura")
+        igual((h["frecuencia"], h["dia"]), ("semana", "2"), f"[{ancho} px] La hoja de un recordatorio semanal")
+        m = p.evaluate("""() => { const caja = (el) => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, d: r.right, b: r.bottom, ancho: r.width, alto: r.height }; };
+            return { dias: [...document.querySelectorAll('#dia-recordar label')].map((l) => ({ ...caja(l), letra: l.textContent.trim() })), grupo: caja(document.querySelector('#dia-recordar .pastillas-dia')) }; }""")
+        dias, grupo_dias = m["dias"], m["grupo"]
+        filas_de_dias = sorted({round(d["y"]) for d in dias})
+        igual(("".join(d["letra"] for d in dias), [sum(1 for d in dias if round(d["y"]) == y) for y in filas_de_dias]), ("LMXJVSD", por_fila), f"[{ancho} px] Los días de la semana, en orden, y cuántos van en cada fila")
+        comprobar(all(d["ancho"] >= 39.9 and d["alto"] >= 44 for d in dias), f"[{ancho} px] Algún día mide menos de 40 px de ancho o de 44 de alto: {dias}")
+        comprobar(all(d["x"] >= grupo_dias["x"] - 0.5 and d["d"] <= grupo_dias["d"] + 0.5 and grupo_dias["x"] >= 0 and grupo_dias["d"] <= ancho for d in dias), f"[{ancho} px] Algún día se sale de su fila o de la pantalla: {dias} en {grupo_dias}")
+        comprobar(all(b["x"] - a["d"] >= 5.5 for a, b in zip(dias, dias[1:]) if round(a["y"]) == round(b["y"])) and all(siguiente - anterior >= 44 + 5.5 for anterior, siguiente in zip(filas_de_dias, filas_de_dias[1:])),
+                  f"[{ancho} px] Los días se pisan o van pegados: {dias}")
+        # El último (solo en su fila cuando van en dos) se elige con el dedo, y la frase lo dice.
+        pastilla(p, "Domingo")
+        esperar_hoja_recordar(p, f"[{ancho} px] el domingo, elegido con el dedo", dia="0", resumen="Te lo recordaré cada domingo a las 21:30.")
+        comprobar_pie_de_la_hoja(p, f"[{ancho} px] hoja con los días de la semana")
         p.context.close()
 
 
@@ -7759,13 +7829,14 @@ def t_recordar_xss_y_largos(e):
         p.context.close()
 
 
-# Por qué este dispositivo no va a avisar de lo que hay en Recordar: lo dice la nota de arriba de su página (y la hoja del recordatorio).
+# Por qué este dispositivo no va a avisar de lo que hay en Recordar (o de parte): lo dice la nota de arriba de su página (y, salvo lo del tope, la hoja del recordatorio).
 NOTAS_RECORDAR = {
     "apagados": "Para que te avise, activa las notificaciones en este dispositivo.",
-    "instalar": "En iPhone, los recordatorios llegan a la aplicación: conviértela en aplicación y ponlos desde ella.",
+    "instalar": "En iPhone, los recordatorios solo llegan a la aplicación: convierte Cosas en aplicación y ponlos desde ella.",
     "bloqueados": "Las notificaciones de Cosas están bloqueadas en este dispositivo. Para que te avise, permítelas en los ajustes del móvil o del navegador.",
     "imposible": "Este navegador no puede recibir notificaciones: aquí no te avisará.",
     "sin-conexion": "Sin conexión: tus recordatorios empezarán a avisar cuando vuelva.",
+    "tope": "Recordar avisa de 100 cosas como mucho, las más recientes: de las demás no te avisará.",
 }
 
 JS_NOTA_RECORDAR = r"""
@@ -7912,6 +7983,121 @@ def t_nota_recordar(e):
         esperar_nota(p, "sin-conexion")
         p.context.set_offline(False)
         esperar_nota(p, None)
+        p.context.close()
+
+
+# Dónde queda la nota de Recordar respecto a lo que se ve de su página (entre la cabecera y la barra «Añadir cosas»), y cuánto se ha desplazado la lista.
+JS_NOTA_EN_SU_ZONA = r"""
+() => {
+  const nota = document.querySelector('#nota-recordar'), zona = document.querySelector('#zona-grupo'), n = nota.getBoundingClientRect();
+  const techo = document.querySelector('#vista-grupo header').getBoundingClientRect().bottom, suelo = document.querySelector('#barra-anadir > .pildora').getBoundingClientRect().top;
+  return { aLaVista: nota.checkVisibility() && n.top >= techo - 0.5 && n.bottom <= suelo + 0.5, nota: [n.top, n.bottom], hueco: [techo, suelo], desplazamiento: zona.scrollTop, recorrido: zona.scrollHeight - zona.clientHeight };
+}
+"""
+
+
+def recordar_desde_el_final(pagina, texto):
+    """Con la lista de Recordar desplazada hasta el final, le pone a esa cosa (de las últimas) el recordatorio que propone la hoja. Devuelve lo desplazada que estaba la lista justo antes de guardar y cómo queda."""
+    pagina.evaluate("() => { const zona = document.querySelector('#zona-grupo'); zona.scrollTop = zona.scrollHeight; }")
+    pagina.wait_for_timeout(150)
+    abrir_hoja_recordar(pagina, texto)
+    antes = pagina.evaluate(JS_NOTA_EN_SU_ZONA)["desplazamiento"]
+    comprobar(antes >= 200, f"La lista de Recordar no está lo bastante desplazada para que la nota quede fuera de la vista: {antes}")
+    guardar_hoja_recordar(pagina)
+    esperar_toast(pagina, "Recordatorio guardado")
+    pagina.wait_for_timeout(300)
+    return antes, pagina.evaluate(JS_NOTA_EN_SU_ZONA)
+
+
+@prueba("nota de Recordar a la vista: al guardar el primer recordatorio desde el final de una lista larga en un dispositivo que no va a avisar (notificaciones bloqueadas), la lista sube hasta la nota que lo explica, y el aviso sigue diciendo solo «Recordatorio guardado»; con la nota ya puesta, con las notificaciones activadas, con el permiso aún por pedir (lo normal la primera vez: se pide en ese toque) o con la de «sin conexión» que sale mientras se sube tras una ronda fallida con la función (y se va sola), la lista se queda donde estaba")
+def t_nota_recordar_a_la_vista(e):
+    doce = estado_recordar([recordada(i, f"Cosa número {i}") for i in range(1, 13)])
+    # Bloqueadas (así está el navegador de las pruebas) y aún sin recordatorios: no hay nota hasta que se guarda el primero.
+    p = sembrar_recordar(e, doce)
+    esperar_vista(p, "grupo")
+    igual(nota_recordar(p), None, "La nota de Recordar sin ningún recordatorio")
+    antes, m = recordar_desde_el_final(p, "Cosa número 1")
+    esperar_nota(p, "bloqueados")
+    comprobar(m["aLaVista"] and m["desplazamiento"] == 0, f"Con las notificaciones bloqueadas, tras guardar el primer recordatorio la nota no queda a la vista (la lista estaba en {antes}): {m}")
+    igual((toast(p)["texto"], cuandos(p)["Cosa número 1"], leer_recordar(p)["cosas"]), ("Recordatorio guardado", "9:00 · Cada día", {"id-1": recordatorio()}), "El aviso, la fila y lo guardado tras subir la lista hasta la nota")
+    # El segundo: la nota ya estaba (se vio al guardar el primero), así que la lista no se mueve.
+    esperar_sin_toast(p)
+    antes, m = recordar_desde_el_final(p, "Cosa número 2")
+    comprobar(abs(m["desplazamiento"] - antes) <= 1 and not m["aLaVista"], f"Con la nota ya puesta, guardar otro recordatorio mueve la lista (estaba en {antes}): {m}")
+    p.context.close()
+    # Con las notificaciones activadas no hay nota que enseñar: la lista no se mueve.
+    p = sembrar_recordar(e, doce, contexto=contexto_con_avisos(e), avisos=AVISOS_ACTIVOS)
+    esperar_vista(p, "grupo")
+    antes, m = recordar_desde_el_final(p, "Cosa número 1")
+    igual((nota_recordar(p), abs(m["desplazamiento"] - antes) <= 1), (None, True), f"Con las notificaciones activadas, guardar el primer recordatorio saca la nota o mueve la lista (estaba en {antes}, queda en {m['desplazamiento']})")
+    p.context.close()
+    # Sin activar: «Guardar» pide el permiso en ese mismo toque. Quien está contestando a esa pregunta no ve saltar la lista
+    # (aquí la cierra sin elegir: la nota le ofrece activarlas cuando vuelva arriba).
+    p = sembrar_recordar(e, doce, contexto=contexto_con_avisos(e, "window.__avisos.respuesta = 'default';"))
+    esperar_vista(p, "grupo")
+    antes, m = recordar_desde_el_final(p, "Cosa número 1")
+    esperar_nota(p, "apagados", "Activar notificaciones")
+    igual((p.evaluate("() => window.__avisos.pedidos"), m["desplazamiento"] >= antes - 1), (1, True), f"Con el permiso por pedir, guardar el primer recordatorio no lo pide o mueve la lista (estaba en {antes}, queda en {m['desplazamiento']})")
+    p.context.close()
+    # Activadas, pero la última ronda con la función falló (un 500 al preguntarle) y no había nada que subir: sin nota. El
+    # recordatorio nuevo saca la de «sin conexión» mientras se sube, y se va sola en cuanto llega: por ella la lista no se mueve.
+    e.tolerar += [r"^500 https://cosas\.test/api/avisos/recordar$", r"status of 500 \(Internal Server Error\)$"]  # El 500 de la función de mentira.
+    api = ApiRecordarFalsa()
+    p = abrir_con_recordar(dispositivo_con_recordar(e, api), e, doce, recordar_guardado(cosas={"id-12": recordatorio()}))
+    esperar_vista(p, "grupo")
+    esperar_base(p, "con el recordatorio de la última ya subido", v=1)
+    api.fallar.add("recordar")
+    lecturas = len(api.lecturas())
+    p.evaluate(JS_VUELVE_LA_CONEXION)
+    esperar_lecturas(p, api, lecturas + 1)
+    sin_mas_llamadas(p, api, "Tras fallar la pregunta a la función")
+    igual((api.lecturas()[-1]["estado"], nota_recordar(p)), (500, None), "Tras la ronda fallida sin nada que subir: la pregunta falló y no hay nota")
+    api.fallar.clear()
+    api.retener.add("recordar")  # La ronda que sube el nuevo se queda por el camino: mientras, la nota dice lo de sin conexión.
+    antes, m = recordar_desde_el_final(p, "Cosa número 1")
+    esperar_nota(p, "sin-conexion")
+    comprobar(m["desplazamiento"] >= antes - 1 and not m["aLaVista"], f"Por la nota de «sin conexión» que sale mientras se sube, guardar el primer recordatorio mueve la lista (estaba en {antes}): {m}")
+    api.soltar()
+    esperar_envios(p, api, 2)
+    esperar_nota(p, None)
+    m = p.evaluate(JS_NOTA_EN_SU_ZONA)
+    igual((m["desplazamiento"] >= antes - 1, sorted(api.de_la_sesion("anonimo-1")["cosas"])), (True, ["id-1", "id-12"]),
+          f"Subido el recordatorio, la nota se va y la lista sigue donde estaba (estaba en {antes}, queda en {m['desplazamiento']})")
+    p.context.close()
+
+
+@prueba("nota de Recordar con más de 100 cosas: la función avisa como mucho de 100 (le llegan las pendientes más recientes), así que con las notificaciones activadas y más de 100 cosas pendientes con recordatorio la nota lo dice, sin botón y sin recortar, y la hoja no; con 100 justas no sale (al marcar una de las 101, o al quitarle el recordatorio a otra); sin conexión dice lo de sin conexión y, al volver, otra vez lo del tope; con las notificaciones bloqueadas o sin activar, lo que dice es lo de los permisos")
+def t_nota_recordar_tope(e):
+    ciento_una = estado_recordar([recordada(i, f"Cosa número {i}") for i in range(1, MAX_RECORDADAS + 2)])
+    todas = recordar_guardado(general=recordatorio())
+    mas_reciente, mas_antigua = f"Cosa número {MAX_RECORDADAS + 1}", "Cosa número 1"
+    p = sembrar_recordar(e, ciento_una, todas, contexto=contexto_con_avisos(e), avisos=AVISOS_ACTIVOS)
+    esperar_vista(p, "grupo")
+    esperar_nota(p, "tope")
+    m = p.evaluate(f"""() => {{ const r = document.querySelector('#nota-recordar').getBoundingClientRect();
+        return {{ recortado: ({JS_RECORTADO})(document.querySelector('#texto-nota-recordar')), dentro: r.left >= 0 && r.right <= innerWidth + 0.5 }}; }}""")
+    igual((m, ayuda_de_la_hoja(p, mas_reciente)), ({"recortado": False, "dentro": True}, AYUDA_HOJA_CON_BOTONES), "La nota del tope, sin recortar y dentro de la pantalla; la hoja dice cómo llegará el aviso, como siempre con las notificaciones activadas")
+    # Con 100 pendientes caben todas: marcar una quita la nota, y desmarcarla la devuelve.
+    check_de(fila_recordada(p, mas_reciente)).tap()
+    esperar_nota(p, None)
+    check_de(fila_recordada(p, mas_reciente)).tap()
+    esperar_nota(p, "tope")
+    # Sin conexión no avisa de nada nuevo: eso es lo que dice. Al volver, otra vez lo del tope.
+    p.context.set_offline(True)
+    esperar_nota(p, "sin-conexion")
+    p.context.set_offline(False)
+    esperar_nota(p, "tope")
+    # Quitarle el recordatorio a una (la más antigua, la última de la lista) también la deja en 100.
+    abrir_hoja_recordar(p, mas_antigua)
+    p.locator("#hoja-recordar").get_by_role("button", name="Quitar recordatorio", exact=True).tap()
+    esperar_toast(p, "Recordatorio quitado")
+    esperar_nota(p, None)
+    p.context.close()
+    # Con las notificaciones bloqueadas (así está el navegador de las pruebas) o sin activar, manda lo de los permisos.
+    for guion, estado, boton in ((None, "bloqueados", None), (CON_PERMISO, "apagados", "Activar notificaciones")):
+        p = sembrar_recordar(e, ciento_una, todas, contexto=guion and contexto_con_avisos(e, guion))
+        esperar_vista(p, "grupo")
+        esperar_nota(p, estado, boton)
         p.context.close()
 
 
@@ -8115,7 +8301,7 @@ def t_hoja_avisada_con_la_app_abierta(e):
     p.wait_for_timeout(400)
     p.keyboard.press("Escape")
     esperar_hoja_avisada(p, abierta=False)
-    esperar(p, f"async () => {{ const quedan = await ({JS_AVISADAS_APUNTADAS})(); return !['id-3', 'id-4', 'id-5'].some((id) => quedan.includes(id)); }}", que="de las contestadas (y de las que se dejaron al cerrar) ya no queda nada por preguntar")
+    esperar_valor(p, lambda: [id for id in p.evaluate(JS_AVISADAS_APUNTADAS) if id in ("id-3", "id-4", "id-5")], [], "de las contestadas (y de las que se dejaron al cerrar) ya no queda nada por preguntar")
     igual((sorted(c["id"] for c in leer_estado(p)["cosas"] if c["hecha"]), leer_recordar(p), campo_grupo(p).input_value(), p.evaluate("() => document.activeElement.id")),
           (["id-2", "id-5"], propios, "A medio escribir", "campo-grupo"), "Tras cerrar la hoja: solo la contestada con «Hecho» está hecha, los recordatorios siguen y lo que se escribía sigue ahí, con el foco")
 
@@ -8413,6 +8599,7 @@ class ApiRecordarFalsa(ApiAvisosFalsa):
         self.cortar = set()  # Acciones que no llegan a la función (sin conexión).
         self.retener = set()  # Acciones que se quedan por el camino hasta «soltar» (una red lenta).
         self.retenidas = []
+        self.perder = set()  # Acciones cuyos envíos (POST) llegan a la función y ella los atiende, pero su respuesta se pierde (la cobertura se va justo entonces).
         self.antes_de_guardar = None  # Lo que pasa justo antes de atender un POST recordar (otro dispositivo se adelanta).
 
     def de_la_sesion(self, uid):
@@ -8493,7 +8680,10 @@ class ApiRecordarFalsa(ApiAvisosFalsa):
     def contestar(self, route, apunte):
         peticion = route.request
         apunte["estado"], apunte["respuesta"] = self.responder(apunte["accion"], peticion.method, peticion.headers.get("authorization"), apunte["cuerpo"], peticion.post_data_buffer)
-        route.fulfill(status=apunte["estado"], content_type="application/json", body=json.dumps(apunte["respuesta"], ensure_ascii=False))
+        if apunte["accion"] in self.perder and peticion.method == "POST":
+            route.abort()  # Queda apuntado lo que la función contestó, pero a la app no le llega.
+        else:
+            route.fulfill(status=apunte["estado"], content_type="application/json", body=json.dumps(apunte["respuesta"], ensure_ascii=False))
 
     def soltar(self):
         """Lo retenido llega por fin a la función, en el orden en que salió."""
@@ -8791,12 +8981,13 @@ def t_recordar_nube_parches(e):
     igual(leer_recordar(p), {"general": None, "cosas": {}, "base": base_recordada("anonimo-1", "n1", 13, {}), "activar": False}, "Lo guardado aquí al final")
 
 
-@prueba("recordatorios en la función, choque de versiones (409): si entretanto cambió allí, el envío se repite sobre lo que hay, juntándolo cosa a cosa y campo a campo: lo que puso o quitó otro dispositivo se trae; un «Hecho» pulsado en un aviso marca aquí el check aunque aquí se cambiara la hora; lo desmarcado aquí después gana a ese «Hecho»; si cambiaron los dos lo mismo, gana este dispositivo; y si no deja de cambiar, a la cuarta lo deja para otra vez (la nota lo dice) y lo sube al volver la conexión")
+@prueba("recordatorios en la función, choque de versiones (409): si entretanto cambió allí, el envío se repite sobre lo que hay, juntándolo cosa a cosa y campo a campo: lo que puso o quitó otro dispositivo se trae; un «Hecho» pulsado en un aviso marca aquí el check aunque aquí se cambiara la hora; lo desmarcado aquí después gana a ese «Hecho»; si cambiaron los dos lo mismo, gana este dispositivo; si no deja de cambiar, a la cuarta lo deja para otra vez (la nota lo dice) y lo sube al volver la conexión; y si allí cambió la hora de una cosa y aquí solo se marcó su check, queda hecha y con la hora de allí")
 def t_recordar_nube_choques(e):
     e.tolerar += CHOQUE_DE_VERSIONES
     api = ApiRecordarFalsa()
     uid = "anonimo-1"
     diario, martes, tarde, martes_tarde = recordatorio(), recordatorio("21:30", "semana", dia=2), recordatorio("18:00"), recordatorio("18:30", "semana", dia=2)
+    laborables = recordatorio("07:00", "laborables")
     datos = estado_recordar([recordada(4, "Llamar al dentista"), recordada(3, "Sacar la basura"), recordada(2, "Regar las plantas")])
     p = abrir_con_recordar(dispositivo_con_recordar(e, api), e, datos, recordar_guardado(cosas={"id-4": diario, "id-3": diario, "id-2": diario}))
     esperar_vista(p, "grupo")
@@ -8855,6 +9046,161 @@ def t_recordar_nube_choques(e):
     esperar_nota(p, None)
     igual((api.envios()[-1]["cuerpo"], api.envios()[-1]["estado"], len(api.lecturas()), api.de_la_sesion(uid)["cosas"]["id-4"]["hecha"]),
           (parche(13, {"id-4": recordada_enviada("Llamar al dentista", martes_tarde, hecha=True)}), 200, 2, True), "Al volver la conexión: se pregunta y se sube lo que quedó sin subir")
+    # Otro dispositivo le cambia la hora a una cosa y aquí, sin saberlo, solo se marca su check: lo que llevaba el envío que chocó no
+    # cuenta como cambiado aquí, así que la hora es la de allí y el check, el de aquí.
+    api.desde_otro_sitio(uid, lambda doc: doc["cosas"]["id-3"].update(r=laborables))
+    check_de(fila_recordada(p, "Sacar la basura")).tap()
+    choque(16, 15, parche(15, {"id-3": recordada_enviada("Sacar la basura", laborables, hecha=True)}), "Aquí solo se marcó el check: tras el choque viaja hecha y con la hora que puso el otro dispositivo")
+    igual((cuandos(p)["Sacar la basura"], leer_recordar(p)["cosas"]["id-3"], api.de_la_sesion(uid)["cosas"]["id-3"]), ("7:00 · De lunes a viernes", laborables, recordada_enviada("Sacar la basura", laborables, hecha=True)),
+          "La hora del otro dispositivo se queda, aquí y allí, y la cosa queda hecha")
+
+
+@prueba("recordatorios en la función, lo que cambia mientras un envío espera respuesta (una red lenta): no sale nada más hasta que llega, y entonces se mira contra lo que ese envío ha dejado allí: una cosa marcada y desmarcada antes de la respuesta viaja después desmarcada (se vuelve a avisar de ella); «Quitar todos los recordatorios» y «Deshacer» los sube otra vez; el único recordatorio que había, puesto y quitado, se quita también allí; y si mientras tanto se pidió preguntar (vuelve la conexión), se pregunta al acabar aunque aquí no haya ningún recordatorio")
+def t_recordar_nube_durante_la_ronda(e):
+    diario = recordatorio()
+    datos = estado_recordar([recordada(2, "Llamar al dentista"), recordada(1, "Tomar la pastilla")])
+    dentista, la_pastilla = recordada_enviada("Llamar al dentista"), recordada_enviada("Tomar la pastilla")
+    api = ApiRecordarFalsa()
+    p = abrir_con_recordar(dispositivo_con_recordar(e, api), e, datos, recordar_guardado(general=diario))
+    esperar_vista(p, "grupo")
+    esperar_envios(p, api, 1)
+    esperar_base(p, "los recordatorios están subidos", v=1)
+
+    def sin_respuesta(peticiones, que):
+        """Pasado de sobra el retardo con el que se juntan los cambios, lo último que salió sigue por el camino y no ha salido nada más."""
+        p.wait_for_timeout(1000)
+        igual((len(api.peticiones), len(api.retenidas)), (peticiones, 1), que)
+
+    # Marcada por error y desmarcada antes de que el envío de «hecha» tenga respuesta: aquí vuelve a estar como decía la base de antes.
+    api.retener.add("recordar")
+    check_de(fila_recordada(p, "Tomar la pastilla")).tap()
+    esperar_envios(p, api, 2)
+    check_de(fila_recordada(p, "Tomar la pastilla")).tap()
+    esperar_recordadas(p, "la cosa vuelve a estar pendiente", hechas=[False, False])
+    sin_respuesta(3, "Desmarcada con el envío de «hecha» por el camino")
+    api.soltar()
+    esperar_envios(p, api, 3)
+    esperar_base(p, "lo desmarcado se sube al llegar la respuesta", v=3)
+    igual(([(q["cuerpo"], q["estado"]) for q in api.envios()[1:]], api.de_la_sesion("anonimo-1")["cosas"]["id-1"], len(api.lecturas())),
+          ([(parche(1, {"id-1": recordada_enviada("Tomar la pastilla", hecha=True)}), 200), (parche(2, {"id-1": la_pastilla}), 200)], la_pastilla, 1),
+          "Marcada y desmarcada antes de la respuesta: viaja hecha y, después, pendiente; la función vuelve a avisar de ella (y no hizo falta preguntar)")
+
+    # «Quitar todos los recordatorios» y «Deshacer» con el envío de lo quitado aún sin respuesta.
+    api.retener.add("recordar")
+    abrir_hoja_recordar(p)
+    p.locator("#hoja-recordar").get_by_role("button", name="Quitar todos los recordatorios", exact=True).tap()
+    esperar_toast(p, "Recordatorios quitados")
+    esperar_envios(p, api, 4)
+    p.get_by_role("button", name="Deshacer", exact=True).tap()
+    esperar_recordadas(p, "«Deshacer» devuelve los recordatorios a las filas", cuandos=["9:00 · Cada día", "9:00 · Cada día"])
+    sin_respuesta(5, "Deshecho con el envío de lo quitado por el camino")
+    api.soltar()
+    esperar_envios(p, api, 5)
+    esperar_base(p, "lo deshecho se sube al llegar la respuesta", v=5)
+    quitado = api.envios()[3]["cuerpo"]
+    igual(({**quitado, "quitar": sorted(quitado["quitar"])}, api.envios()[4]["cuerpo"], api.de_la_sesion("anonimo-1")),
+          (parche(3, quitar=["id-1", "id-2"], general=None), parche(4, {"id-2": dentista, "id-1": la_pastilla}, general=diario), {"nacido": "n1", "v": 5, "zona": MADRID, "general": diario, "cosas": {"id-2": dentista, "id-1": la_pastilla}}),
+          "Quitados y deshecho antes de la respuesta: viaja lo quitado y, después, todo de vuelta; la función avisa de las dos cosas")
+    esperar_nota(p, None)
+    sin_mas_llamadas(p, api, "Con todo subido de nuevo")
+    p.context.close()
+
+    # El único recordatorio de este dispositivo, puesto y quitado antes de que su envío tenga respuesta: aquí vuelve a no haber
+    # ninguno (como antes de enviarlo), pero la función lo ha recibido y avisaría de él.
+    api = ApiRecordarFalsa()
+    p = abrir_con_recordar(dispositivo_con_recordar(e, api, usuario="u1"), e, datos, sesion="u1")
+    esperar_vista(p, "grupo")
+    esperar_base(p, "sin recordatorios, basta con preguntar", v=0)
+    api.retener.add("recordar")
+    abrir_hoja_recordar(p, "Tomar la pastilla")
+    guardar_hoja_recordar(p)
+    esperar_envios(p, api, 1)
+    abrir_hoja_recordar(p, "Tomar la pastilla")
+    p.locator("#hoja-recordar").get_by_role("button", name="Quitar recordatorio", exact=True).tap()
+    esperar_recordadas(p, "la cosa se queda sin recordatorio", cuandos=["Poner recordatorio", "Poner recordatorio"])
+    sin_respuesta(2, "Quitado con el envío del recordatorio por el camino")
+    api.soltar()
+    esperar_envios(p, api, 2)
+    esperar_base(p, "lo quitado se quita allí al llegar la respuesta", v=2)
+    igual(([(q["cuerpo"], q["estado"]) for q in api.envios()], api.de_la_sesion("u1")["cosas"]), ([(parche(0, {"id-1": la_pastilla}), 200), (parche(1, quitar=["id-1"]), 200)], {}),
+          "El único recordatorio, puesto y quitado antes de la respuesta: viaja y, después, se quita; la función no avisa de nada")
+    sin_mas_llamadas(p, api, "Con el recordatorio quitado allí")
+
+    # Sin ningún recordatorio aquí y con una pregunta por el camino, vuelve la conexión (hay que preguntar otra vez): se pregunta al
+    # llegar la respuesta, y así se ve el recordatorio que otro dispositivo de la cuenta puso justo después de contestarse la primera.
+    api.retener.add("recordar")
+    p.evaluate(JS_VUELVE_LA_CONEXION)
+    esperar_lecturas(p, api, 2)
+    p.evaluate(JS_VUELVE_LA_CONEXION)
+    sin_respuesta(4, "Vuelve la conexión con una pregunta por el camino")
+    api.soltar()
+    api.desde_otro_sitio("u1", lambda doc: doc["cosas"].update({"id-2": dentista}))
+    esperar_lecturas(p, api, 3)
+    esperar_recordadas(p, "llega el recordatorio puesto en otro dispositivo", cuandos=["9:00 · Cada día", "Poner recordatorio"])
+    sin_mas_llamadas(p, api, "Tras preguntar otra vez")
+    igual((len(api.lecturas()), len(api.envios())), (3, 2), "Al final: una pregunta más y ningún envío")
+
+
+# Lo que sw.js deja apuntado cuando se pulsa «Hecho» en el aviso de una cosa con la app cerrada (aquí lo apunta la prueba).
+JS_APUNTAR_HECHA = "async (id) => { await (await caches.open('recordar-de-cosas')).put(new URL('__recordar/hechas/' + encodeURIComponent(id), location.href).href, new Response(JSON.stringify({ id }))); }"
+
+
+@prueba("recordatorios en la función, desmarcar tras un «Hecho» que la base aún no recoge: con «Hecho» pulsado en el aviso (la función ya da la cosa por hecha) y la app abierta sin cobertura, la cosa sale marcada; desmarcada entonces para que vuelva a avisar, al volver la conexión sigue desmarcada, el check no vuelve solo y la función la tiene otra vez pendiente; lo mismo con cobertura lenta, si se desmarca mientras la pregunta de al abrir sigue por el camino")
+def t_recordar_nube_desmarcar_tras_hecho(e):
+    e.tolerar += [r"^Failed to load resource: net::ERR_FAILED$", r"^https://cosas\.test/api/avisos/recordar \(net::ERR_FAILED\)$"]  # La red cortada.
+    api = ApiRecordarFalsa()
+    la_pastilla = recordada_enviada("Tomar la pastilla")
+    contexto = dispositivo_con_recordar(e, api)
+    p = abrir_con_recordar(contexto, e, estado_recordar([recordada(1, "Tomar la pastilla")]), recordar_guardado(cosas={"id-1": recordatorio()}))
+    esperar_vista(p, "grupo")
+    esperar_envios(p, api, 1)
+    esperar_base(p, "el recordatorio está subido", v=1)
+    # Con la app cerrada llega el aviso y se pulsa «Hecho»: el service worker se lo dice a la función y lo deja apuntado para la app.
+    p.evaluate(JS_APUNTAR_HECHA, "id-1")
+    p.close()
+    api.responder("hecho", "POST", None, {"uid": "anonimo-1", "id": "id-1", "ficha": "la-del-aviso"})
+    # Se abre la app sin cobertura: la cosa sale marcada por lo apuntado, pero de ese «Hecho» la base no sabe nada (no se ha podido preguntar).
+    api.cortar.add("recordar")
+    p = e.vigilar(contexto.new_page())
+    p.goto(ORIGEN_NUBE + "#grupo/recordar")
+    esperar_recordadas(p, "al abrir, la cosa sale marcada por el «Hecho» del aviso", textos=["Tomar la pastilla"], hechas=[True])
+    esperar_lecturas(p, api, 2)
+    igual((api.de_la_sesion("anonimo-1")["cosas"]["id-1"]["hecha"], leer_recordar(p)["base"]["cosas"]["id-1"]["hecha"], api.lecturas()[1]["estado"]), (True, False, None),
+          "Sin cobertura: la función la da por hecha, la base sigue diciendo que estaba pendiente y la pregunta no llega")
+    # Se desmarca, para que vuelva a avisar: aquí queda como decía la base, y aun así es un cambio que contar.
+    check_de(fila_recordada(p, "Tomar la pastilla")).tap()
+    esperar_recordadas(p, "la cosa queda desmarcada", hechas=[False])
+    esperar_lecturas(p, api, 3)
+    esperar_nota(p, "sin-conexion")
+    # Vuelve la cobertura: lo desmarcado aquí gana al «Hecho» del aviso.
+    api.cortar.clear()
+    p.evaluate(JS_VUELVE_LA_CONEXION)
+    esperar_envios(p, api, 2)
+    esperar_base(p, "lo desmarcado se sube", v=3)
+    esperar_nota(p, None)
+    sin_mas_llamadas(p, api, "Con lo desmarcado subido")
+    igual((api.envios()[1]["cuerpo"], api.envios()[1]["estado"], api.de_la_sesion("anonimo-1")["cosas"], [f["hecha"] for f in recordadas(p)], leer_recordar(p)["base"]["cosas"]),
+          (parche(2, {"id-1": la_pastilla}), 200, {"id-1": la_pastilla}, [False], {"id-1": la_pastilla}),
+          "Al volver la conexión: viaja pendiente, la función vuelve a avisar de ella y aquí sigue desmarcada")
+    # Otro día, con cobertura pero lenta: otro «Hecho» en el aviso, y la cosa se desmarca con la pregunta de al abrir aún por el camino.
+    p.evaluate(JS_APUNTAR_HECHA, "id-1")
+    p.close()
+    api.responder("hecho", "POST", None, {"uid": "anonimo-1", "id": "id-1", "ficha": "la-del-aviso"})
+    api.retener.add("recordar")
+    p = e.vigilar(contexto.new_page())
+    p.goto(ORIGEN_NUBE + "#grupo/recordar")
+    esperar_recordadas(p, "al abrir de nuevo, la cosa sale marcada", hechas=[True])
+    esperar_lecturas(p, api, 5)
+    check_de(fila_recordada(p, "Tomar la pastilla")).tap()
+    esperar_recordadas(p, "la cosa queda desmarcada, con la pregunta por el camino", hechas=[False])
+    p.wait_for_timeout(1000)
+    igual((len(api.retenidas), len(api.envios())), (1, 2), "Con la pregunta por el camino no sale nada más")
+    api.soltar()
+    esperar_envios(p, api, 3)
+    esperar_base(p, "lo desmarcado durante la pregunta se sube", v=5)
+    sin_mas_llamadas(p, api, "Con lo desmarcado subido tras la pregunta lenta")
+    igual((api.envios()[2]["cuerpo"], api.de_la_sesion("anonimo-1")["cosas"], [f["hecha"] for f in recordadas(p)]), (parche(4, {"id-1": la_pastilla}), {"id-1": la_pastilla}, [False]),
+          "Desmarcada mientras se preguntaba: la respuesta (allí está hecha) no vuelve a marcarla, y viaja pendiente")
 
 
 @prueba("recordatorios en la función, cuando ya no es el mismo documento: con la base al día, lo que falta allí es que se quitó en otro dispositivo (y se quita aquí); pero si la función ya no tiene aquel documento (ninguno, otro «nacido», o una versión anterior a la conocida) la base no vale: se juntan los dos lados sin quitar aquí nada, lo de aquí gana salvo lo hecho (que lo es si lo dice cualquiera) y todo lo de aquí se vuelve a subir; lo que allí hay de cosas que aquí no se conocen, ni se toca")
@@ -9050,6 +9396,42 @@ def t_recordar_nube_zona(e):
           "El que no ha cambiado de zona sigue con la de la función, sea la que sea")
 
 
+# Un navegador que no sabe decir su zona horaria: Chrome contesta «Etc/Unknown» cuando no reconoce la del sistema. (Con %s: lo que dice.)
+JS_ZONA_QUE_DICE_EL_NAVEGADOR = "(() => { const original = Intl.DateTimeFormat.prototype.resolvedOptions; Intl.DateTimeFormat.prototype.resolvedOptions = function () { return { ...original.call(this), timeZone: %s }; }; })();"
+
+
+@prueba("recordatorios en la función, un navegador que no sabe decir su zona horaria («Etc/Unknown», que la función rechaza: no llegaría ningún recordatorio): la app envía en su lugar la diferencia horaria del reloj del dispositivo en horas enteras («Etc/GMT-9» en Tokio, «Etc/GMT+5» en Bogotá) y «UTC» si no es de horas enteras o no la hay; y la función de verdad acepta el envío y agenda el aviso a esa hora del dispositivo", una_vez=True)
+def t_recordar_nube_zona_desconocida(e):
+    datos = estado_recordar([recordada(1, "Sacar la basura")])
+    propios = recordar_guardado(cosas={"id-1": recordatorio()})
+    la_basura = recordada_enviada("Sacar la basura")
+    # Con la función de mentira (admite cualquier zona): qué envía la app según lo que diga el navegador y el reloj del dispositivo.
+    casos = [("Asia/Tokyo", "'Etc/Unknown'", "Etc/GMT-9", "nueve horas por delante de UTC"), ("America/Bogota", "undefined", "Etc/GMT+5", "cinco horas por detrás, y el navegador no dice ninguna zona"),
+             ("Asia/Kolkata", "'Etc/Unknown'", "UTC", "cinco horas y media: no son horas enteras"), ("UTC", "'Etc/Unknown'", "UTC", "sin diferencia con UTC")]
+    for del_reloj, dicha, enviada, que in casos:
+        api = ApiRecordarFalsa()
+        p = abrir_con_recordar(dispositivo_con_recordar(e, api, zona=del_reloj, guion=JS_ZONA_QUE_DICE_EL_NAVEGADOR % dicha), e, datos, propios)
+        esperar_envios(p, api, 1)
+        base = esperar_base(p, f"[{del_reloj}] el recordatorio se sube", v=1)
+        igual((p.evaluate("() => new Intl.DateTimeFormat().resolvedOptions().timeZone || null"), api.envios()[0]["cuerpo"], base["zona"]), (None if dicha == "undefined" else "Etc/Unknown", parche(0, {"id-1": la_basura}, zona=enviada), enviada),
+              f"[{del_reloj}] Con el reloj en esa zona ({que}): lo que dice el navegador, lo que se envía y la zona que recuerda la base")
+        p.context.close()
+    # Con la función de verdad: el envío se acepta (con «Etc/Unknown» lo rechazaría entero) y las 9:00 son las del reloj del dispositivo.
+    funcion = FuncionDeVerdad()
+    try:
+        funcion.reloj("2027-01-30T23:30")  # En Tokio, las 8:30 del domingo 31 de enero.
+        p = abrir_con_recordar(dispositivo_con_recordar(e, funcion, usuario="u1", zona="Asia/Tokyo", guion=JS_ZONA_QUE_DICE_EL_NAVEGADOR % "'Etc/Unknown'"), e, datos, propios, sesion="u1")
+        esperar_vista(p, "grupo")
+        esperar_envios(p, funcion, 1)
+        esperar_base(p, "la función de verdad acepta el envío", v=1)
+        esperar_nota(p, None)
+        envio, documento = funcion.envios()[0], funcion.documento("u1")
+        igual((envio["cuerpo"], envio["estado"], documento["zona"], documento["cosas"], documento["prox"]), (parche(0, {"id-1": la_basura}, zona="Etc/GMT-9"), 200, "Etc/GMT-9", {"id-1": la_basura}, {"id-1": instante("2027-01-31T00:00")}),
+              "La función acepta la zona y agenda el aviso para las 9:00 de Tokio (las 0:00 UTC)")
+    finally:
+        funcion.cerrar()
+
+
 @prueba("recordatorios entre dos dispositivos de la misma cuenta: las cosas viajan por la nube y sus recordatorios por la función de avisos; el que se pone en uno aparece en la fila del otro, y al revés; el de todas puesto en uno pasa a ser el de todas en el otro; el que se quita en uno se quita en el otro; y un «Hecho» pulsado en un aviso marca el check en los dos")
 def t_recordar_nube_dos_dispositivos(e):
     nube, api = NubeFalsa(), ApiRecordarFalsa()
@@ -9103,6 +9485,139 @@ def t_recordar_nube_dos_dispositivos(e):
     a.wait_for_timeout(1300)  # Al llegarle por la nube la cosa hecha, cada uno vuelve a preguntar: pasado ese rato, nadie ha tenido nada que enviar.
     igual((len(api.envios()), [q["estado"] for q in api.envios()], api.de_la_sesion("u1")["cosas"]), (4, [200] * 4, {"id-2": recordada_enviada("Llamar al dentista", ocho, hecha=True)}),
           "Al final: cuatro envíos entre los dos, ninguno rechazado, y la función con lo que los dos enseñan")
+
+
+@prueba("recordatorios entre dos dispositivos con uno para todas: lo que entra en Recordar desde el otro dispositivo no sigue aquí el de todas ni recupera el recordatorio que tuvo, sino el que diga la función: la cosa apuntada en el móvil con su propia hora, la que allí se quedó sin recordatorio y la que salió de Recordar en la tableta y el móvil devolvió con otro siguen así al abrir la tableta, que no envía nada; y sin base que valga (la función tiene otro documento), lo que aquí solo sigue el de todas se queda con el recordatorio que allí tiene, y lo que aquí tiene el suyo lo conserva")
+def t_recordar_nube_llegadas(e):
+    nube, api = NubeFalsa(), ApiRecordarFalsa()
+    movil, tableta = ENDPOINT_PRUEBA + "movil", ENDPOINT_PRUEBA + "tableta"
+    diario, tarde, lunes = recordatorio(), recordatorio("18:00"), recordatorio("08:00", "semana", dia=1)
+
+    def esperar_cuandos(pagina, esperado, que):
+        """Espera a que las filas de Recordar de ese dispositivo digan esos recordatorios ({texto: recordatorio})."""
+        esperar_json(pagina, f"() => ({{ cuandos: Object.fromEntries(({JS_RECORDADAS})().map((f) => [f.texto, f.cuando]).sort()) }})", {"cuandos": dict(sorted(esperado.items()))}, que, ms=6000)
+
+    # La tableta: el de todas (9:00), una cosa que lo sigue y otra con el suyo (cada lunes a las 8:00). Lo sube.
+    de_la_tableta = dispositivo_con_recordar(e, api, usuario="u1", endpoint=tableta, nube=nube)
+    b = abrir_con_recordar(de_la_tableta, e, estado_recordar([recordada(2, "Sacar la basura"), recordada(1, "Regar las plantas")]), recordar_guardado(general=diario, cosas={"id-1": lunes}),
+                           sesion="u1", endpoint=tableta, cuenta=True)
+    esperar_nube(b, "al-dia")
+    esperar_envios(b, api, 1)
+    esperar_base(b, "la tableta sube lo suyo", v=1)
+    # En ella, la segunda sale de Recordar («−»): la función la pierde y la tableta se guarda su recordatorio por si vuelve. Y se cierra.
+    quitar_de_recordar(b, "Regar las plantas").tap()
+    esperar_toast(b, "Quitado de Recordar")
+    esperar_envios(b, api, 2)
+    esperar_base(b, "la tableta la quita de la función", v=2)
+    esperar_en_la_nube(b, nube, lambda docs: docs["c-id-1"].get("grupo") != ID_RECORDAR, "la cosa sale de Recordar también en la nube")
+    igual((api.de_la_sesion("u1")["cosas"], leer_recordar(b)["cosas"]), ({"id-2": recordada_enviada("Sacar la basura")}, {"id-1": lunes}), "Fuera de Recordar: la función ya no la tiene, y la tableta conserva su recordatorio")
+    b.close()
+
+    # El móvil, recién estrenado con la misma cuenta: le llegan las cosas (por la nube) y el de todas (por la función).
+    a = abrir_con_recordar(dispositivo_con_recordar(e, api, usuario="u1", endpoint=movil, nube=nube), e, sesion="u1", endpoint=movil, cuenta=True)
+    esperar_cuandos(a, {"Sacar la basura": "9:00 · Cada día"}, "al móvil le llega lo que hay en Recordar, con el de todas")
+    esperar(a, "(clave) => (JSON.parse(localStorage.getItem(clave)) || {}).general !== null", arg=CLAVE_RECORDAR, que="el de todas pasa a serlo en el móvil")
+    # En el móvil: una cosa nueva con su propia hora (18:00), otra a la que se le quita el recordatorio, y la que salió de Recordar
+    # vuelve («Añadir cosas», «+») y se le pone otro (18:00, cada día).
+    dentista = apuntar_con_recordatorio(a, "Llamar al dentista", "18", None)
+    a.wait_for_timeout(400)
+    campo_en_grupo(a).fill("Comprar pan")
+    campo_en_grupo(a).press("Enter")
+    esperar_toast(a, "Guardado")
+    a.wait_for_timeout(400)
+    abrir_hoja_recordar(a, "Comprar pan")
+    a.locator("#hoja-recordar").get_by_role("button", name="Quitar recordatorio", exact=True).tap()
+    esperar_toast(a, "Recordatorio quitado")
+    pan = next(c["id"] for c in leer_estado(a)["cosas"] if c["texto"] == "Comprar pan")
+    boton_anadir(a).tap()
+    esperar_pagina_grupo(a, "el desplegable ofrece la cosa que salió de Recordar", desplegable=True, candidatas=["Regar las plantas"])
+    mas_de(a, "Regar las plantas").tap()
+    a.keyboard.press("Escape")
+    a.wait_for_timeout(400)
+    abrir_hoja_recordar(a, "Regar las plantas")
+    elegir_hora(a, "18")
+    guardar_hoja_recordar(a)
+    en_las_filas = {"Comprar pan": "Poner recordatorio", "Llamar al dentista": "18:00 · Cada día", "Regar las plantas": "18:00 · Cada día", "Sacar la basura": "9:00 · Cada día"}
+    en_la_funcion = {"id-2": recordada_enviada("Sacar la basura"), dentista: recordada_enviada("Llamar al dentista", tarde), "id-1": recordada_enviada("Regar las plantas", tarde)}
+    esperar_cuandos(a, en_las_filas, "en el móvil, cada cosa con lo suyo")
+    esperar_en_la_nube(a, nube, lambda docs: f"c-{dentista}" in docs and f"c-{pan}" in docs and docs["c-id-1"].get("grupo") == ID_RECORDAR and api.de_la_sesion("u1")["cosas"] == en_la_funcion,
+                       "las cosas del móvil llegan a la nube y sus recordatorios a la función")
+    documento, envios = api.de_la_sesion("u1"), len(api.envios())
+    esperar_base(a, "el móvil está al día con la función", v=documento["v"])
+
+    # Se abre la tableta: las tres le llegan por la nube. No siguen su «para todas» ni vuelve el recordatorio guardado: lo que diga la función.
+    b = e.vigilar(de_la_tableta.new_page())
+    b.goto(ORIGEN_NUBE + "#grupo/recordar")
+    esperar_cuandos(b, en_las_filas, "en la tableta, lo que llega del móvil trae el recordatorio que el móvil le puso (o ninguno)")
+    sin_mas_llamadas(b, api, "Con la tableta al día")
+    igual((len(api.envios()), api.de_la_sesion("u1"), leer_recordar(b)["general"], leer_recordar(b)["cosas"]), (envios, documento, diario, {dentista: tarde, pan: False, "id-1": tarde}),
+          "La tableta no envía nada: la función sigue como la dejó el móvil, y la tableta guarda lo que ella dice")
+    # El móvil vuelve a preguntar: todo sigue como lo dejó.
+    lecturas = len(api.lecturas())
+    a.evaluate(JS_VUELVE_LA_CONEXION)
+    esperar_lecturas(a, api, lecturas + 1)
+    sin_mas_llamadas(a, api, "Con el móvil al día")
+    igual((cuandos(a), len(api.envios())), (en_las_filas, envios), "En el móvil, tras preguntar: sus recordatorios, como los puso")
+    a.context.close()
+
+    # La función ya no tiene aquel documento, sino otro (la base de la tableta no vale): de lo que está en los dos sitios, lo que aquí
+    # solo sigue el de todas se queda con el recordatorio que allí tiene; lo que aquí tiene el suyo lo conserva, y lo sube.
+    api.documentos["u1"] = {"nacido": "otro", "v": 7, "zona": MADRID, "general": diario, "cosas": {"id-2": recordada_enviada("Sacar la basura", lunes), dentista: recordada_enviada("Llamar al dentista", lunes)}}
+    b.evaluate(JS_VUELVE_LA_CONEXION)
+    esperar_cuandos(b, {**en_las_filas, "Sacar la basura": "8:00 · Cada lunes"}, "en la tableta, la que sigue el de todas toma el recordatorio del otro documento")
+    esperar_base(b, "la tableta se junta con el otro documento", nacido="otro", v=8)
+    igual((api.envios()[-1]["cuerpo"], len(api.envios()), leer_recordar(b)["cosas"]),
+          (parche(7, {dentista: recordada_enviada("Llamar al dentista", tarde), "id-1": recordada_enviada("Regar las plantas", tarde)}), envios + 1, {dentista: tarde, pan: False, "id-1": tarde, "id-2": lunes}),
+          "Sin base: solo se sube lo que aquí tiene su propio recordatorio; el de todas no pisa el que la función tiene de una cosa")
+
+
+@prueba("recordatorios entre dos dispositivos abiertos, lo que sale de Recordar y vuelve enseguida: si en el móvil una cosa se saca («−») y se devuelve con «Deshacer» mientras la tableta aún espera a la función (su red va lenta), en la tableta vuelve con el recordatorio que tenía (el suyo, o el de todas) y la tableta solo pregunta: no se lo quita a la función, y el móvil tampoco lo pierde al volver a preguntar")
+def t_recordar_nube_sale_y_vuelve(e):
+    nube, api, api_t = NubeFalsa(), ApiRecordarFalsa(), ApiRecordarFalsa()
+    api_t.documentos = api.documentos  # La misma función para los dos, cada uno con su red hasta ella: la de la tableta, a ratos lenta.
+    movil, tableta = ENDPOINT_PRUEBA + "movil", ENDPOINT_PRUEBA + "tableta"
+    diario, tarde = recordatorio(), recordatorio("18:00")
+    # La tableta: el de todas (9:00), una cosa que lo sigue y otra con el suyo (18:00). Lo sube, y el móvil, con la misma cuenta, lo trae.
+    b = abrir_con_recordar(dispositivo_con_recordar(e, api_t, usuario="u1", endpoint=tableta, nube=nube), e, estado_recordar([recordada(2, "Sacar la basura"), recordada(1, "Regar las plantas")]),
+                           recordar_guardado(general=diario, cosas={"id-1": tarde}), sesion="u1", endpoint=tableta, cuenta=True)
+    esperar_nube(b, "al-dia")
+    esperar_base(b, "la tableta sube lo suyo", v=1)
+    a = abrir_con_recordar(dispositivo_con_recordar(e, api, usuario="u1", endpoint=movil, nube=nube), e, sesion="u1", endpoint=movil, cuenta=True)
+    esperar_recordadas(a, "al móvil le llegan las cosas con sus recordatorios", textos=["Sacar la basura", "Regar las plantas"], cuandos=["9:00 · Cada día", "18:00 · Cada día"])
+    esperar_base(a, "el móvil se queda con lo que tiene la función", v=1)
+    en_las_filas, documento = cuandos(b), api.de_la_sesion("u1")
+
+    def en_recordar(id, dentro):
+        """Espera a que a la tableta le haya llegado por la nube esa cosa dentro de Recordar (o fuera)."""
+        esperar_guardado(b, f"(s) => (s.cosas.find((c) => c.id === {json.dumps(id)}).grupo === {json.dumps(ID_RECORDAR)}) === {json.dumps(dentro)}",
+                         f"a la tableta le llega {id} {'dentro de' if dentro else 'fuera de'} Recordar")
+
+    for texto, id, cual in (("Regar las plantas", "id-1", "con su propio recordatorio"), ("Sacar la basura", "id-2", "que sigue el de todas")):
+        envios, peticiones_t, lecturas_t = len(api.envios()), len(api_t.peticiones), len(api_t.lecturas())
+        api_t.retener.add("recordar")
+        # En el móvil sale de Recordar: se la quita a la función. A la tableta le llega por la nube y le pregunta, pero la respuesta no llega.
+        quitar_de_recordar(a, texto).tap()
+        esperar_toast(a, "Quitado de Recordar")
+        esperar_envios(a, api, envios + 1)
+        en_recordar(id, False)
+        esperar_lecturas(b, api_t, lecturas_t + 1)
+        # Vuelve con «Deshacer»: el móvil se la devuelve a la función, y a la tableta le llega de vuelta antes de que le contesten.
+        a.get_by_role("button", name="Deshacer", exact=True).tap()
+        esperar_envios(a, api, envios + 2)
+        en_recordar(id, True)
+        api_t.soltar()
+        esperar_lecturas(b, api_t, lecturas_t + 2)  # Al acabar, la tableta vuelve a preguntar por lo que le llegó mientras tanto.
+        sin_mas_llamadas(b, api_t, f"[{texto}] Con la tableta al día")
+        igual(([p["metodo"] for p in api_t.peticiones[peticiones_t:] if p["accion"] == "recordar"], cuandos(b), {campo: api.de_la_sesion("u1")[campo] for campo in ("general", "cosas")}),
+              (["GET", "GET"], en_las_filas, {campo: documento[campo] for campo in ("general", "cosas")}),
+              f"La cosa {cual}, sacada y devuelta en el móvil con la pregunta de la tableta por el camino: en la tableta sigue con su recordatorio, la tableta solo pregunta y la función la conserva")
+    # El móvil vuelve a preguntar: todo sigue como estaba.
+    lecturas = len(api.lecturas())
+    a.evaluate(JS_VUELVE_LA_CONEXION)
+    esperar_lecturas(a, api, lecturas + 1)
+    sin_mas_llamadas(a, api, "Con el móvil al día")
+    igual((cuandos(a), leer_recordar(b)["cosas"]), (en_las_filas, {"id-1": tarde}),
+          "Al final el móvil tiene sus recordatorios como estaban y, en la tableta, la que sigue el de todas no necesita uno propio")
 
 
 @prueba("desactivar las notificaciones con recordatorios: con algo pendiente en Recordar el aviso lo advierte («Notificaciones desactivadas: Recordar no te avisará», solo texto, unos 4 s); sin cuenta de Google, antes de dar de baja el dispositivo se le pide a la función que olvide los recordatorios, y aquí se olvida la base (siguen puestos; al reactivarlas se suben todos otra vez, a un documento nuevo); lo que un envío a medias deje allí después, se olvida también; con cuenta de Google ni se olvidan allí ni aquí: otro dispositivo suyo puede seguir avisando")
@@ -9191,7 +9706,74 @@ def t_recordar_nube_desactivar(e):
           ([("baja", "Bearer token-u1", {"endpoint": ENDPOINT_PRUEBA + "E1"})], enviadas, base_recordada("u1", "n1", 1, enviadas)), "Con cuenta: ni se pide olvidar ni se olvida la base")
 
 
-@prueba("recordatorios sin conexión con la función: si no se le puede preguntar o enviar (sin red, o ella falla), la nota de Recordar lo dice («Sin conexión: tus recordatorios empezarán a avisar cuando vuelva.»), lo de aquí sigue guardado y no se insiste sin fin; se reintenta solo al volver la conexión, al volver a la app y al abrirla, y entonces viaja junto todo lo que cambió mientras tanto; lo mismo si lo que se quedó a medias fue el alta del dispositivo al guardar el primer recordatorio")
+@prueba("desactivar las notificaciones sin cobertura (sin cuenta de Google): «olvidar» no llega, la función sigue con los recordatorios y aquí se conserva la base, también tras recargar; lo que se quite mientras están desactivadas (un recordatorio, una cosa que sale de Recordar) se quita también allí al reactivarlas: ni vuelve aquí el recordatorio quitado, ni la función sigue avisando de lo que ya no está; y si «olvidar» llegó pero su respuesta se perdió, al reactivarlas la app ve que allí ya no hay nada y lo sube todo a un documento nuevo")
+def t_recordar_nube_olvidar_sin_cobertura(e):
+    e.tolerar += [r"^Failed to load resource: net::ERR_FAILED$", r"^https://cosas\.test/api/avisos/(olvidar|baja) \(net::ERR_FAILED\)$"]  # La red cortada.
+    diario = recordatorio()
+    datos = estado_recordar([recordada(3, "Comprar pan"), recordada(2, "Llamar al dentista"), recordada(1, "Sacar la basura")])
+    propios = recordar_guardado(cosas={"id-3": diario, "id-2": diario, "id-1": diario})
+    enviadas = {"id-3": recordada_enviada("Comprar pan"), "id-2": recordada_enviada("Llamar al dentista"), "id-1": recordada_enviada("Sacar la basura")}
+
+    def desactivar_y_reabrir(api):
+        """Con los recordatorios subidos, desactiva las notificaciones en Ajustes y abre la app de nuevo, en Recordar. Devuelve la página y la base que tenía."""
+        p = abrir_con_recordar(dispositivo_con_recordar(e, api), e, datos, propios, ruta="#ajustes")
+        esperar_vista(p, "ajustes")
+        esperar_envios(p, api, 1)
+        base = esperar_base(p, "los recordatorios están subidos", v=1)
+        p.wait_for_timeout(400)  # Pasa la guarda del cambio de vista.
+        boton_avisos(p).click()
+        esperar_boton_avisos(p, "Activar notificaciones")
+        esperar_llamadas(p, api, "baja", 1)
+        p.goto(ORIGEN_NUBE + "?otra-vez=1#grupo/recordar")
+        esperar_recordadas(p, "Recordar, con las notificaciones desactivadas", textos=["Comprar pan", "Llamar al dentista", "Sacar la basura"])
+        esperar_nota(p, "apagados", "Activar notificaciones")
+        return p, base
+
+    def reactivar(p):
+        p.locator("#nota-recordar").get_by_role("button", name="Activar notificaciones", exact=True).tap()
+        esperar_nota(p, None)
+
+    # Sin cobertura al desactivarlas: ni «olvidar» ni la baja llegan. La función sigue con todo, y aquí sigue la base.
+    api = ApiRecordarFalsa()
+    api.cortar.update(("olvidar", "baja"))
+    p, base = desactivar_y_reabrir(api)
+    api.cortar.clear()
+    igual(([(q["accion"], q["estado"]) for q in api.peticiones[2:]], api.de_la_sesion("anonimo-1")["cosas"], leer_recordar(p), guardado_avisos(p)), ([("olvidar", None), ("baja", None)], enviadas, {**propios, "base": base}, None),
+          "Desactivadas sin cobertura: «olvidar» y la baja no llegan, la función lo conserva todo y aquí siguen los recordatorios y la base")
+    # Con ellas desactivadas, a una cosa se le quita el recordatorio y otra sale de Recordar («−»): no se habla con la función.
+    p.wait_for_timeout(400)
+    abrir_hoja_recordar(p, "Llamar al dentista")
+    p.locator("#hoja-recordar").get_by_role("button", name="Quitar recordatorio", exact=True).tap()
+    esperar_toast(p, "Recordatorio quitado")
+    quitar_de_recordar(p, "Sacar la basura").tap()
+    esperar_toast(p, "Quitado de Recordar")
+    sin_mas_llamadas(p, api, "Con las notificaciones desactivadas y sin cuenta")
+    # Al reactivarlas (el botón de la nota): con la base, lo quitado aquí se quita allí; ni vuelve el recordatorio, ni queda allí lo que salió.
+    reactivar(p)
+    esperar_envios(p, api, 2)
+    esperar_base(p, "al reactivarlas, lo quitado se quita en la función", nacido="n1", v=2)
+    sin_mas_llamadas(p, api, "Reactivadas y al día")
+    quitado = api.envios()[1]["cuerpo"]
+    igual(({**quitado, "quitar": sorted(quitado["quitar"])}, api.de_la_sesion("anonimo-1")["cosas"], cuandos(p), leer_recordar(p)["cosas"]),
+          (parche(1, quitar=["id-1", "id-2"]), {"id-3": enviadas["id-3"]}, {"Comprar pan": "9:00 · Cada día", "Llamar al dentista": "Poner recordatorio"}, {"id-3": diario, "id-1": diario}),
+          "Al reactivarlas: se quita allí lo que aquí se quitó; la función solo avisará de lo que sigue con recordatorio, y aquí nada vuelve")
+    p.context.close()
+
+    # «olvidar» llega, pero su respuesta se pierde: la función ya no tiene nada y aquí, sin saberlo, sigue la base. Al reactivarlas se
+    # ve que aquel documento ya no está (la base no vale) y todo se sube otra vez, a uno nuevo.
+    api = ApiRecordarFalsa()
+    api.perder.add("olvidar")
+    p, base = desactivar_y_reabrir(api)
+    igual((api.documentos, leer_recordar(p)), ({}, {**propios, "base": base}), "Con la respuesta de «olvidar» perdida: la función ha olvidado, y aquí sigue la base")
+    p.wait_for_timeout(400)
+    reactivar(p)
+    esperar_envios(p, api, 2)
+    nueva = esperar_base(p, "al reactivarlas se sube todo a un documento nuevo", nacido="n2", v=1)
+    igual((api.envios()[1]["cuerpo"], api.de_la_sesion("anonimo-1")["cosas"], nueva, cuandos(p)), (parche(0, enviadas), enviadas, base_recordada("anonimo-1", "n2", 1, enviadas), {texto: "9:00 · Cada día" for texto in ("Comprar pan", "Llamar al dentista", "Sacar la basura")}),
+          "Sin documento en la función: todos los recordatorios de nuevo, y aquí ninguno se pierde")
+
+
+@prueba("recordatorios sin conexión con la función: si no se le puede preguntar o enviar (sin red, o ella falla), la nota de Recordar lo dice («Sin conexión: tus recordatorios empezarán a avisar cuando vuelva.»), lo de aquí sigue guardado y no se insiste sin fin (cada cambio lo intenta una vez; tras un envío sin respuesta, el intento siguiente empieza preguntando); se reintenta solo al volver la conexión, al volver a la app y al abrirla, y entonces viaja junto todo lo que cambió mientras tanto; lo mismo si lo que se quedó a medias fue el alta del dispositivo al guardar el primer recordatorio")
 def t_recordar_nube_sin_conexion(e):
     e.tolerar += [r"^Failed to load resource: net::ERR_FAILED$", r"^https://cosas\.test/api/avisos/recordar \(net::ERR_FAILED\)$",
                   r"^500 https://cosas\.test/api/avisos/(recordar|alta)$", r"status of 500 \(Internal Server Error\)$"]  # La red cortada y el 500 de la función de mentira.
@@ -9211,38 +9793,42 @@ def t_recordar_nube_sin_conexion(e):
     esperar_envios(p, api, 1)
     esperar_nota(p, None)
     igual((api.envios()[0]["cuerpo"], api.envios()[0]["estado"]), (parche(0, {"id-2": dentista}), 200), "Al volver la conexión")
-    # Otra vez sin red: lo que se cambia queda guardado aquí, la nota vuelve, y cada cambio lo intenta una vez (sin bucle).
+    # Otra vez sin red: lo que se cambia queda guardado aquí, la nota vuelve, y cada cambio lo intenta una vez (sin bucle). El primero,
+    # con su envío, que no llega; el siguiente, preguntando antes (de aquel envío no se sabe si llegó), y la pregunta tampoco llega.
     api.cortar.add("recordar")
     abrir_hoja_recordar(p, "Sacar la basura")
     guardar_hoja_recordar(p)
     esperar_toast(p, "Recordatorio guardado")
     esperar_envios(p, api, 2)
     esperar_nota(p, "sin-conexion")
+    sin_mas_llamadas(p, api, "Sin red, tras el envío que no llega")
     check_de(fila_recordada(p, "Llamar al dentista")).tap()
-    esperar_envios(p, api, 3)
+    esperar_lecturas(p, api, 3)
     sin_mas_llamadas(p, api, "Sin red, tras intentar cada cambio")
-    igual(([q["estado"] for q in api.envios()], leer_recordar(p)["cosas"], leer_recordar(p)["base"]["v"], nota_recordar(p)["texto"]), ([200, None, None], {"id-2": diario, "id-1": diario}, 1, NOTAS_RECORDAR["sin-conexion"]),
-          "Sin red: los envíos no llegan, los recordatorios siguen puestos aquí y la base no avanza")
+    base = leer_recordar(p)["base"]
+    igual(([q["estado"] for q in api.envios()], [q["estado"] for q in api.lecturas()], leer_recordar(p)["cosas"], (base["v"], base.get("enDuda")), nota_recordar(p)["texto"]),
+          ([200, None], [None, 200, None], {"id-2": diario, "id-1": diario}, (1, {"general": False, "ids": ["id-1"]}), NOTAS_RECORDAR["sin-conexion"]),
+          "Sin red: ni el envío ni la pregunta siguiente llegan, los recordatorios siguen puestos aquí y la base no avanza (solo apunta lo que se envió sin respuesta)")
     # Al volver a la app (pasa a verse otra vez): se reintenta sin esperar, y los dos cambios viajan juntos.
     api.cortar.clear()
     p.evaluate("() => { document.dispatchEvent(new Event('visibilitychange')); }")
-    esperar_envios(p, api, 4)
+    esperar_envios(p, api, 3)
     esperar_nota(p, None)
-    igual((api.envios()[3]["cuerpo"], api.envios()[3]["estado"], len(api.lecturas())), (parche(1, {"id-1": basura, "id-2": recordada_enviada("Llamar al dentista", hecha=True)}), 200, 3),
+    igual((api.envios()[2]["cuerpo"], api.envios()[2]["estado"], len(api.lecturas())), (parche(1, {"id-1": basura, "id-2": recordada_enviada("Llamar al dentista", hecha=True)}), 200, 4),
           "Al volver a la app: se pregunta y se envía, de una vez, lo que cambió sin red")
     # La función falla (500): lo mismo. Y al abrir la app de nuevo, se sube.
     api.fallar.add("recordar")
     check_de(fila_recordada(p, "Llamar al dentista")).tap()
-    esperar_envios(p, api, 5)
+    esperar_envios(p, api, 4)
     esperar_nota(p, "sin-conexion")
     sin_mas_llamadas(p, api, "Tras un fallo de la función")
     api.fallar.clear()
     p.reload()
     esperar_vista(p, "grupo")
-    esperar_envios(p, api, 6)
+    esperar_envios(p, api, 5)
     esperar_nota(p, None)
-    igual(([q["estado"] for q in api.envios()[4:]], api.envios()[5]["cuerpo"], api.de_la_sesion("anonimo-1")["cosas"]), ([500, 200], parche(2, {"id-2": dentista}), {"id-2": dentista, "id-1": basura}),
-          "Tras el fallo de la función: al abrir la app se sube lo que quedó pendiente")
+    igual(([q["estado"] for q in api.envios()[3:]], api.envios()[4]["cuerpo"], api.de_la_sesion("anonimo-1")["cosas"], "enDuda" in leer_recordar(p)["base"]), ([500, 200], parche(2, {"id-2": dentista}), {"id-2": dentista, "id-1": basura}, False),
+          "Tras el fallo de la función: al abrir la app se sube lo que quedó pendiente, y ya no queda nada en duda")
     p.context.close()
 
     # Sin notificaciones aún: «Guardar» da el permiso, pero el alta de este dispositivo falla. No hay nada que pulsar: la nota dice que
@@ -9266,6 +9852,107 @@ def t_recordar_nube_sin_conexion(e):
     igual(([(q["accion"], q["estado"]) for q in api.peticiones[2:]], api.envios()[0]["cuerpo"], leer_recordar(p)["activar"], guardado_avisos(p)["uid"]),
           ([("alta", 200), ("recordar", 200), ("recordar", 200)], parche(0, {"id-1": recordada_enviada("Sacar la basura")}), False, "anonimo-1"),
           "Al volver la conexión: el alta y, después, la pregunta y el envío; ya no queda nada a medias")
+
+
+@prueba("recordatorios en la función, un envío que llega pero cuya respuesta se pierde (la cobertura se va justo entonces): antes de enviar queda apuntado en la base qué se envía («enDuda») y, mientras siga apuntado, la ronda siguiente empieza preguntando; de lo apuntado manda lo de aquí: si nada cambió entretanto basta la pregunta (no se envía otra vez); una cosa apuntada y sacada después de Recordar se quita también allí (la función no se queda avisando de algo que aquí ya no está); un recordatorio quitado y vuelto a poner igual se sube de nuevo (no desaparece aquí); y el de todas, puesto y deshecho, se quita allí (no vuelve solo), aunque aquí ya no quede ningún recordatorio")
+def t_recordar_nube_respuesta_perdida(e):
+    e.tolerar += [r"^Failed to load resource: net::ERR_FAILED$", r"^https://cosas\.test/api/avisos/recordar \(net::ERR_FAILED\)$"]  # La respuesta que no llega.
+    uid, diario = "anonimo-1", recordatorio()
+    basura, dentista = recordada_enviada("Sacar la basura"), recordada_enviada("Llamar al dentista")
+
+    def sin_respuesta(p, api, cuantos, general, ids, que):
+        """El envío número «cuantos» llega a la función (que lo guarda) y su respuesta se pierde: la base de aquí no avanza, se queda
+        sin firma y con lo enviado apuntado como dudoso; y no se insiste. Devuelve lo que la función tiene ahora."""
+        esperar_envios(p, api, cuantos)
+        esperar_base(p, f"{que}: queda apuntado lo que se envió", firma="", enDuda={"general": general, "ids": ids})
+        api.perder.clear()
+        sin_mas_llamadas(p, api, f"{que}: tras el envío sin respuesta")
+        igual((api.envios()[-1]["estado"], len(api.envios())), (200, cuantos), f"{que}: la función lo atendió, y no se le ha enviado nada más")
+        return api.de_la_sesion(uid)
+
+    def ronda(api, desde):
+        """Las llamadas a la función desde esa: (método, estado)."""
+        return [(q["metodo"], q["estado"]) for q in api.peticiones[desde:]]
+
+    # Una cosa apuntada en Recordar (sigue el de todas): su envío llega, la respuesta no. Después se saca de Recordar («−»).
+    api = ApiRecordarFalsa()
+    p = abrir_con_recordar(dispositivo_con_recordar(e, api), e, estado_recordar([recordada(1, "Sacar la basura")]), recordar_guardado(general=diario))
+    esperar_vista(p, "grupo")
+    esperar_envios(p, api, 1)
+    esperar_base(p, "lo que había está subido", v=1)
+    api.perder.add("recordar")
+    campo_en_grupo(p).fill("Comprar pna")
+    campo_en_grupo(p).press("Enter")
+    esperar_toast(p, "Guardado")
+    pna = next(c["id"] for c in leer_estado(p)["cosas"] if c["texto"] == "Comprar pna")
+    alli = sin_respuesta(p, api, 2, False, [pna], "Apuntada")
+    igual((alli["v"], alli["cosas"], leer_recordar(p)["base"]["v"], sorted(leer_recordar(p)["base"]["cosas"])), (2, {"id-1": basura, pna: recordada_enviada("Comprar pna")}, 1, ["id-1"]),
+          "Apuntada: la función ya la tiene (avisaría de ella) y la base de aquí sigue en la versión de antes, sin ella")
+    esperar_nota(p, "sin-conexion")
+    quitar_de_recordar(p, "Comprar pna").tap()
+    esperar_toast(p, "Quitado de Recordar")
+    esperar_envios(p, api, 3)
+    esperar_base(p, "lo que salió de Recordar se quita en la función", v=3)
+    esperar_nota(p, None)
+    igual((ronda(api, 3), api.envios()[2]["cuerpo"], api.de_la_sesion(uid)["cosas"], "enDuda" in leer_recordar(p)["base"]), ([("GET", 200), ("POST", 200)], parche(2, quitar=[pna]), {"id-1": basura}, False),
+          "Sacada de Recordar tras el envío sin respuesta: se pregunta y se quita allí; la función solo avisará de lo que sigue aquí, y ya no queda nada en duda")
+    p.context.close()
+
+    # Con cada cosa su recordatorio. A una se le pone: el envío llega, la respuesta no, y aquí no cambia nada más. Al volver a la app
+    # basta con preguntar: la función ya lo tiene.
+    api = ApiRecordarFalsa()
+    p = abrir_con_recordar(dispositivo_con_recordar(e, api), e, estado_recordar([recordada(2, "Llamar al dentista"), recordada(1, "Sacar la basura")]), recordar_guardado(cosas={"id-1": diario}))
+    esperar_vista(p, "grupo")
+    esperar_envios(p, api, 1)
+    esperar_base(p, "lo que había está subido", v=1)
+    api.perder.add("recordar")
+    abrir_hoja_recordar(p, "Llamar al dentista")
+    guardar_hoja_recordar(p)
+    sin_respuesta(p, api, 2, False, ["id-2"], "Puesto")
+    p.evaluate("() => { document.dispatchEvent(new Event('visibilitychange')); }")
+    base = esperar_base(p, "al volver a la app, la base se pone al día preguntando", v=2)
+    esperar_nota(p, None)
+    sin_mas_llamadas(p, api, "Con la duda resuelta")
+    igual((ronda(api, 3), base), ([("GET", 200)], base_recordada(uid, "n1", 2, {"id-2": dentista, "id-1": basura})), "Sin cambios desde el envío sin respuesta: una pregunta, ningún envío, y la base sin nada en duda")
+    # Se le quita el recordatorio a la otra: el envío llega (la función la pierde), la respuesta no. Y se le vuelve a poner el mismo:
+    # aquí todo está como decía la base, pero allí falta.
+    api.perder.add("recordar")
+    abrir_hoja_recordar(p, "Sacar la basura")
+    p.locator("#hoja-recordar").get_by_role("button", name="Quitar recordatorio", exact=True).tap()
+    esperar_toast(p, "Recordatorio quitado")
+    alli = sin_respuesta(p, api, 3, False, ["id-1"], "Quitado")
+    igual((alli["v"], alli["cosas"]), (3, {"id-2": dentista}), "Quitado: la función ya no la tiene")
+    abrir_hoja_recordar(p, "Sacar la basura")
+    guardar_hoja_recordar(p)
+    esperar_envios(p, api, 4)
+    esperar_base(p, "el recordatorio vuelto a poner se sube", v=4)
+    sin_mas_llamadas(p, api, "Con el recordatorio de vuelta allí")
+    igual((ronda(api, 5), api.envios()[3]["cuerpo"], api.de_la_sesion(uid)["cosas"], cuandos(p)), ([("GET", 200), ("POST", 200)], parche(3, {"id-1": basura}), {"id-2": dentista, "id-1": basura}, {"Llamar al dentista": "9:00 · Cada día", "Sacar la basura": "9:00 · Cada día"}),
+          "Quitado y vuelto a poner igual tras el envío sin respuesta: se pregunta y se sube otra vez; aquí no se pierde y la función vuelve a avisar")
+    p.context.close()
+
+    # Sin ningún recordatorio: se pone el de todas (el envío llega, la respuesta no) y se deshace. Aquí vuelve a no haber ninguno,
+    # pero la función tiene el de todas y las cosas: hay que quitárselos.
+    api = ApiRecordarFalsa()
+    p = abrir_con_recordar(dispositivo_con_recordar(e, api), e, estado_recordar([recordada(2, "Llamar al dentista"), recordada(1, "Sacar la basura")]))
+    esperar_vista(p, "grupo")
+    esperar_base(p, "sin recordatorios, basta con preguntar", v=0)
+    api.perder.add("recordar")
+    abrir_hoja_recordar(p)
+    guardar_hoja_recordar(p)
+    esperar_toast(p, "Recordatorio puesto a 2 cosas")
+    esperar_envios(p, api, 1)
+    api.perder.clear()
+    p.get_by_role("button", name="Deshacer", exact=True).tap()
+    esperar_recordadas(p, "«Deshacer» deja las filas sin recordatorio", cuandos=["Poner recordatorio", "Poner recordatorio"])
+    esperar_envios(p, api, 2)
+    esperar_base(p, "lo deshecho se quita en la función", v=2)
+    sin_mas_llamadas(p, api, "Con lo deshecho quitado allí")
+    quitado = api.envios()[1]["cuerpo"]
+    igual((ronda(api, 1), api.envios()[0]["cuerpo"], {**quitado, "quitar": sorted(quitado["quitar"])}, api.de_la_sesion(uid), cuandos(p), leer_recordar(p)["general"]),
+          ([("POST", 200), ("GET", 200), ("POST", 200)], parche(0, {"id-2": dentista, "id-1": basura}, general=diario), parche(1, quitar=["id-1", "id-2"], general=None),
+           {"nacido": "n1", "v": 2, "zona": MADRID, "general": None, "cosas": {}}, {"Llamar al dentista": "Poner recordatorio", "Sacar la basura": "Poner recordatorio"}, None),
+          "El de todas, puesto y deshecho tras el envío sin respuesta: se pregunta y se quita allí con sus cosas; ni vuelve aquí, ni la función avisa de nada")
 
 
 @prueba("recordatorios al entrar con otra cuenta: la base es de la sesión con la que se guardó, y con otra no vale: a la función se le pregunta por la sesión nueva y se le sube todo lo de aquí (lo de la anterior, allí, ni se toca); y este dispositivo, que aún avisaba a la anterior, se da de alta con la nueva")
@@ -9293,7 +9980,7 @@ def t_recordar_nube_otra_sesion(e):
     sin_mas_llamadas(p, api, "Con la sesión nueva al día")
 
 
-@prueba("recordatorios: cómo se junta lo de aquí, la base y lo de la función (reconciliarRecordatorios), caso a caso: qué se envía (poner, quitar y «general» solo si cambia), qué se trae y qué base queda; sin base nada de aquí se da por quitado y lo hecho lo es si lo dice cualquiera; con ella gana quien cambió desde entonces y, si cambiaron los dos, este dispositivo, campo a campo", una_vez=True)
+@prueba("recordatorios: cómo se junta lo de aquí, la base y lo de la función (reconciliarRecordatorios), caso a caso: qué se envía (poner, quitar y «general» solo si cambia), qué se trae y qué base queda; sin base nada de aquí se da por quitado, lo hecho lo es si lo dice cualquiera y un recordatorio que aquí es solo el de todas no pisa el que la función tiene de esa cosa; con ella gana quien cambió desde entonces y, si cambiaron los dos, este dispositivo, campo a campo; y de lo que iba en un envío sin respuesta («enDuda») manda lo de aquí", una_vez=True)
 def t_recordar_reconciliar(e):
     p = e.pagina("icons/favicon-32.png")
     r = p.evaluate("""async () => {
@@ -9301,9 +9988,14 @@ def t_recordar_reconciliar(e):
       const lado = (o) => ({ general: o.general || null, cosas: new Map(Object.entries(o.cosas || {})) });
       const R1 = { hora: '09:00', frec: 'dia' }, R2 = { hora: '18:00', frec: 'dia' }, R3 = { hora: '21:30', frec: 'semana', dia: 2 };
       const c = (r, hecha = false, texto = 'A') => ({ texto, hecha, r });
-      // «conocidas»: las cosas que están en Recordar en este dispositivo (por defecto, las que aquí tienen recordatorio).
-      const caso = (local, base, servidor, conocidas) => {
-        const r = n.reconciliarRecordatorios(lado(local), base ? lado(base) : null, lado(servidor), new Set(conocidas || Object.keys(local.cosas || {})));
+      // «conocidas»: las cosas que están en Recordar en este dispositivo (por defecto, las que aquí tienen recordatorio):
+      // una lista de ids (pendientes aquí) o un objeto { id: hecha }.
+      // «enDuda»: lo que iba en un envío que se quedó sin respuesta ({ general, ids }); sin él, nada.
+      const sabidas = (conocidas, local) => new Map(Array.isArray(conocidas) ? conocidas.map((id) => [id, false])
+        : conocidas ? Object.entries(conocidas) : Object.entries(local.cosas || {}).map(([id, cosa]) => [id, cosa.hecha]));
+      const caso = (local, base, servidor, conocidas, enDuda) => {
+        const dudoso = enDuda ? { general: enDuda.general === true, ids: new Set(enDuda.ids || []) } : null;
+        const r = n.reconciliarRecordatorios(lado(local), base ? lado(base) : null, lado(servidor), sabidas(conocidas, local), dudoso);
         return { parche: r.parche, traer: { general: r.aplicar.general === undefined ? 'igual' : r.aplicar.general, cosas: r.aplicar.cosas }, base: { general: r.base.general, cosas: Object.fromEntries(r.base.cosas) } };
       };
       const con = (cosas, general) => ({ cosas, general });
@@ -9316,6 +10008,12 @@ def t_recordar_reconciliar(e):
         soloAqui: caso(con({ a: c(R1) }), null, con({})),
         generalDeAlli: caso(con({}), null, con({}, R2)),
         generalDeLosDos: caso(con({}, R1), null, con({}, R2)),
+        soloElDeTodasAqui: caso(con({ a: c(R1) }, R1), null, con({ a: c(R2) }, R1)),
+        propioAquiConUnoParaTodas: caso(con({ a: c(R3) }, R1), null, con({ a: c(R2) }, R1)),
+        hechaAquiSinRecordatorio: caso(con({}), null, con({ a: c(R1) }), { a: true }),
+        hechaAquiSinRecordatorioYAlli: caso(con({}), null, con({ a: c(R1, true) }), { a: true }),
+        pendienteAquiSinRecordatorioHechaAlli: caso(con({}), null, con({ a: c(R1, true) }), { a: false }),
+        hechaAquiSinRecordatorioConBase: caso(con({}), con({}), con({ a: c(R2) }), { a: true }),
         // Con base.
         cambiaAqui: caso(con({ a: c(R2) }), con({ a: c(R1) }), con({ a: c(R1) })),
         cambiaAlli: caso(con({ a: c(R1) }), con({ a: c(R1) }), con({ a: c(R2) })),
@@ -9339,6 +10037,17 @@ def t_recordar_reconciliar(e):
         generalQuitadoAlli: caso(con({}, R1), con({}, R1), con({})),
         todoALaVez: caso(con({ a: c(R2), b: c(R1, false, 'B'), d: c(R1, false, 'D') }, R1), con({ a: c(R1), b: c(R1, false, 'B'), e: c(R1, false, 'E') }, R1),
                          con({ a: c(R1, true), b: c(R3, false, 'B'), e: c(R1, false, 'E'), f: c(R2, false, 'F') }, R3), ['a', 'b', 'd', 'f']),
+        // Con algo en duda (iba en un envío sin respuesta): de eso manda lo de aquí.
+        dudosaQueAquiYaNoEsta: caso(con({}), con({}), con({ a: c(R1) }), [], { ids: ['a'] }),
+        dudosaSinRecordatorioAqui: caso(con({}), con({}), con({ a: c(R1) }), ['a'], { ids: ['a'] }),
+        dudosaQueAlliFalta: caso(con({ a: c(R1) }), con({ a: c(R1) }), con({}), null, { ids: ['a'] }),
+        dudosaConOtraHoraAlli: caso(con({ a: c(R1) }), con({ a: c(R1) }), con({ a: c(R2) }), null, { ids: ['a'] }),
+        dudosaHechaAlli: caso(con({ a: c(R1) }), con({ a: c(R1) }), con({ a: c(R2, true) }), null, { ids: ['a'] }),
+        dudosaEnNingunSitio: caso(con({}), con({ a: c(R1) }), con({}), ['a'], { ids: ['a'] }),
+        noDudosaJuntoAUnaDudosa: caso(con({ a: c(R1), b: c(R1, false, 'B') }), con({ a: c(R1), b: c(R1, false, 'B') }), con({ a: c(R2), b: c(R2, false, 'B') }), null, { ids: ['a'] }),
+        generalDudosoQuitadoAqui: caso(con({}), con({}), con({}, R1), null, { general: true }),
+        generalDudosoDistinto: caso(con({}, R1), con({}, R1), con({}, R2), null, { general: true }),
+        generalNoDudoso: caso(con({}), con({}), con({}, R1), null, { ids: ['a'] }),
       };
     }""")
     r1, r2, r3 = recordatorio(), recordatorio("18:00"), recordatorio("21:30", "semana", dia=2)
@@ -9359,6 +10068,12 @@ def t_recordar_reconciliar(e):
         "soloAqui": (resultado(poner={"a": c(r1)}, base={"a": c(r1)}), "Sin base: lo que allí falta no se quita aquí, se sube"),
         "generalDeAlli": (resultado(general_traido=r2, general=r2), "Sin base y sin uno para todas aquí: se trae el de allí"),
         "generalDeLosDos": (resultado(general_enviado=r1, general=r1), "Sin base y con uno para todas en los dos: el de aquí"),
+        "soloElDeTodasAqui": (resultado(traer=[("a", c(r2))], base={"a": c(r2)}, general=r1), "Sin base: el recordatorio que aquí es solo el de todas no pisa el que la función tiene de esa cosa"),
+        "propioAquiConUnoParaTodas": (resultado(poner={"a": c(r3)}, base={"a": c(r3)}, general=r1), "Sin base: el recordatorio propio de aquí sí gana, aunque haya uno para todas"),
+        "hechaAquiSinRecordatorio": (resultado(poner={"a": c(r1, True)}, traer=[("a", c(r1, True))], base={"a": c(r1, True)}), "Recién llegada y ya marcada aquí: se trae su recordatorio, sigue hecha y se le cuenta a la función"),
+        "hechaAquiSinRecordatorioYAlli": (resultado(traer=[("a", c(r1, True))], base={"a": c(r1, True)}), "Recién llegada, hecha aquí y allí: se trae y no hay nada que contar"),
+        "pendienteAquiSinRecordatorioHechaAlli": (resultado(traer=[("a", c(r1, True))], base={"a": c(r1, True)}), "Recién llegada, pendiente aquí y hecha allí: hecha"),
+        "hechaAquiSinRecordatorioConBase": (resultado(poner={"a": c(r2, True)}, traer=[("a", c(r2, True))], base={"a": c(r2, True)}), "Con base que aún no la tiene, lo mismo: lo marcado aquí no se deshace"),
         "cambiaAqui": (resultado(poner={"a": c(r2)}, base={"a": c(r2)}), "Cambiado solo aquí: se sube"),
         "cambiaAlli": (resultado(traer=[("a", c(r2))], base={"a": c(r2)}), "Cambiado solo allí: se trae"),
         "cambianLosDos": (resultado(poner={"a": c(r2)}, base={"a": c(r2)}), "Cambiado en los dos: gana este dispositivo"),
@@ -9381,6 +10096,16 @@ def t_recordar_reconciliar(e):
         "generalQuitadoAlli": (resultado(general_traido=None), "El de todas, quitado allí: se quita aquí"),
         "todoALaVez": (resultado(poner={"a": c(r2, True), "d": c(r1, texto="D")}, quitar=["e"], traer=[("a", c(r2, True)), ("b", c(r3, texto="B")), ("f", c(r2, texto="F"))],
                                  base={"a": c(r2, True), "b": c(r3, texto="B"), "d": c(r1, texto="D"), "f": c(r2, texto="F")}, general_traido=r3, general=r3), "Todo a la vez: cada cosa por su lado"),
+        "dudosaQueAquiYaNoEsta": (resultado(quitar=["a"]), "En duda y aquí ya no está en Recordar: se quita allí (sin duda, sería de otro dispositivo y ni se tocaría)"),
+        "dudosaSinRecordatorioAqui": (resultado(quitar=["a"]), "En duda y aquí sin recordatorio: se quita allí (sin duda, se traería el de allí)"),
+        "dudosaQueAlliFalta": (resultado(poner={"a": c(r1)}, base={"a": c(r1)}), "En duda y allí falta: se sube (sin duda, se daría por quitada en otro dispositivo)"),
+        "dudosaConOtraHoraAlli": (resultado(poner={"a": c(r1)}, base={"a": c(r1)}), "En duda y con otro recordatorio allí: el de aquí (sin duda, se traería el de allí)"),
+        "dudosaHechaAlli": (resultado(poner={"a": c(r1, True)}, traer=[("a", c(r1, True))], base={"a": c(r1, True)}), "En duda, y hecha allí: el recordatorio de aquí, pero lo hecho se trae como siempre"),
+        "dudosaEnNingunSitio": (resultado(), "En duda y sin estar en ningún sitio: nada"),
+        "noDudosaJuntoAUnaDudosa": (resultado(poner={"a": c(r1)}, traer=[("b", c(r2, texto="B"))], base={"a": c(r1), "b": c(r2, texto="B")}), "Lo que no está en duda se junta como siempre"),
+        "generalDudosoQuitadoAqui": (resultado(general_enviado=None), "El de todas en duda y aquí no hay: se quita allí (sin duda, se traería)"),
+        "generalDudosoDistinto": (resultado(general_enviado=r1, general=r1), "El de todas en duda y distinto allí: el de aquí"),
+        "generalNoDudoso": (resultado(general_traido=r1, general=r1), "Con cosas en duda pero no el de todas: el de todas se junta como siempre"),
     }
     igual(sorted(r), sorted(esperado), "Casos comprobados")
     for nombre, (debido, que) in esperado.items():
@@ -9406,6 +10131,8 @@ async () => {
   return claves.map((clave) => decodeURIComponent(new URL(clave.url).pathname.split('/__recordar/')[1])).sort();
 }
 """
+# Lo que dice una de esas entradas, y qué hora es en ese momento.
+JS_DATO_APUNTADO = "async ([tipo, id]) => [await (await (await caches.open('recordar-de-cosas')).match(new URL('__recordar/' + tipo + '/' + encodeURIComponent(id), self.registration.scope).href)).json(), Date.now()]"
 # Un evento del sistema sobre un aviso (tocarlo, pulsar uno de sus botones, quitarlo de en medio) o la vuelta de la conexión
 # («sync»), hecho a mano: se espera a todo lo que el service worker deja en marcha con waitUntil y se dice cómo acabó.
 JS_EVENTO_DEL_SISTEMA = r"""
@@ -9501,10 +10228,10 @@ class ServiceWorkerDeChrome:
     def etiquetas(self):
         return [aviso["etiqueta"] for aviso in self.avisos()]
 
-    def esperar_avisos(self, etiquetas, que):
+    def esperar_avisos(self, etiquetas, que, ms=5000):
         """Espera a que los avisos a la vista sean exactamente los de esas etiquetas y los devuelve."""
         try:
-            self.esperar(lambda: self.etiquetas() == sorted(etiquetas), que)
+            self.esperar(lambda: self.etiquetas() == sorted(etiquetas), que, ms)
         except Fallo:
             raise Fallo(f"No se cumplió: {que} (avisos a la vista: {self.etiquetas()}; esperados: {sorted(etiquetas)})") from None
         return self.avisos()
@@ -9660,6 +10387,9 @@ def t_sw_recordar_hecho(e):
         igual(s.tocar("recordar-id-3", "hecho"), ["fulfilled"], "«Hecho» con la app cerrada")
         s.esperar_avisos(["recordar-id-2"], "el aviso contestado se cierra")
         igual((dichos[1:], s.apuntado()), ([dicho("id-3")], ["avisadas/id-2", "hechas/id-3"]), "Con la app cerrada: la función se entera y queda apuntado para la app")
+        apunte, ahora = s.sw.evaluate(JS_DATO_APUNTADO, ["hechas", "id-3"])
+        comprobar(sorted(apunte) == ["en", "id"] and apunte["id"] == "id-3" and isinstance(apunte["en"], (int, float)) and 0 <= ahora - apunte["en"] < 5000,
+                  f"El «Hecho» no queda apuntado con su hora (la app la mira: uno antiguo no se marca a ciegas): {apunte} a las {ahora}")
         p.goto(e.base + "#grupo/recordar")
         esperar_recordadas(p, "al abrir la app, la cosa contestada queda marcada", textos=["Regar las plantas", "Pagar la comunidad", "Llamar al dentista", "Sacar la basura"], hechas=[False, False, True, True])
         s.esperar_apuntado(["avisadas/id-2"], "leído por la app, deja de estar apuntado")
@@ -9781,6 +10511,483 @@ def t_sw_recordar_mantener_y_tocar(e):
         igual(s.ventanas(), [[e.base], []], "Tocar un aviso con una ventana abierta: se trae al frente y se lleva al enlace")
     finally:
         chrome.close()
+
+
+# Un envío push entregado a mano, para ver cuánto espera el service worker por él: «self.__push» dice cómo va lo que deja en marcha
+# con waitUntil («en marcha» mientras no acaba; después, cómo acabó).
+JS_PUSH_A_MANO = r"""
+(datos) => {
+  const evento = new PushEvent('push', { data: JSON.stringify(datos) });
+  const esperas = [];
+  evento.waitUntil = (promesa) => { esperas.push(promesa); };
+  self.__push = 'en marcha';
+  self.dispatchEvent(evento);
+  Promise.allSettled(esperas).then((fines) => { self.__push = fines.map((fin) => fin.status).join(); });
+}
+"""
+
+
+@prueba("service worker, la cola de avisos no espera a la red: con un «Hecho» por decir y la función sin contestar, los envíos que llegan seguidos (dos de recordatorios y uno de una lista entre ellos) se enseñan todos al momento, sin esperar a que esa llamada acabe; el service worker sí sigue despierto hasta que acaba de decirlo; y cuando la función contesta, deja de estar por decir", una_vez=True)
+def t_sw_cola_sin_esperar_a_la_red(e):
+    chrome = abrir_chrome(e)
+    if not chrome:
+        return
+    try:
+        contexto = contexto_de_chrome(e, chrome, e.base)
+        dichos, en_el_aire, funcion = [], [], {"responde": "sin red"}
+
+        def atender_hecho(route):
+            dichos.append(json.loads(route.request.post_data)["id"])
+            if funcion["responde"] == "sin red":
+                route.abort()
+            else:
+                en_el_aire.append(route)  # La función no contesta: la llamada se queda en el aire.
+
+        contexto.route("**/api/avisos/hecho", atender_hecho)
+        s = ServiceWorkerDeChrome(contexto, e.pagina(contexto=contexto), e.base)
+        # Un «Hecho» que no llega a la función (sin red): queda por decir.
+        s.empujar(envio_de_recordatorios([("x", "Sacar la basura", "ficha-x")]))
+        s.esperar_avisos(["recordar-x"], "llega el primer aviso")
+        igual(s.tocar("recordar-x", "hecho"), ["fulfilled"], "«Hecho» sin red")
+        s.esperar_apuntado(["por-decir/x"], "sin red, el «Hecho» queda por decir")
+        # Vuelve la red, pero la función no contesta. Llegan seguidos tres envíos: cada uno se enseña sin esperar a nadie.
+        funcion["responde"] = "nunca"
+        intentos = len(dichos)
+        s.empujar(envio_de_recordatorios([("a", "Llamar al dentista", "ficha-a")]))
+        s.empujar({"titulo": "Cosas de Viaje", "etiqueta": "lista-viaje123", "linea": "Ana ha añadido «Billetes»", "url": "/de/viaje123"})
+        s.empujar(envio_de_recordatorios([("b", "Regar las plantas", "ficha-b")]))
+        s.esperar_avisos(["lista-viaje123", "recordar-a", "recordar-b"], "los tres envíos se enseñan aunque la función no conteste", ms=4000)
+        igual((dichos[intentos:], len(en_el_aire)), (["x", "x", "x"], 3), "Mientras tanto, el «Hecho» pendiente que repite cada envío sigue en el aire")
+        # El service worker no se da por terminado con un envío hasta que acaba de decirlo.
+        s.sw.evaluate(JS_PUSH_A_MANO, envio_de_recordatorios([("c", "Pagar la comunidad", "ficha-c")]))
+        s.esperar_avisos(["lista-viaje123", "recordar-a", "recordar-b", "recordar-c"], "el cuarto envío también se enseña")
+        igual(s.sw.evaluate("() => self.__push"), "en marcha", "Con su aviso ya a la vista, lo que el service worker deja en marcha por ese envío (espera a la función)")
+        # La función contesta por fin: queda dicho.
+        s.esperar(lambda: len(en_el_aire) == 4, "el cuarto envío también repite el «Hecho» pendiente")
+        for route in en_el_aire:
+            route.fulfill(status=200, content_type="application/json", body='{"ok":true}')
+        s.esperar(lambda: s.sw.evaluate("() => self.__push") == "fulfilled", "al contestar la función, el service worker acaba con ese envío")
+        s.esperar_apuntado(["avisadas/a", "avisadas/b", "avisadas/c"], "dicho por fin, ya no queda por decir")
+    finally:
+        chrome.close()
+
+
+@prueba("service worker, un «Hecho» que quedó por decir se repite con cualquier aviso que llegue, también el de una lista: con la app cerrada el navegador no admite que se le pida avisar cuando vuelva la conexión, y no hace falta esperar al siguiente recordatorio; sin nada por decir, el aviso de una lista ni llama a la función ni crea la caché de los avisos", una_vez=True)
+def t_sw_hecho_pendiente_y_avisos_de_listas(e):
+    chrome = abrir_chrome(e)
+    if not chrome:
+        return
+    try:
+        contexto = contexto_de_chrome(e, chrome, e.base)
+        dichos, funcion = [], {"responde": None}
+
+        def atender_hecho(route):
+            dichos.append(json.loads(route.request.post_data))
+            if funcion["responde"] is None:
+                route.abort()
+            else:
+                route.fulfill(status=funcion["responde"], content_type="application/json", body='{"ok":true}')
+
+        contexto.route("**/api/avisos/hecho", atender_hecho)
+        p = e.pagina(contexto=contexto)
+        s = ServiceWorkerDeChrome(contexto, p, e.base)
+        viaje = {"titulo": "Cosas de Viaje", "etiqueta": "lista-viaje123", "url": "/de/viaje123"}
+        # Sin nada por decir, el aviso de una lista es lo de siempre: ni una llamada, ni la caché de los avisos creada por mirar.
+        s.empujar({**viaje, "linea": "Ana ha añadido «Billetes»"})
+        s.esperar_avisos(["lista-viaje123"], "llega el aviso de la lista")
+        p.wait_for_timeout(300)
+        igual((dichos, s.apuntado()), ([], None), "Un aviso de una lista sin ningún «Hecho» por decir: llamadas a la función y caché de los avisos")
+        # Con la app cerrada y sin red se pulsa «Hecho»: queda por decir, y el navegador no admite que se le pida avisar cuando vuelva
+        # la conexión (sin ninguna ventana de la app, Chrome lo rechaza).
+        p.goto(e.base + "icons/favicon-32.png")
+        s.sw.evaluate("() => { SyncManager.prototype.register = async function () { throw new DOMException('Attempted to register a sync event without a window', 'InvalidAccessError'); }; }")
+        s.empujar(envio_de_recordatorios([("x", "Sacar la basura", "ficha-x")]))
+        s.esperar_avisos(["lista-viaje123", "recordar-x"], "llega el aviso de la cosa")
+        igual(s.tocar("recordar-x", "hecho"), ["fulfilled"], "«Hecho» sin red y sin poder pedir que se avise al volver la conexión")
+        s.esperar_apuntado(["hechas/x", "por-decir/x"], "queda apuntado para la app y por decir a la función")
+        # Vuelve la red y lo primero que llega es el aviso de una lista: con él se repite el «Hecho» pendiente.
+        funcion["responde"] = 200
+        s.empujar({**viaje, "linea": "Beto ha añadido «Maleta»"})
+        s.esperar(lambda: s.avisos()[0]["cuerpo"].startswith("Beto"), "llega otro aviso de la lista")
+        s.esperar_apuntado(["hechas/x"], "con el aviso de la lista, el «Hecho» pendiente queda dicho")
+        igual(dichos, [{"uid": "u1", "id": "x", "ficha": "ficha-x"}] * 2, "Lo que se le dice a la función: el intento sin red y el que acompaña al aviso de la lista")
+        igual([(a["etiqueta"], a["cuerpo"]) for a in s.avisos()], [("lista-viaje123", "Beto ha añadido «Maleta»\nAna ha añadido «Billetes»")], "El aviso de la lista, como siempre (el de la cosa se cerró al contestarlo)")
+    finally:
+        chrome.close()
+
+
+# ----------------------------------------------------------------------------
+# Recordar, los avisos y otro dispositivo de la cuenta: lo apuntado en la caché de los avisos cuando lo de aquí ya no es lo último
+# ----------------------------------------------------------------------------
+
+# Lo que sw.js deja apuntado en la caché que comparte con la app (aquí lo apunta la prueba: el origen de mentira no tiene service
+# worker): [tipo, id, dato]. Con «hace» (ms) en el dato, se apunta con su hora: ese rato antes de ahora.
+JS_APUNTAR_DATOS = r"""
+async (apuntes) => {
+  const cache = await caches.open('recordar-de-cosas');
+  for (const [tipo, id, { hace, ...dato }] of apuntes) {
+    const completo = { id, ...dato, ...(hace === undefined ? {} : { en: Date.now() - hace }) };
+    await cache.put(new URL('__recordar/' + tipo + '/' + encodeURIComponent(id), location.origin + '/').href, new Response(JSON.stringify(completo)));
+  }
+}
+"""
+# El mensaje que sw.js manda a la app abierta cuando se pulsa «Hecho» en un aviso (aquí lo manda la prueba).
+JS_DECIR_HECHO = "(id) => navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: { tipo: 'recordar-hecho', id } }))"
+HACE_DOS_DIAS = 2 * 24 * 60 * 60 * 1000
+
+
+def apuntar_con_la_app_cerrada(contexto, e, apuntes):
+    """Lo que el service worker de ese dispositivo apuntaría con su app cerrada (ver JS_APUNTAR_DATOS)."""
+    semilla = e.vigilar(contexto.new_page())
+    semilla.goto(ORIGEN_NUBE + "icons/favicon-32.png")
+    semilla.evaluate(JS_APUNTAR_DATOS, apuntes)
+    semilla.close()
+
+
+def hecho_en_el_aviso(api, id, uid="u1"):
+    """«Hecho» pulsado en el aviso de esa cosa, con red: lo que el service worker le dice a la función (lo que apunta para la app va aparte)."""
+    api.responder("hecho", "POST", None, {"uid": uid, "id": id, "ficha": "la-del-aviso"})
+
+
+def esperar_valor(pagina, leer, esperado, que, ms=6000):
+    """Espera a que «leer()» dé exactamente lo esperado. Se mira desde aquí: wait_for_function no espera a una función asíncrona (su
+    promesa ya le vale), y lo que hay en una caché o en la función de mentira no se puede mirar de otra forma."""
+    fin = time.monotonic() + ms / 1000
+    while True:
+        real = leer()
+        if real == esperado:
+            return
+        if time.monotonic() > fin:
+            raise Fallo(f"No se cumplió en {ms} ms: {que} (obtenido: {real}; esperado: {esperado})")
+        pagina.wait_for_timeout(50)  # Con Playwright esperando, las llamadas a la función y a la nube de mentira se atienden.
+
+
+def hechas_en(pagina):
+    """Las filas de Recordar, cada una hecha o no ({texto: hecha}), estén en el orden que estén."""
+    return {fila["texto"]: fila["hecha"] for fila in recordadas(pagina)}
+
+
+def hechas_en_la_funcion(api, uid="u1"):
+    """Las cosas que la función tiene de esa sesión, cada una hecha o no ({id: hecha})."""
+    return {id: guardada["hecha"] for id, guardada in api.de_la_sesion(uid)["cosas"].items()}
+
+
+def esperar_hechas(pagina, esperado, que, ms=6000):
+    esperar_valor(pagina, lambda: hechas_en(pagina), esperado, que, ms)
+
+
+def esperar_en_la_funcion(pagina, api, esperado, que, uid="u1", ms=6000):
+    esperar_valor(pagina, lambda: hechas_en_la_funcion(api, uid), esperado, que, ms)
+
+
+def esperar_apuntado(pagina, esperado, que):
+    """Espera a que en la caché de los avisos de ese dispositivo quede apuntado exactamente eso («tipo/id»)."""
+    esperar_valor(pagina, lambda: pagina.evaluate(JS_APUNTADO), esperado, que)
+
+
+@prueba("«Hecho» antiguo en un aviso y otro dispositivo de la cuenta: con la app del móvil cerrada se pulsa «Hecho» en tres avisos (la función se entera) y, antes de abrirla, en la tableta una de esas cosas se desmarca y otra se elimina; al abrir la app del móvil no se marcan a ciegas (se le pregunta a la función cómo han quedado): la desmarcada sigue pendiente en los dos dispositivos, en la nube y en la función, la eliminada no reaparece, la que nadie tocó queda hecha, y el móvil no envía nada", una_vez=True)
+def t_hecho_antiguo_y_otro_dispositivo(e):
+    nube, api = NubeFalsa(), ApiRecordarFalsa()
+    movil, tableta = ENDPOINT_PRUEBA + "movil", ENDPOINT_PRUEBA + "tableta"
+    datos = estado_recordar([recordada(3, "Llamar al dentista"), recordada(2, "Sacar la basura"), recordada(1, "Regar las plantas")])
+    ctx_m = dispositivo_con_recordar(e, api, usuario="u1", endpoint=movil, nube=nube)
+    m = abrir_con_recordar(ctx_m, e, datos, recordar_guardado(general=recordatorio()), sesion="u1", endpoint=movil, cuenta=True)
+    esperar_nube(m, "al-dia")
+    esperar_base(m, "el móvil sube sus recordatorios", v=1)
+    m.close()
+    # Con la app del móvil cerrada llegan los tres avisos y se pulsa «Hecho» en cada uno: la función se entera y queda apuntado para la app.
+    for id in ("id-3", "id-2", "id-1"):
+        hecho_en_el_aviso(api, id)
+    apuntar_con_la_app_cerrada(ctx_m, e, [["hechas", id, {"hace": HACE_DOS_DIAS}] for id in ("id-3", "id-2", "id-1")])
+    # La tableta las ve hechas (se lo dice la función). Allí una se desmarca, para que vuelva a avisar, y otra se elimina.
+    t = abrir_con_recordar(dispositivo_con_recordar(e, api, usuario="u1", endpoint=tableta, nube=nube), e, sesion="u1", endpoint=tableta, cuenta=True)
+    esperar_hechas(t, {"Llamar al dentista": True, "Sacar la basura": True, "Regar las plantas": True}, "la tableta ve hechas las tres")
+    esperar_en_la_nube(t, nube, lambda docs: all(docs.get(f"c-id-{n}", {}).get("hecha") is True for n in (1, 2, 3)), "la tableta sube los tres checks a la nube")
+    t.wait_for_timeout(1300)  # La tableta acaba su ronda con la función: lo de ahora es un cambio nuevo.
+    check_de(fila_recordada(t, "Llamar al dentista")).tap()
+    esperar_hechas(t, {"Llamar al dentista": False, "Sacar la basura": True, "Regar las plantas": True}, "desmarcada en la tableta")
+    fila_recordada(t, "Sacar la basura").get_by_role("button", name="Eliminar", exact=True).tap()
+    esperar_hechas(t, {"Llamar al dentista": False, "Regar las plantas": True}, "eliminada en la tableta")
+    como_queda = {"id-3": False, "id-1": True}
+    esperar_en_la_funcion(t, api, como_queda, "la función se entera de lo desmarcado y de lo eliminado (pasado su «Deshacer»)", ms=9000)
+    esperar_en_la_nube(t, nube, lambda docs: docs.get("c-id-3", {}).get("hecha") is False and "c-id-2" not in docs, "lo desmarcado y lo eliminado llegan a la nube", ms=9000)
+    t.wait_for_timeout(1300)
+    envios = len(api.envios())
+    # Días después se abre la app del móvil, que aún las tiene pendientes a las tres y con su «Hecho» apuntado.
+    m = e.vigilar(ctx_m.new_page())
+    m.goto(ORIGEN_NUBE + "#grupo/recordar")
+    esperar_hechas(m, {"Llamar al dentista": False, "Regar las plantas": True}, "en el móvil quedan como las dejó la tableta")
+    esperar_apuntado(m, [], "leídos por la app, los «Hecho» dejan de estar apuntados")
+    m.wait_for_timeout(1500)  # De sobra para que un check puesto a ciegas hubiera viajado a la función y a la nube.
+    t.evaluate(JS_VUELVE_LA_CONEXION)
+    t.wait_for_timeout(1300)
+    en_la_nube = {clave: doc["hecha"] for clave, doc in nube.documentos().items() if doc.get("tipo") == "cosa"}
+    igual((hechas_en(m), hechas_en(t), hechas_en_la_funcion(api), en_la_nube),
+          ({"Llamar al dentista": False, "Regar las plantas": True}, {"Llamar al dentista": False, "Regar las plantas": True}, como_queda, {"c-id-3": False, "c-id-1": True}),
+          "Tras abrir la app del móvil: en el móvil, en la tableta, en la función y en la nube, la desmarcada sigue pendiente y la eliminada no ha vuelto")
+    igual([q["cuerpo"] for q in api.envios()[envios:]], [], "Lo que el móvil envía a la función al abrirse (nada: ella ya lo sabía todo)")
+
+
+@prueba("«Hecho» en un aviso, cuándo se marca aquí sin preguntar a nadie y cuándo no: recién pulsado, si la función aún no lo sabe (quedó por decir: la app lo sube y ese «por decir» se olvida), si la cosa ya salió de Recordar, sin conexión o sin cuenta de Google, se marca al momento como siempre; el antiguo que la función ya sabe, con cuenta y conexión, se le pregunta a ella (también el que apuntó sin hora un service worker anterior): queda hecho si allí lo sigue y pendiente si allí se desmarcó; y el mensaje del service worker a la app abierta pasa por lo mismo (a una página dormida le llega tarde), salvo que no haya caché: entonces se marca ya", una_vez=True)
+def t_hecho_en_un_aviso_cuando_se_pregunta(e):
+    movil = ENDPOINT_PRUEBA + "movil"
+
+    def movil_al_dia(textos, cuenta=True, guion="", sueltas=()):
+        """Un móvil con esas cosas en Recordar (siguen el recordatorio de todas), al día con la función: (función, contexto, página, sesión)."""
+        api, sesion = ApiRecordarFalsa(), "u1" if cuenta else "anonimo-1"
+        contexto = dispositivo_con_recordar(e, api, usuario="u1" if cuenta else None, endpoint=movil, guion=guion)
+        cosas = [recordada(len(textos) - i, texto) for i, texto in enumerate(textos)] + list(sueltas)
+        m = abrir_con_recordar(contexto, e, estado_recordar(cosas), recordar_guardado(general=recordatorio()), sesion=sesion, endpoint=movil, cuenta=cuenta)
+        esperar_base(m, "el móvil sube sus recordatorios", v=1)
+        return api, contexto, m, sesion
+
+    def desmarcada_en_otro_sitio(api, id, uid="u1"):
+        api.desde_otro_sitio(uid, lambda doc: doc["cosas"][id].update(hecha=False))
+
+    def abrir(contexto):
+        pagina = e.vigilar(contexto.new_page())
+        pagina.goto(ORIGEN_NUBE + "#grupo/recordar")
+        return pagina
+
+    # Al abrir la app con cuenta y conexión, cuatro «Hecho» apuntados (y uno de una cosa que ya no está en Recordar).
+    api, contexto, m, _ = movil_al_dia(["Llamar al dentista", "Sacar la basura", "Regar las plantas", "Pagar la comunidad"], sueltas=[cosa(9, "Ya fuera de Recordar")])
+    m.close()
+    hecho_en_el_aviso(api, "id-4")  # Antiguo, y la función lo sabe: se le pregunta, y allí sigue hecho.
+    hecho_en_el_aviso(api, "id-3")  # Lo mismo, apuntado sin hora por un service worker anterior; después se desmarcó en otro dispositivo.
+    desmarcada_en_otro_sitio(api, "id-3")
+    apuntar_con_la_app_cerrada(contexto, e, [["hechas", "id-4", {"hace": HACE_DOS_DIAS}], ["hechas", "id-3", {}],
+                                            ["hechas", "id-2", {"hace": HACE_DOS_DIAS}], ["por-decir", "id-2", {"uid": "u1", "ficha": "la-del-aviso"}],  # Antiguo, pero quedó por decir: la función no lo sabe.
+                                            ["hechas", "id-1", {"hace": 5000}],  # Recién pulsado.
+                                            ["hechas", "id-9", {"hace": HACE_DOS_DIAS}]])
+    api.retener.add("recordar")  # La función tarda en contestar: lo que se marca sin preguntar no la espera.
+    envios = len(api.envios())
+    m = abrir(contexto)
+    sin_preguntar = {"Llamar al dentista": False, "Sacar la basura": False, "Regar las plantas": True, "Pagar la comunidad": True}
+    esperar_hechas(m, sin_preguntar, "lo recién pulsado y lo que quedó por decir se marcan al abrir, sin esperar a la función")
+    esperar_guardado(m, "(s) => s.cosas.find((c) => c.id === 'id-9').hecha === true", "la que salió de Recordar se marca igual")
+    m.wait_for_timeout(400)
+    igual(hechas_en(m), sin_preguntar, "Mientras la función no contesta, los «Hecho» antiguos que ella ya sabe")
+    api.soltar()
+    esperar_hechas(m, {**sin_preguntar, "Llamar al dentista": True}, "con lo que dice la función: hecha la que allí lo sigue, pendiente la que allí se desmarcó")
+    esperar_en_la_funcion(m, api, {"id-4": True, "id-3": False, "id-2": True, "id-1": True}, "la app sube lo que marcó sin preguntar")
+    esperar_apuntado(m, [], "leído todo, y dicho a la función lo que quedaba por decir, no queda nada apuntado")
+    igual(sorted(id for q in api.envios()[envios:] for id in q["cuerpo"]["poner"]), ["id-1", "id-2"], "Lo que la app envía: solo lo que marcó ella (lo demás lo dijo la función)")
+    contexto.close()
+
+    # Sin conexión o sin cuenta de Google no hay a quién preguntar, o no hay otro dispositivo que lo haya deshecho: se marca como siempre.
+    for caso, opciones in (("sin conexión", {"guion": "Object.defineProperty(Navigator.prototype, 'onLine', { configurable: true, get: () => false });"}), ("sin cuenta de Google", {"cuenta": False})):
+        api, contexto, m, sesion = movil_al_dia(["Sacar la basura"], **opciones)
+        m.close()
+        hecho_en_el_aviso(api, "id-1", sesion)
+        desmarcada_en_otro_sitio(api, "id-1", sesion)
+        apuntar_con_la_app_cerrada(contexto, e, [["hechas", "id-1", {"hace": HACE_DOS_DIAS}]])
+        api.retener.add("recordar")
+        m = abrir(contexto)
+        esperar_hechas(m, {"Sacar la basura": True}, f"[{caso}] un «Hecho» antiguo se marca al abrir, sin esperar a la función")
+        api.soltar()
+        esperar_en_la_funcion(m, api, {"id-1": True}, f"[{caso}] la app lo sube", uid=sesion)
+        esperar_apuntado(m, [], f"[{caso}] no queda nada apuntado")
+        contexto.close()
+
+    # Con la app abierta, lo dice el service worker. Sin caché (no se pudo apuntar nada), se marca ya.
+    api, contexto, m, _ = movil_al_dia(["Llamar al dentista", "Sacar la basura"])
+    igual(m.evaluate(JS_APUNTADO), None, "Antes del primer aviso, la caché de los avisos")
+    api.retener.add("recordar")
+    m.evaluate(JS_DECIR_HECHO, "id-2")
+    esperar_hechas(m, {"Llamar al dentista": True, "Sacar la basura": False}, "sin caché, el mensaje marca la cosa al momento")
+    api.soltar()
+    esperar_en_la_funcion(m, api, {"id-2": True, "id-1": False}, "la app sube ese check")
+    esperar_base(m, "el móvil se queda al día", v=2)
+    # A una página dormida el mensaje le llega tarde: el «Hecho» es de hace dos días, la función lo supo entonces y después la cosa se
+    # desmarcó en otro dispositivo. No se marca: se le pregunta a la función.
+    hecho_en_el_aviso(api, "id-1")
+    desmarcada_en_otro_sitio(api, "id-1")
+    m.evaluate(JS_APUNTAR_DATOS, [["hechas", "id-1", {"hace": HACE_DOS_DIAS}]])
+    lecturas, envios = len(api.lecturas()), len(api.envios())
+    m.evaluate(JS_DECIR_HECHO, "id-1")
+    esperar_lecturas(m, api, lecturas + 1)
+    esperar_base(m, "el móvil se queda con lo que dice la función", v=4)
+    esperar_apuntado(m, [], "el «Hecho» antiguo deja de estar apuntado")
+    m.wait_for_timeout(1300)
+    igual((hechas_en(m), hechas_en_la_funcion(api), len(api.envios()) - envios), ({"Llamar al dentista": True, "Sacar la basura": False}, {"id-2": True, "id-1": False}, 0),
+          "Tras el mensaje tardío: la cosa sigue pendiente aquí y en la función, y la app no envía nada")
+
+
+def apuntada_en_otro_dispositivo(nube, api, numero, texto, en_la_nube=True, uid="u1"):
+    """Otra cosa de Recordar, con su recordatorio, apuntada en otro dispositivo de la cuenta: la función ya avisa de ella y, con
+    «en_la_nube», está donde este dispositivo la encontrará (sin él, aún no le ha llegado a la nube). Devuelve su id."""
+    id = f"id-{numero}"
+    if id not in api.de_la_sesion(uid)["cosas"]:
+        api.desde_otro_sitio(uid, lambda doc: doc["cosas"].update({id: recordada_enviada(texto)}))
+    if en_la_nube:
+        nube.poner(f"personales/{uid}/elementos", f"c-{id}", {"tipo": "cosa", "id": id, "texto": texto, "hecha": False, "creada": 1_700_000_000_000 + numero, "hechaEn": None, "grupo": ID_RECORDAR})
+    return id
+
+
+@prueba("aviso de una cosa que este dispositivo aún no ha traído de la nube (la apuntó otro de la cuenta): al tocarlo con la app cerrada (?recordada=ID) la hoja «Hecho o Mantener» sale en cuanto la cosa llega y la función ha dicho lo que sabe de ella (antes no: lo que se contestara lo desharía ella), y su respuesta, dada nada más salir, vale; con la app abierta (lo dice el service worker) no sale nada ni se borra lo apuntado mientras no llega, aunque lleguen otras, y sale al llegar ella; donde los avisos no tienen botones, al abrir la app se pregunta por lo avisado cuando llega (y la función ha dicho lo suyo); lo de un aviso no espera a su cosa más de un día, y sin cuenta de Google lo de una cosa que no existe se borra al momento, como siempre", una_vez=True)
+def t_aviso_de_una_cosa_por_llegar(e):
+    nube, api = NubeFalsa(), ApiRecordarFalsa()
+    movil, iphone = ENDPOINT_PRUEBA + "movil", ENDPOINT_PRUEBA + "iphone"
+    contexto = dispositivo_con_recordar(e, api, usuario="u1", endpoint=movil, nube=nube)
+    m = abrir_con_recordar(contexto, e, estado_recordar([recordada(1, "Sacar la basura")]), recordar_guardado(cosas={"id-1": recordatorio()}), sesion="u1", endpoint=movil, cuenta=True)
+    esperar_nube(m, "al-dia")
+    esperar_base(m, "el móvil sube su recordatorio", v=1)
+    m.close()
+    # Con la app del móvil cerrada, en otro dispositivo se apunta una cosa; a su hora el móvil avisa de ella y se toca el aviso.
+    dentista = apuntada_en_otro_dispositivo(nube, api, 2, "Llamar al dentista")
+    apuntar_con_la_app_cerrada(contexto, e, [["avisadas", dentista, {"hace": 1000}]])
+    api.retener.add("recordar")  # La función tarda en contestar: la cosa llega de la nube antes que lo que ella sabe de la cosa.
+    m = e.vigilar(contexto.new_page())
+    m.goto(ORIGEN_NUBE + f"?recordada={dentista}#grupo/recordar")
+    esperar_hechas(m, {"Llamar al dentista": False, "Sacar la basura": False}, "la cosa del aviso tocado llega de la nube")
+    m.wait_for_timeout(400)
+    igual(hoja_avisada(m), None, "Con la cosa ya aquí y la función aún sin decir lo suyo de ella")
+    api.soltar()
+    h = esperar_hoja_avisada(m)
+    igual((h["titulo"], h["cosas"], dentista in leer_recordar(m)["base"]["cosas"], m.evaluate("() => location.search + location.hash")),
+          ("Recordatorio", [["Llamar al dentista", RESPUESTAS]], True, "#grupo/recordar"),
+          "Al tocar el aviso de una cosa que aún no había llegado: la hoja, en cuanto llega y se sabe lo que la función tiene de ella")
+    responder(m, "Llamar al dentista", "Hecho")  # Nada más salir la hoja.
+    esperar_toast(m, "Hecho")
+    esperar_en_la_funcion(m, api, {"id-1": False, "id-2": True}, "el «Hecho» contestado en la hoja llega a la función")
+    esperar_en_la_nube(m, nube, lambda docs: docs.get("c-id-2", {}).get("hecha") is True, "y a la nube")
+    esperar_apuntado(m, [], "contestado, ese aviso deja de estar apuntado")
+    # Con la app abierta: la función ya avisa de otra cosa que al móvil aún no le ha llegado. Se toca su aviso (lo dice el service worker).
+    plantas = apuntada_en_otro_dispositivo(nube, api, 3, "Regar las plantas", en_la_nube=False)
+    m.evaluate(JS_APUNTAR_DATOS, [["avisadas", plantas, {"hace": 1000}], ["avisadas", "avisada-ayer", {"hace": 25 * 60 * 60 * 1000}], ["hechas", "hecha-ayer", {"hace": 25 * 60 * 60 * 1000}]])
+    m.evaluate(JS_TOCAR_AVISO, plantas)
+    esperar_apuntado(m, [f"avisadas/{plantas}"], "lo de una cosa por llegar sigue apuntado; lo de hace más de un día, no")
+    # Llega otra cosa que no es esa (y de la que no se avisó): sigue sin preguntarse nada.
+    apuntada_en_otro_dispositivo(nube, api, 4, "Pagar la comunidad")
+    esperar_hechas(m, {"Sacar la basura": False, "Pagar la comunidad": False, "Llamar al dentista": True}, "llega otra cosa")
+    m.wait_for_timeout(400)
+    igual((hoja_avisada(m), m.evaluate(JS_APUNTADO)), (None, [f"avisadas/{plantas}"]), "Mientras la cosa del aviso tocado no llega: ni hoja, ni se borra lo apuntado")
+    apuntada_en_otro_dispositivo(nube, api, 3, "Regar las plantas")
+    h = esperar_hoja_avisada(m)
+    igual((h["titulo"], h["cosas"], vista_visible(m)), ("Recordatorio", [["Regar las plantas", RESPUESTAS]], "grupo"), "Al llegar la cosa del aviso que se tocó: la hoja")
+    responder(m, "Regar las plantas", "Mantener")
+    esperar_hoja_avisada(m, abierta=False)
+    esperar_apuntado(m, [], "contestado con «Mantener», deja de estar apuntado")
+    igual(hechas_en(m), {"Sacar la basura": False, "Pagar la comunidad": False, "Regar las plantas": False, "Llamar al dentista": True}, "Tras «Mantener», las cosas siguen como estaban")
+    # Lo de un aviso tocado no espera más de un día: si su cosa llega pasado ese tiempo, ya no se pregunta por ella ni queda apuntado.
+    pan = apuntada_en_otro_dispositivo(nube, api, 5, "Comprar pan", en_la_nube=False)
+    m.evaluate(JS_APUNTAR_DATOS, [["avisadas", pan, {"hace": 1000}]])
+    m.evaluate(JS_TOCAR_AVISO, pan)
+    m.wait_for_timeout(400)
+    igual((hoja_avisada(m), m.evaluate(JS_APUNTADO)), (None, [f"avisadas/{pan}"]), "Tocar el aviso de otra cosa que aún no ha llegado")
+    m.evaluate("() => { const ahora = Date.now.bind(Date); Date.now = () => ahora() + 25 * 60 * 60 * 1000; }")
+    apuntada_en_otro_dispositivo(nube, api, 5, "Comprar pan")
+    esperar_valor(m, lambda: "Comprar pan" in hechas_en(m), True, "la cosa llega, un día después")
+    esperar_apuntado(m, [], "pasado un día, su aviso deja de estar apuntado")
+    m.wait_for_timeout(400)
+    igual(hoja_avisada(m), None, "Al llegar la cosa de un aviso que se tocó hace más de un día")
+    contexto.close()
+
+    # Un iPhone recién estrenado con la misma cuenta (avisos sin botones), con dos avisos sin contestar: de una cosa pendiente y de la
+    # que ya se dio por hecha. Al abrir la app, sin tocar ninguno, pregunta por la pendiente en cuanto llegan.
+    sin_botones = dispositivo_con_recordar(e, api, usuario="u1", endpoint=iphone, nube=nube, guion="Object.defineProperty(Notification, 'maxActions', { configurable: true, get: () => 0 });")
+    apuntar_con_la_app_cerrada(sin_botones, e, [["avisadas", plantas, {"hace": 2000}], ["avisadas", dentista, {"hace": 1000}]])
+    api.retener.add("recordar")
+    i = abrir_con_recordar(sin_botones, e, sesion="u1", endpoint=iphone, cuenta=True)
+    esperar_valor(i, lambda: "Regar las plantas" in hechas_en(i), True, "las cosas llegan de la nube al iPhone")
+    i.wait_for_timeout(400)
+    igual(hoja_avisada(i), None, "Donde no hay botones, con las cosas ya aquí y la función aún sin decir lo suyo de ellas")
+    api.soltar()
+    h = esperar_hoja_avisada(i)
+    igual((h["titulo"], h["cosas"]), ("Recordatorio", [["Regar las plantas", RESPUESTAS]]), "Donde no hay botones, al abrir la app: se pregunta por lo avisado cuando llega y la función ha dicho lo suyo (lo que ya está hecho, no)")
+    esperar_apuntado(i, [f"avisadas/{plantas}"], "de la que llegó hecha ya no se pregunta")
+    sin_botones.close()
+
+    # Sin cuenta de Google no hay otro dispositivo que haya apuntado nada: lo de una cosa que no existe se borra al momento.
+    p = sembrar_recordar(e, estado_recordar([recordada(1, "Sacar la basura")]), recordar_guardado(cosas={"id-1": recordatorio()}))
+    esperar_vista(p, "grupo")
+    p.evaluate(JS_APUNTAR_DATOS, [["avisadas", "no-existe", {"hace": 1000}], ["hechas", "tampoco", {"hace": 1000}]])
+    p.evaluate(JS_TOCAR_AVISO, "no-existe")
+    esperar_apuntado(p, [], "sin cuenta, lo apuntado de cosas que no existen se borra")
+    igual(hoja_avisada(p), None, "Sin cuenta, tocar el aviso de una cosa que no existe")
+
+
+@prueba("«Hecho» en el aviso de una cosa que este dispositivo aún no ha traído de la nube: no se pierde al abrir la app; cuando la cosa llega, y con ella lo que la función sabe (su recordatorio), queda marcada: si la función ya lo sabía, por lo que ella dice; si quedó por decir (se pulsó sin conexión), la marca la app, que se lo sube, y ese «por decir» se olvida; también si la primera ronda con la función acaba antes de que la cosa llegue de la nube: ese «por decir» no se olvida por no tener aún la cosa", una_vez=True)
+def t_hecho_de_una_cosa_por_llegar(e):
+    nube, api = NubeFalsa(), ApiRecordarFalsa()
+    movil = ENDPOINT_PRUEBA + "movil"
+    contexto = dispositivo_con_recordar(e, api, usuario="u1", endpoint=movil, nube=nube)
+    m = abrir_con_recordar(contexto, e, estado_recordar([recordada(1, "Sacar la basura")]), recordar_guardado(cosas={"id-1": recordatorio()}), sesion="u1", endpoint=movil, cuenta=True)
+    esperar_nube(m, "al-dia")
+    esperar_base(m, "el móvil sube su recordatorio", v=1)
+    m.close()
+    # En otro dispositivo se apuntan dos cosas. El móvil, con la app cerrada, avisa de las dos y en las dos se pulsa «Hecho»: en una,
+    # con red (la función se entera); en la otra, sin ella (queda por decir).
+    dentista = apuntada_en_otro_dispositivo(nube, api, 2, "Llamar al dentista")
+    plantas = apuntada_en_otro_dispositivo(nube, api, 3, "Regar las plantas")
+    hecho_en_el_aviso(api, dentista)
+    una_hora = 60 * 60 * 1000
+    apuntar_con_la_app_cerrada(contexto, e, [["hechas", dentista, {"hace": una_hora}], ["hechas", plantas, {"hace": una_hora}], ["por-decir", plantas, {"uid": "u1", "ficha": "la-del-aviso"}]])
+    m = e.vigilar(contexto.new_page())
+    m.goto(ORIGEN_NUBE + "#grupo/recordar")
+    esperar_hechas(m, {"Sacar la basura": False, "Llamar al dentista": True, "Regar las plantas": True}, "al llegar las dos cosas, quedan marcadas")
+    esperar_en_la_funcion(m, api, {"id-1": False, "id-2": True, "id-3": True}, "la función se entera del «Hecho» que quedó por decir (se lo sube la app)")
+    esperar_apuntado(m, [], "marcadas las dos y dicho todo, no queda nada apuntado")
+    esperar_en_la_nube(m, nube, lambda docs: docs.get("c-id-2", {}).get("hecha") is True and docs.get("c-id-3", {}).get("hecha") is True, "los dos checks llegan a la nube")
+    m.wait_for_timeout(1300)  # Pasada otra ronda con la función, nada los ha deshecho.
+    igual((hechas_en(m), hechas_en_la_funcion(api)), ({"Sacar la basura": False, "Llamar al dentista": True, "Regar las plantas": True}, {"id-1": False, "id-2": True, "id-3": True}), "Al final, en el móvil y en la función")
+    contexto.close()
+
+    # La nube y la función van cada una a su paso: la primera ronda con la función puede acabar antes de que llegue la cosa. Lo que
+    # quedó por decir de su «Hecho» sigue apuntado (la función aún no lo sabe), y con ello la app la marca cuando llega.
+    nube, api = NubeFalsa(), ApiRecordarFalsa()
+    contexto = dispositivo_con_recordar(e, api, usuario="u1", endpoint=movil, nube=nube)
+    m = abrir_con_recordar(contexto, e, estado_recordar([recordada(1, "Sacar la basura")]), recordar_guardado(cosas={"id-1": recordatorio()}), sesion="u1", endpoint=movil, cuenta=True)
+    esperar_nube(m, "al-dia")
+    esperar_base(m, "el móvil sube su recordatorio", v=1)
+    m.close()
+    dentista = apuntada_en_otro_dispositivo(nube, api, 2, "Llamar al dentista", en_la_nube=False)
+    apuntar_con_la_app_cerrada(contexto, e, [["hechas", dentista, {"hace": una_hora}], ["por-decir", dentista, {"uid": "u1", "ficha": "la-del-aviso"}]])
+    m = e.vigilar(contexto.new_page())
+    m.goto(ORIGEN_NUBE + "#grupo/recordar")
+    esperar_base(m, "la primera ronda con la función acaba, con la cosa aún sin llegar", v=2)
+    m.wait_for_timeout(400)
+    igual(m.evaluate(JS_APUNTADO), [f"hechas/{dentista}", f"por-decir/{dentista}"], "Acabada esa ronda, lo apuntado del «Hecho» de la cosa que aún no ha llegado")
+    apuntada_en_otro_dispositivo(nube, api, 2, "Llamar al dentista")
+    esperar_hechas(m, {"Sacar la basura": False, "Llamar al dentista": True}, "al llegar la cosa, queda marcada")
+    esperar_en_la_funcion(m, api, {"id-1": False, "id-2": True}, "la función se entera de ese «Hecho» (se lo sube la app)")
+    esperar_apuntado(m, [], "marcada y dicho, no queda nada apuntado")
+    m.wait_for_timeout(1300)
+    igual((hechas_en(m), hechas_en_la_funcion(api)), ({"Sacar la basura": False, "Llamar al dentista": True}, {"id-1": False, "id-2": True}), "Al final, en el móvil y en la función")
+
+
+@prueba("check marcado en una cosa recién llegada de otro dispositivo antes de que la función diga nada de ella (una red lenta): lo que ella cuente después no la devuelve a pendiente, y se entera de que está hecha; con un recordatorio propio de esa cosa en este dispositivo y con uno para todas", una_vez=True)
+def t_check_antes_que_la_funcion(e):
+    for general in (False, True):
+        como = "con uno para todas" if general else "con recordatorio propio"
+        nube, api = NubeFalsa(), ApiRecordarFalsa()
+        movil = ENDPOINT_PRUEBA + "movil"
+        guardado = recordar_guardado(general=recordatorio()) if general else recordar_guardado(cosas={"id-1": recordatorio()})
+        contexto = dispositivo_con_recordar(e, api, usuario="u1", endpoint=movil, nube=nube)
+        m = abrir_con_recordar(contexto, e, estado_recordar([recordada(1, "Sacar la basura")]), guardado, sesion="u1", endpoint=movil, cuenta=True)
+        esperar_nube(m, "al-dia")
+        esperar_envios(m, api, 1)
+        esperar_base(m, f"el móvil sube su recordatorio ({como})", v=1)
+        m.close()
+        # Con la app cerrada, otro dispositivo apunta una cosa. Al abrir, la cosa llega de la nube pero la función tarda, y mientras
+        # tanto se marca su check. (La hoja de un aviso, en cambio, espera a la función: t_aviso_de_una_cosa_por_llegar.)
+        dentista = apuntada_en_otro_dispositivo(nube, api, 2, "Llamar al dentista")
+        api.retener.add("recordar")
+        m = e.vigilar(contexto.new_page())
+        m.goto(ORIGEN_NUBE + "#grupo/recordar")
+        esperar_hechas(m, {"Sacar la basura": False, "Llamar al dentista": False}, f"llega la cosa nueva ({como})")
+        check_de(fila_recordada(m, "Llamar al dentista")).tap()
+        esperar_hechas(m, {"Sacar la basura": False, "Llamar al dentista": True}, f"marcado su check, queda hecha ({como})")
+        igual(hechas_en_la_funcion(api), {"id-1": False, "id-2": False}, f"Mientras tanto, la función aún no sabe nada ({como})")
+        api.soltar()
+        esperar_valor(m, lambda: dentista in ((leer_recordar(m) or {}).get("base") or {}).get("cosas", {}), True, f"la función le dice al móvil lo que sabe de la cosa nueva ({como})")
+        esperar_en_la_funcion(m, api, {"id-1": False, "id-2": True}, f"la función se entera del «Hecho» ({como})")
+        m.wait_for_timeout(1300)  # Pasada otra ronda, nada lo ha deshecho.
+        igual((hechas_en(m), hechas_en_la_funcion(api)), ({"Sacar la basura": False, "Llamar al dentista": True}, {"id-1": False, "id-2": True}), f"Al final, en el móvil y en la función ({como})")
+        esperar_en_la_nube(m, nube, lambda docs: docs.get("c-id-2", {}).get("hecha") is True, f"el check llega a la nube ({como})")
+        for abierto in list(e._contextos):
+            abierto.close()
+        e._contextos.clear()
 
 
 # ----------------------------------------------------------------------------

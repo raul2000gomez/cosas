@@ -69,8 +69,9 @@ Publicada en https://cosas-app.netlify.app
   o lo que se puso en otro dispositivo con la misma cuenta. Solo sube lo que tiene recordatorio (su texto,
   si está hecha y cuándo toca), y solo en la app publicada (https) y con las notificaciones activadas o la
   sesión iniciada. Mientras este dispositivo no pueda avisar (notificaciones sin activar o bloqueadas,
-  iPhone sin la app instalada, sin conexión), una nota arriba de Recordar lo dice. Cómo funciona por
-  dentro, qué garantiza y qué se guarda: más abajo, en «Recordatorios».
+  iPhone sin la app instalada, sin conexión), una nota arriba de Recordar lo dice; también si hay más de
+  100 cosas pendientes con recordatorio, el tope de la función: le llegan las más recientes, y de las demás
+  no avisará. Cómo funciona por dentro, qué garantiza y qué se guarda: más abajo, en «Recordatorios».
 - `netlify/functions/avisos.mjs` — la **función de avisos** (Netlify Functions, en `/api/avisos/…`):
   `clave` (la clave pública VAPID), `alta` y `baja` (este dispositivo, con la sesión de Firebase en
   `Authorization: Bearer`) y `avisar` (lo llama Cosas con / Cosas de, también desde cosas.info, tras
@@ -119,7 +120,9 @@ Publicada en https://cosas-app.netlify.app
 3. **El service worker (`sw.js`) enseña un aviso por cosa.** **Hecho** llama a `POST /api/avisos/hecho`
    con la ficha que venía en ese aviso (una firma de esa cosa de esa sesión: el service worker no tiene
    sesión): la cosa queda hecha en la función y deja de avisarse. Sin conexión lo deja apuntado y lo
-   repite. **Mantener** solo cierra el aviso: la función no se entera, y volverá a avisar cuando toque.
+   repite con el siguiente aviso que llegue, sea de Recordar o de una lista (con la app cerrada, el
+   navegador no avisa de que ha vuelto la conexión); si antes se abre la app, se lo cuenta ella a la
+   función. **Mantener** solo cierra el aviso: la función no se entera, y volverá a avisar cuando toque.
    Donde no hay botones (iPhone, iPad, Firefox), tocar el aviso abre la app, que hace la pregunta.
 4. **La app lee** (`GET /api/avisos/recordar`) al abrirse y al volver a ella, y junta lo de la función con
    lo suyo: marca lo que se dio por hecho en un aviso y sube lo que haya cambiado aquí.

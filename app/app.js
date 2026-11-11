@@ -485,8 +485,9 @@
    * con sus botones «Hecho» y «Mantener».
    *
    * «general» es el que se puso para todas: lo sigue toda cosa de Recordar que no tenga otra cosa dicha, también
-   * las que se apunten después o lleguen de otro dispositivo. «cosas» guarda solo lo que una cosa tiene de propio:
-   * su recordatorio, o false si no lo tiene aunque haya uno para todas (se le quitó a ella sola).
+   * las que se apunten aquí después. «cosas» guarda solo lo que una cosa tiene de propio: su recordatorio, o false
+   * si no lo tiene aunque haya uno para todas (se le quitó a ella sola, o llegó de otro dispositivo y la función de
+   * avisos aún no ha dicho cuál tiene: ver aplicarDeLaNube).
    */
 
   /** Un recordatorio con su forma exacta (la misma que en la función de avisos: mismos campos, mismo orden), o null. */
@@ -572,7 +573,8 @@
 
   /**
    * Olvida lo propio de las cosas que ya no existen. Solo al arrancar: mientras tanto se conserva (lo que sale de
-   * Recordar y vuelve —con «Deshacer», o desde otro dispositivo— recupera su recordatorio; fuera de Recordar no cuenta).
+   * Recordar y vuelve aquí —con «Deshacer», o con «+»— recupera su recordatorio; si lo devuelve otro dispositivo,
+   * vale el que él le ponga: ver aplicarDeLaNube; fuera de Recordar no cuenta).
    */
   function olvidarRecordatoriosSinCosa() {
     const existen = new Set(estado.cosas.map((cosa) => cosa.id));
@@ -1270,6 +1272,15 @@
   function ponerHecha(cosa, hecha) {
     cosa.hecha = hecha;
     cosa.hechaEn = hecha ? marcaDeTiempo(ultimaHecha()) : null;
+    // Un check tocado aquí lo decide este dispositivo, también cuando vuelve a lo que dice la base: si la función
+    // tiene otra cosa (un «Hecho» pulsado en un aviso que la base aún no recoge), que no parezca que aquí no ha
+    // cambiado. La base pasa a decir lo contrario, y sin firma: hay algo que contar.
+    const deLaBase = cosa.grupo === ID_RECORDAR && recordar.base && recordar.base.cosas && recordar.base.cosas[cosa.id];
+    if (deLaBase && deLaBase.hecha === hecha) {
+      deLaBase.hecha = !hecha;
+      recordar.base.firma = '';
+      escribirRecordar();
+    }
     const correcto = guardarEstado();
     if (!correcto) avisarFallo();
     if (cosa.grupo === ID_RECORDAR) {
@@ -1873,10 +1884,11 @@
   // Por qué este dispositivo no va a avisar de lo que hay en Recordar, y lo que se puede hacer aquí mismo para arreglarlo.
   const PEGAS_DE_RECORDAR = {
     apagados: 'Para que te avise, activa las notificaciones en este dispositivo.',
-    instalar: `En ${/iPhone|iPod/.test(window.navigator.userAgent) ? 'iPhone' : 'iPad'}, los recordatorios llegan a la aplicación: conviértela en aplicación y ponlos desde ella.`,
+    instalar: `En ${/iPhone|iPod/.test(window.navigator.userAgent) ? 'iPhone' : 'iPad'}, los recordatorios solo llegan a la aplicación: convierte Cosas en aplicación y ponlos desde ella.`,
     bloqueados: 'Las notificaciones de Cosas están bloqueadas en este dispositivo. Para que te avise, permítelas en los ajustes del móvil o del navegador.',
     imposible: 'Este navegador no puede recibir notificaciones: aquí no te avisará.',
     'sin-conexion': 'Sin conexión: tus recordatorios empezarán a avisar cuando vuelva.',
+    tope: `Recordar avisa de ${MAX_RECORDADAS} cosas como mucho, las más recientes: de las demás no te avisará.`,
   };
   const ARREGLOS_DE_RECORDAR = { apagados: 'Activar notificaciones', instalar: 'Convertir en aplicación' };
 
@@ -1884,10 +1896,16 @@
    * La pega de este dispositivo para avisar ('' si va a hacerlo): el estado de sus notificaciones (las de Ajustes) o,
    * con el permiso ya dado, 'sin-conexion': el alta se quedó a medias o los recordatorios no han podido subirse.
    * Eso se reintenta solo (al volver la conexión, al volver a la app y al abrirla): no hay nada que pulsar.
+   * Con todo eso en orden queda 'tope': la función admite MAX_RECORDADAS cosas y le llegan las pendientes más
+   * recientes (recordatoriosLocales), así que de las demás no avisará. Va detrás de las otras pegas, que son de
+   * todas las cosas y no solo de las que no caben.
    */
   function pegaDeRecordar() {
     const avisos = estadoAvisos();
-    if (avisos === 'activos') return recordatoriosSinSubir() && (rondaFallida || window.navigator.onLine === false) ? 'sin-conexion' : '';
+    if (avisos === 'activos') {
+      if (recordatoriosSinSubir() && (rondaFallida || window.navigator.onLine === false)) return 'sin-conexion';
+      return cosasDe(ID_RECORDAR).filter((cosa) => !cosa.hecha && recordatorioDeCosa(cosa.id) !== null).length > MAX_RECORDADAS ? 'tope' : '';
+    }
     return avisos === 'apagados' && recordar.activar ? 'sin-conexion' : avisos;
   }
 
@@ -1970,7 +1988,11 @@
   function resumenDeLaHoja(r, ids) {
     if (!r) return '';
     const frase = `Te lo recordaré ${cuandoDe(r)}.`;
-    if (recordandoA !== null) return frase;
+    if (recordandoA !== null) {
+      // De una cosa hecha no se avisa hasta que se desmarque: la hoja no promete lo que no va a pasar.
+      const cosa = estado.cosas.find((candidata) => candidata.id === recordandoA);
+      return cosa && cosa.hecha ? `Ya está hecha: no te lo recordaré hasta que la desmarques. Después, ${cuandoDe(r)}.` : frase;
+    }
     if (eligiendo()) return ids.length > 0 ? frase : 'Elige al menos una cosa.';
     if (ids.length === 0) return 'Te recordaré a esa hora lo que apuntes aquí.'; // Aún no hay nada pendiente: es para lo que venga.
     const firma = JSON.stringify(r);
@@ -2087,6 +2109,7 @@
     const todas = deVarias && !eligiendo();
     if (!r || (!todas && ids.length === 0)) return;
     const previo = { general: recordar.general, cosas: { ...recordar.cosas } };
+    const sinNota = notaRecordar.hidden;
     if (todas) {
       // El de todas: lo siguen las pendientes y las que se apunten después. Las hechas se quedan como están.
       for (const cosa of cosasDe(ID_RECORDAR)) if (cosa.hecha) fijarRecordatorioDe(cosa.id);
@@ -2099,6 +2122,10 @@
     const sinActivar = estadoAvisos() === 'apagados';
     cerrarHojaRecordar();
     repintarRecordatorios();
+    // Si la nota acaba de salir (este dispositivo no va a avisar) y la lista está desplazada, se sube hasta ella: es la
+    // que lo explica. No mientras se pide el permiso: quien lo está dando no tiene por qué perder de vista su cosa. Ni
+    // por la de «sin conexión»: se va sola en cuanto se suben (a veces en menos de un segundo) y el aviso sí llegará.
+    if (sinNota && !notaRecordar.hidden && !sinActivar && notaRecordar.dataset.pega !== 'sin-conexion') zonaGrupo.scrollTop = 0;
     // Solo se dice que está guardado: si este dispositivo no va a avisar, lo explica la nota de Recordar, que no se va.
     if (!correcto) avisarFallo();
     else if (deVarias && ids.length > 0) avisarConVuelta(`Recordatorio puesto a ${ids.length === 1 ? '1 cosa' : `${ids.length} cosas`}`, previo);
@@ -2388,9 +2415,24 @@
 
   /** Llegan cambios de otro dispositivo: se guardan y se repinta lo que se ve, sin perder el sitio. */
   function aplicarDeLaNube(bruto) {
+    const deAntes = new Set(cosasDe(ID_RECORDAR).map((cosa) => cosa.id));
     estado = normalizarEstado(bruto);
+    // Lo que entra en Recordar desde otro dispositivo no sigue aquí el de todas ni recupera el recordatorio que tuvo:
+    // cuándo avisa (o que no avisa) lo decidió quien lo metió, y lo sabe la función de avisos. Se le pregunta. Si la
+    // base aún la tiene (salió y ha vuelto sin una ronda por medio), lleva el de la base: en ese coincidían este
+    // dispositivo y la función, así que aquí no ha cambiado y la ronda la deja con el que ella tenga.
+    let llegadas = 0;
+    for (const cosa of cosasDe(ID_RECORDAR)) {
+      if (deAntes.has(cosa.id)) continue;
+      const deLaBase = recordar.base && recordar.base.cosas && recordar.base.cosas[cosa.id];
+      const r = deLaBase ? recordatorioDe(deLaBase.r) : null;
+      if (!r) quitarRecordatorioDe(cosa.id);
+      else if (JSON.stringify(r) === JSON.stringify(recordar.general)) delete recordar.cosas[cosa.id];
+      else recordar.cosas[cosa.id] = r;
+      llegadas += 1;
+    }
+    if (llegadas > 0) escribirRecordar();
     guardarEstado();
-    // De lo que otro dispositivo haya metido en Recordar, la función de avisos puede saber cuándo avisa.
     programarRecordatorios(true);
     aplicarColor(estado.ajustes.colorFondo);
     actualizarTituloLista();
@@ -2406,6 +2448,7 @@
       actualizarTema();
     }
     sincronizar(true);
+    revisarAvisosEnEspera();
   }
 
   // ---------- Novedades de Cosas con y Cosas de (el punto verde de sus iconos) ----------
@@ -2901,14 +2944,11 @@
     const guardado = leerAvisos();
     guardarAvisos(null);
     // Sin cuenta de Google, los recordatorios solo estaban en la función para avisar a este dispositivo: se le pide
-    // que los olvide. Y aquí se olvida la base: si se vuelven a activar, se le cuentan todos otra vez.
+    // que los olvide (y entonces se olvida aquí la base: si se vuelven a activar, se le cuentan todos otra vez).
     const olvidar = !leerCuenta() && (recordar.base !== null || recordar.general !== null || Object.keys(recordar.cosas).length > 0);
     clearTimeout(temporizadorRecordatorios);
-    if (olvidar) {
-      recordar.base = null;
-      olvidoAplazado = sincronizandoRecordatorios; // Una ronda a medias volvería a dejar allí lo olvidado: al acabar, se olvida otra vez.
-    }
-    if (olvidar || recordar.activar) {
+    if (olvidar) olvidoAplazado = sincronizandoRecordatorios; // Una ronda a medias volvería a dejar allí lo olvidado: al acabar, se olvida otra vez.
+    if (recordar.activar) {
       recordar.activar = false;
       escribirRecordar();
     }
@@ -2922,9 +2962,18 @@
     if (endpoint) olvidados.then(() => sesionDeAvisos()).then((sesion) => llamarAvisos('baja', sesion, { endpoint })).catch(() => {});
   }
 
-  /** Pide a la función de avisos que olvide los recordatorios de esta sesión (si no se puede, sin conexión, no se insiste). */
+  /**
+   * Pide a la función de avisos que olvide los recordatorios de esta sesión (si no se puede, sin conexión, no se
+   * insiste). La base se olvida aquí solo cuando ella lo ha hecho: si no llegó a enterarse, sigue teniendo lo que la
+   * base dice, y al reactivar las notificaciones lo que se haya quitado aquí entretanto se quitará también allí.
+   */
   function olvidarEnLaFuncion() {
-    return import('./nube.js').then((modulo) => modulo.olvidarRecordatorios(API_AVISOS)).catch(() => {});
+    return import('./nube.js')
+      .then((modulo) => modulo.olvidarRecordatorios(API_AVISOS))
+      .then((olvidado) => {
+        if (olvidado) guardarBaseDeRecordatorios(null);
+      })
+      .catch(() => {});
   }
 
   /** Mientras se activan o desactivan, sus botones (el de Ajustes y el de la nota de Recordar) dicen lo que se está haciendo. */
@@ -3017,7 +3066,8 @@
    * Recordar mientras la app no mira: «hechas» (se pulsó «Hecho» en el aviso de una cosa) y «avisadas» (se avisó de
    * una cosa y aún no se ha contestado). La app lo lee al abrirse, al volver a primer plano y cuando él la avisa.
    * Cada cosa, en su propia entrada (así la app y él no se pisan). Él guarda además, para sí, los «Hecho» que aún
-   * no ha podido decirle a la función de avisos («por-decir»).
+   * no ha podido decirle a la función de avisos («por-decir»): la app los mira para saber si ella ya está al tanto de
+   * un «Hecho», y los olvida cuando lo está.
    */
   const raizDeLaApp = () => new URL('./', window.location.href);
   const urlDeDato = (tipo, id) => new URL(`__recordar/${tipo}/${encodeURIComponent(id)}`, raizDeLaApp()).href;
@@ -3032,7 +3082,7 @@
     }
   }
 
-  /** Lo apuntado de ese tipo («hechas», «avisadas»): [{ id, … }]. */
+  /** Lo apuntado de ese tipo («hechas», «avisadas», «por-decir»): [{ id, … }]. */
   async function datosDeAvisos(tipo) {
     const datos = [];
     try {
@@ -3063,6 +3113,19 @@
   function olvidarHechoDe(id) {
     olvidarDato('hechas', id);
     olvidarDato('por-decir', id);
+  }
+
+  /**
+   * Tras una ronda con la función de avisos: de las cosas que ella ya tiene por hechas, el «Hecho» que el service
+   * worker aún guardaba por decir sobra. Repetido más adelante, volvería a dar por hecha una cosa que entretanto se
+   * hubiera desmarcado en otro dispositivo.
+   */
+  async function olvidarHechosYaDichos(uid) {
+    const cosas = recordar.base && recordar.base.uid === uid && recordar.base.cosas;
+    if (!cosas) return;
+    for (const dato of await datosDeAvisos('por-decir')) {
+      if (dato.uid === uid && cosas[dato.id] && cosas[dato.id].hecha) olvidarDato('por-decir', dato.id);
+    }
   }
 
   /** Quita de la vista el aviso de esa cosa (ya está contestado, o ya no procede) y deja de preguntar por él. */
@@ -3100,13 +3163,46 @@
     cerrarAvisoDe(id); // También si ya estaba hecha o ha salido de Recordar: ese aviso está contestado.
   }
 
+  const HECHO_RECIENTE = 2 * 60 * 1000; // Un «Hecho» de hace menos se acaba de pulsar: nadie ha podido deshacerlo en otro dispositivo.
+
+  /**
+   * ¿Se le puede preguntar ahora a la función de avisos cómo ha quedado una cosa? Hace falta conexión, y solo importa
+   * con la cuenta de Google: sin ella no hay otro dispositivo que la haya cambiado.
+   */
+  const puedePreguntarPorHechos = () => window.location.protocol === 'https:' && Boolean(leerCuenta()) && navigator.onLine !== false;
+
   let revisandoAvisos = false;
   let otraRevision = null; // { tocada }: se pidió revisar mientras ya se revisaba.
+
+  /*
+   * Con la cuenta de Google puede llegar aquí el aviso de una cosa que este dispositivo aún no ha traído de la nube (la
+   * apuntó otro): no es que la hayan borrado. Lo de ese aviso espera a que la cosa llegue, un día como mucho: lo
+   * apuntado en la caché se queda donde está, y «avisoEnEspera» ({ tocada, en }) recuerda que hay algo esperando y,
+   * si se tocó uno de esos avisos, de qué cosa era y cuándo fue.
+   *
+   * Un «Hecho» apuntado, y la pregunta por un aviso («Hecho» o «Mantener»), esperan además a lo que la función de
+   * avisos sabe de esa cosa, que llega detrás de ella (con la ronda que pide su llegada): de una cosa nueva aquí manda
+   * lo que diga la función, y marcada antes de oírla volvería a quedar pendiente. «hechosPorLlegar» y
+   * «avisadasPorLlegar» son las cosas de esos «Hecho» y de esos avisos.
+   */
+  let avisoEnEspera = null;
+  let hechosPorLlegar = new Set();
+  let avisadasPorLlegar = new Set();
+  const porLlegar = (id) => Boolean(id) && Boolean(leerCuenta()) && !estado.cosas.some((cosa) => cosa.id === id);
+  const esReciente = (en) => typeof en === 'number' && Date.now() - en < AVISADA_RECIENTE;
+  const enLaBase = (id) => Boolean(recordar.base && recordar.base.cosas) && Object.prototype.hasOwnProperty.call(recordar.base.cosas, id);
+  /** Lo de esa cosa espera mientras no llega y, si ya esperaba («esperaban»), mientras no se sepa lo que la función tiene de ella. */
+  const esperaASuCosa = (id, esperaban) => porLlegar(id) || (esperaban.has(id) && !enLaBase(id));
 
   /**
    * Pone al día lo de los avisos: las cosas con «Hecho» pulsado en su aviso quedan marcadas y, si toca, se pregunta
    * en la app («Hecho» o «Mantener») por las avisadas del último día que sigan sin contestar: al tocar un aviso
    * («tocada», la suya, la primera) y, donde los avisos no tienen botones, también al abrir la app o volver a ella.
+   *
+   * Un «Hecho» se marca aquí sin más si se acaba de pulsar, o si la función de avisos aún no lo sabe (quedó por
+   * decir). Uno antiguo que ella ya sabe, de una cosa que aquí sigue pendiente en Recordar, no: con la cuenta de
+   * Google, desde entonces ha podido desmarcarse o eliminarse en otro dispositivo, y marcarla ahora lo desharía. Si
+   * hay conexión, se le pregunta a ella cómo ha quedado.
    */
   async function revisarAvisos(tocada = null) {
     if (revisandoAvisos) {
@@ -3116,17 +3212,50 @@
     }
     revisandoAvisos = true;
     try {
-      for (const { id } of await datosDeAvisos('hechas')) marcarHechaPorAviso(id);
+      const porDecir = new Set((await datosDeAvisos('por-decir')).map((dato) => dato.id));
+      const hechosEnEspera = new Set();
+      let preguntar = false;
+      for (const { id, en } of await datosDeAvisos('hechas')) {
+        if (esReciente(en) && esperaASuCosa(id, hechosPorLlegar)) {
+          hechosEnEspera.add(id); // Se marcará cuando haya llegado la cosa y la función haya dicho lo suyo.
+          continue;
+        }
+        const antiguo = typeof en !== 'number' || Date.now() - en > HECHO_RECIENTE; // Sin hora: lo apuntó un service worker anterior.
+        if (antiguo && !porDecir.has(id) && pendienteEnRecordar(id) && puedePreguntarPorHechos()) {
+          olvidarDato('hechas', id);
+          cerrarAvisoDe(id);
+          preguntar = true;
+        } else {
+          marcarHechaPorAviso(id);
+        }
+      }
+      hechosPorLlegar = hechosEnEspera;
+      if (preguntar) programarRecordatorios(true);
       const avisadas = [];
+      const avisadasEnEspera = new Set();
       for (const { id, en } of await datosDeAvisos('avisadas')) {
-        if (pendienteEnRecordar(id) && Date.now() - en < AVISADA_RECIENTE) avisadas.push({ id, en });
+        if (esReciente(en) && esperaASuCosa(id, avisadasPorLlegar)) avisadasEnEspera.add(id); // Se preguntará cuando llegue y la función diga lo suyo.
+        else if (esReciente(en) && pendienteEnRecordar(id)) avisadas.push({ id, en });
         else olvidarDato('avisadas', id); // Ya está hecha, ya no está en Recordar o el aviso es de hace mucho.
       }
+      // El aviso tocado: el de ahora o, si no, el que esperaba a su cosa. Si espera aún, se queda esperando; si no, se pregunta por ella.
+      const pedida = tocada !== null ? { tocada, en: Date.now() } : avisoEnEspera;
+      let tocadaEnEspera = null;
+      if (pedida && pedida.tocada !== null && esReciente(pedida.en)) {
+        if (esperaASuCosa(pedida.tocada, avisadasPorLlegar)) {
+          tocadaEnEspera = pedida;
+          avisadasEnEspera.add(pedida.tocada);
+        } else {
+          tocada = pedida.tocada;
+        }
+      }
+      avisadasPorLlegar = avisadasEnEspera;
+      avisoEnEspera = tocadaEnEspera || (hechosEnEspera.size > 0 || avisadasEnEspera.size > 0 ? { tocada: null } : null);
       avisadas.sort((a, b) => b.en - a.en); // La más reciente, antes.
       podarHojaAvisada();
       if (tocada !== null || !avisosConBotones()) {
         const resto = avisadas.map((avisada) => avisada.id).filter((id) => id !== tocada);
-        preguntarPorAvisadas(tocada !== null ? [tocada, ...resto] : resto, tocada);
+        preguntarPorAvisadas(tocada !== null && !tocadaEnEspera ? [tocada, ...resto] : resto, tocada);
       }
     } finally {
       revisandoAvisos = false;
@@ -3138,16 +3267,33 @@
     }
   }
 
+  /** Llegan cosas de la nube: si lo de algún aviso esperaba a la suya (o se estaba mirando justo ahora, con lo de antes), se mira otra vez. */
+  function revisarAvisosEnEspera() {
+    if (avisoEnEspera || revisandoAvisos) revisarAvisos();
+  }
+
   /**
-   * Lo que dice el service worker con la app abierta: se ha pulsado «Hecho» en el aviso de una cosa (se marca ya,
-   * sin esperar a leerlo de la caché, que puede no estar), o se ha tocado un aviso y hay que preguntar por él aquí.
+   * Acaba bien una ronda con la función de avisos: los «Hecho» que quedaban por decir y ella ya sabe se olvidan, y si
+   * lo de algún aviso esperaba a lo que ella dijera de su cosa, se mira otra vez.
+   */
+  function avisosTrasLaRonda(uid) {
+    olvidarHechosYaDichos(uid);
+    if (hechosPorLlegar.size > 0 || avisadasPorLlegar.size > 0) revisarAvisos();
+  }
+
+  /**
+   * Lo que dice el service worker con la app abierta: se ha pulsado «Hecho» en el aviso de una cosa, o se ha tocado un
+   * aviso y hay que preguntar por él aquí. El «Hecho» se lee de la caché, donde consta cuándo se pulsó: a una página
+   * que estaba dormida el mensaje le llega tarde, y no dice de cuándo es. Sin caché (puede no estar), se marca ya.
    */
   function alMensajeDelServiceWorker(evento) {
     const mensaje = evento.data;
     if (!mensaje || typeof mensaje !== 'object' || typeof mensaje.id !== 'string') return;
     if (mensaje.tipo === 'recordar-hecho') {
-      marcarHechaPorAviso(mensaje.id);
-      revisarAvisos();
+      cacheDeAvisos().then((cache) => {
+        if (!cache) marcarHechaPorAviso(mensaje.id);
+        revisarAvisos();
+      });
     } else if (mensaje.tipo === 'recordar-abrir') {
       revisarAvisos(mensaje.id);
     }
@@ -3172,12 +3318,19 @@
   let rondaFallida = false; // La última ronda no llegó a buen fin (sin conexión, lo más seguro): la nota de Recordar lo dice.
   let olvidoAplazado = false; // Se desactivaron las notificaciones (sin cuenta) con una ronda a medias: ver desactivarAvisos.
 
+  /**
+   * La zona horaria de este dispositivo, tal como la admite la función de avisos. Un navegador que no reconoce la del
+   * sistema dice «Etc/Unknown», y ella rechazaría el envío entero: entonces va la diferencia horaria de ahora en horas
+   * enteras («Etc/GMT-2» es UTC+2: sin cambios de hora, pero con el reloj de aquí), o «UTC» si no la hay o no es de
+   * horas enteras.
+   */
   function zonaHoraria() {
     try {
-      return new Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-    } catch (error) {
-      return 'UTC';
-    }
+      const zona = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (zona && zona !== 'Etc/Unknown') return zona;
+    } catch (error) { /* Sin Intl: la diferencia horaria. */ }
+    const horas = -new Date().getTimezoneOffset() / 60;
+    return Number.isInteger(horas) && horas !== 0 && horas >= -12 && horas <= 14 ? `Etc/GMT${horas > 0 ? '-' : '+'}${Math.abs(horas)}` : 'UTC';
   }
 
   /** Lo que la función de avisos tiene que saber: { general, cosas: { id: { texto, hecha, r } } } (hasta donde ella admite). */
@@ -3199,9 +3352,10 @@
     return JSON.stringify([zonaHoraria(), general, Object.keys(cosas).sort().map((id) => [id, cosas[id]])]);
   }
 
+  /** ¿Tiene la función algo de este dispositivo? Lo que dice la base o, si un envío se quedó sin respuesta, quizá lo que llevaba. */
   function hayBaseDeRecordatorios() {
     const { base } = recordar;
-    return Boolean(base && (base.general || Object.keys(base.cosas || {}).length > 0));
+    return Boolean(base && (base.general || Object.keys(base.cosas || {}).length > 0 || base.enDuda));
   }
 
   /** ¿Hay algo de Recordar que la función de avisos aún no sabe? (Lo que lleva la firma de la última ronda, lo sabe.) */
@@ -3210,6 +3364,8 @@
   /** Pide una ronda con la función de avisos (los cambios seguidos viajan juntos); con «leer», preguntándole antes qué tiene. */
   function programarRecordatorios(leer = false) {
     if (window.location.protocol !== 'https:' || !(leerAvisos() || leerCuenta())) return;
+    // Con un envío por el camino la base va sin firma y con lo que lleva (nube.js lo apunta antes de enviar): lo que
+    // cambie mientras tanto no se queda sin contar, aunque vuelva a lo que decía la base de antes.
     const hayAlgo = recordar.general !== null || Object.keys(recordar.cosas).length > 0 || hayBaseDeRecordatorios();
     // Sin recordatorios aquí solo hay algo que preguntar si en Recordar hay cosas (pueden tenerlos de otro dispositivo).
     if (!hayAlgo && !(leer && cosasDe(ID_RECORDAR).length > 0)) return;
@@ -3276,7 +3432,7 @@
         recordatorio: recordatorioDe,
         local: recordatoriosLocales,
         firma: firmaDeRecordatorios,
-        conocidas: () => new Set(cosasDe(ID_RECORDAR).map((cosa) => cosa.id)),
+        conocidas: () => new Map(cosasDe(ID_RECORDAR).map((cosa) => [cosa.id, cosa.hecha])),
         base: () => recordar.base,
         guardarBase: guardarBaseDeRecordatorios,
         aplicar: aplicarRecordatorios,
@@ -3286,6 +3442,7 @@
       const avisos = leerAvisos();
       if (ronda && avisos && avisos.uid !== ronda.uid) renovarAvisos(true);
       rondaFallida = !ronda;
+      if (ronda) avisosTrasLaRonda(ronda.uid);
     } catch (error) {
       intentosRecordatorios += 1; // Sin conexión, por ejemplo: la próxima vez.
       leerRecordatorios = leerRecordatorios || leer;
@@ -3294,13 +3451,12 @@
       sincronizandoRecordatorios = false;
       if (olvidoAplazado) {
         olvidoAplazado = false;
-        guardarBaseDeRecordatorios(null);
         olvidarEnLaFuncion();
       }
       pintarNotaRecordar(); // Si no se han podido subir, que se sepa; y si ya están arriba, que deje de decirlo.
       if (recordatoriosPendientes) {
         recordatoriosPendientes = false;
-        programarRecordatorios();
+        programarRecordatorios(leerRecordatorios); // También si lo que se pidió mientras tanto fue preguntar.
       }
     }
   }

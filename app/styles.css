@@ -972,6 +972,11 @@ button {
   padding: 0;
 }
 
+/* Por debajo de 356 px los siete en fila medirían menos de 40 px de ancho: van en dos filas. */
+@media (max-width: 355px) {
+  .pastillas-dia { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
 .hora {
   display: flex;
   align-items: center;
@@ -1653,7 +1658,12 @@ a.boton-ancho {
   white-space: normal;
 }
 
-.toast.entero .toast-texto { overflow: visible; }
+/* Donde no cabe ni su palabra más larga (zoom de página al 200 %), la palabra se parte: el texto no puede
+   empujar a «Deshacer» fuera de la píldora. */
+.toast.entero .toast-texto {
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
 
 .toast.entero .toast-accion {
   flex: none;
@@ -1728,8 +1738,7 @@ a.boton-ancho {
   .muestras { grid-template-columns: repeat(3, 1fr); }
   .personalizado { padding-right: calc((100% / 3 - 44px) / 2); }
 
-  /* La hoja del recordatorio: los días en dos filas, los desplegables más justos y las respuestas una sobre otra. */
-  .pastillas-dia { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  /* La hoja del recordatorio: los desplegables más justos y las respuestas una sobre otra. */
   .selector { min-width: 0; padding: 0 30px 0 12px; }
   .respuestas { grid-template-columns: 1fr; }
   .recordar-fijo { gap: 8px; padding: 8px 10px 8px 12px; }
