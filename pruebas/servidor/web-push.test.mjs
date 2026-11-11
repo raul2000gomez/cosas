@@ -102,6 +102,23 @@ test('con el web-push de verdad: a un dispositivo de claves inventadas no se le 
   }
 });
 
+test('con el web-push de verdad: a una dirección trucada ya guardada (con claves de navegador) no se le abre ninguna conexión: se olvida', async () => {
+  const salidas = sinRed();
+  try {
+    // «new URL» la lee como un subdominio de fcm.googleapis.com; web-push, con su lector antiguo, la enviaría a otro.sitio.
+    const TRUCADA = 'https://otro.sitio%2Efcm.googleapis.com/fcm/send/x';
+    const local = almacenFalso();
+    await local.setJSON('dispositivos/u1/h1', { endpoint: TRUCADA, keys: CLAVES_DE_NAVEGADOR, desde: 2 });
+    await local.set('suscripciones/h1', 'u1');
+    assert.equal(laRechazaWebPush({ endpoint: TRUCADA, keys: CLAVES_DE_NAVEGADOR }, VAPID), false); // Él solo no la para.
+    const llaves = await llavesDe(local);
+    assert.deepEqual(await enviarRecordatorios(local, llaves, 'u1', await dispositivosDe(local, 'u1'), [{ id: 'a', texto: 'Leche', de: 1000 }]), []);
+    assert.deepEqual([local.claves('dispositivos/'), local.claves('suscripciones/'), salidas()], [[], [], 0]);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
 test('de punta a punta: un alta con claves inventadas se admite, pero al primer aviso se olvida y la sesión queda en pausa, sin reintentos', async () => {
   const salidas = sinRed();
   store = almacenFalso();

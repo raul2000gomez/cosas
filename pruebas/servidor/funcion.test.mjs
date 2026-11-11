@@ -125,6 +125,45 @@ test('acciones y métodos: lo que no existe, 404; con otro método, 405; OPTIONS
   }
 });
 
+test('alta: solo direcciones de los servicios push, escritas de forma que nadie pueda leerlas de otra manera', async () => {
+  empezar('2026-11-10T07:00');
+  try {
+    for (const endpoint of [MOVIL, TABLETA, 'https://updates.push.services.mozilla.com:443/wpush/v1/gAAAA', 'https://wns2-par02p.notify.windows.com/w/?token=BQYAAAD%2bx%3d']) {
+      assert.deepEqual((await alta('u1', endpoint)).slice(0, 2), [200, { ok: true }], endpoint);
+    }
+    assert.equal(store.claves('dispositivos/u1/').length, 4);
+    for (const endpoint of [
+      'https://otro.sitio%2Efcm.googleapis.com/x', "https://otro.sitio'fcm.googleapis.com/x", 'https://otro.sitio;fcm.googleapis.com/x',
+      'https://usuario:clave@fcm.googleapis.com:8443/x', 'https://fcm.googleapis.com:81/x', 'https://fcm.googleapis.com/fcm/send/語',
+      'http://fcm.googleapis.com/x', 'https://fcm.googleapis.com.otro.sitio/x', 'https://otro.sitio/x', `https://fcm.googleapis.com/${'x'.repeat(1000)}`, 7, null,
+    ]) {
+      assert.deepEqual((await alta('u2', endpoint)).slice(0, 2), [400, { error: 'suscripcion' }], String(endpoint));
+    }
+    assert.deepEqual([store.claves('dispositivos/u2/'), store.claves('dispositivos/u1/').length, store.claves('suscripciones/').length], [[], 4, 4]);
+  } finally {
+    acabar();
+  }
+});
+
+test('de punta a punta: un dispositivo guardado con una dirección trucada (de cuando el alta la admitía) no recibe nada: se olvida y la sesión queda en pausa', async () => {
+  const consola = empezar('2026-11-10T07:30');
+  try {
+    const TRUCADA = 'https://otro.sitio%2Efcm.googleapis.com/x';
+    await store.setJSON('dispositivos/u1/h1', { endpoint: TRUCADA, keys: { p256dh: 'p', auth: 'a' }, desde: 1 });
+    await store.set('suscripciones/h1', 'u1');
+    assert.equal((await guardar('u1', 0, { poner: { a: cosa('Leche') } }))[0], 200);
+    aLas('2026-11-10T08:00:02');
+    await programada();
+    assert.deepEqual([enviados, store.claves('dispositivos/'), store.claves('suscripciones/')], [[], [], []]);
+    aLas('2026-11-10T08:05:02');
+    await programada();
+    assert.deepEqual([enviados, store.json('recordar/u1').pausado, store.json('recordar/u1').prox], [[], utc('2026-11-10T08:05:02'), { a: utc('2026-11-10T08:00') }]);
+    assert.deepEqual(consola.filter((linea) => !linea.startsWith('log:')), []); // Sin quejas: se le trata como al que ya no existe.
+  } finally {
+    acabar();
+  }
+});
+
 test('recordar y olvidar: hace falta sesión', async () => {
   empezar('2026-11-10T07:00');
   try {

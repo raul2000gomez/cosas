@@ -543,28 +543,32 @@ test('cruce 3: alguien guarda justo después de que la pasada confirme y antes d
 });
 
 test('cruce 3, a medias: quien ya había puesto esa clave y aún no había escrito no entra sin volver a mirar, y la repone', async () => {
-  const store = almacenFalso();
-  await conDispositivo(store, 'u1');
-  await guardar(store, 'u1', 0, { poner: { a: cosa('Leche') } });
-  // Lo mismo, pero más fino: cuando la pasada va a quitar la clave, la app ya ha leído el documento (el de después de
-  // confirmar) y ha puesto la suya, la misma; su documento no llega hasta que la pasada ha acabado del todo.
-  let pasado;
-  let app;
-  store.antesDeBorrar(/^agenda\/202611100800\/u1$/, () => new Promise((yaHaPuestoSuClave) => {
-    store.antesDeEscribir(/^recordar\//, () => {
-      yaHaPuestoSuClave();
-      return pasado;
-    });
-    app = guardar(store, 'u1', 1, { poner: { b: cosa('Pan') } }, LAS_9 - 2000);
-  }));
-  pasado = pasar(store, LAS_9 + 2000);
-  assert.deepEqual((await pasado).enviados, ['u1:a']);
-  assert.deepEqual(await app, { nacido: store.json('recordar/u1').nacido, v: 2, rechazadas: [] });
-  // Sin ese guardar de más de la pasada, el documento de la app habría entrado a la primera con su clave ya quitada.
-  const doc = store.json('recordar/u1');
-  assert.deepEqual([doc.prox, doc.agenda], [{ a: utc('2026-11-11T08:00'), b: LAS_9 }, '202611100800']);
-  assert.ok(store.datos.has(HOY_A_LAS_9) && enAgenda(store, 'u1'));
-  assert.deepEqual((await pasar(store, LAS_9 + 5 * MINUTOS + 2000)).enviados, ['u1:b']);
+  // También con un almacén cuya etiqueta sale del contenido: lo que la pasada guarda de más no es, byte a byte, lo que
+  // ya había (lleva su marca), así que la etiqueta cambia igual y a quien iba a escribir se le hace mirar otra vez.
+  for (const store of [almacenFalso(), almacenFalso({ etiquetaDelContenido: true })]) {
+    await conDispositivo(store, 'u1');
+    await guardar(store, 'u1', 0, { poner: { a: cosa('Leche') } });
+    // Lo mismo, pero más fino: cuando la pasada va a quitar la clave, la app ya ha leído el documento (el de después de
+    // confirmar) y ha puesto la suya, la misma; su documento no llega hasta que la pasada ha acabado del todo.
+    let pasado;
+    let app;
+    store.antesDeBorrar(/^agenda\/202611100800\/u1$/, () => new Promise((yaHaPuestoSuClave) => {
+      store.antesDeEscribir(/^recordar\//, () => {
+        yaHaPuestoSuClave();
+        return pasado;
+      });
+      app = guardar(store, 'u1', 1, { poner: { b: cosa('Pan') } }, LAS_9 - 2000);
+    }));
+    pasado = pasar(store, LAS_9 + 2000);
+    assert.deepEqual((await pasado).enviados, ['u1:a']);
+    assert.deepEqual(await app, { nacido: store.json('recordar/u1').nacido, v: 2, rechazadas: [] });
+    // Sin ese guardar de más de la pasada, el documento de la app habría entrado a la primera con su clave ya quitada.
+    const doc = store.json('recordar/u1');
+    assert.deepEqual([doc.prox, doc.agenda], [{ a: utc('2026-11-11T08:00'), b: LAS_9 }, '202611100800']);
+    assert.equal(doc.reafirmado, undefined); // La marca de la pasada no sobrevive a la escritura siguiente.
+    assert.ok(store.datos.has(HOY_A_LAS_9) && enAgenda(store, 'u1'));
+    assert.deepEqual((await pasar(store, LAS_9 + 5 * MINUTOS + 2000)).enviados, ['u1:b']);
+  }
 });
 
 test('la pasada solo guarda de más si ha quitado una clave reciente; y si entretanto olvidaron el documento, no lo crea', async () => {
@@ -634,6 +638,29 @@ test('despertar: con un dispositivo vuelve a la agenda, y lo que le tocó hace p
   assert.deepEqual(await pasar(store, ahora + 2 * MINUTOS), { enviados: ['u1:a'], sesiones: 1, avisos: 1, pausadas: 0 });
   assert.deepEqual(store.json('recordar/u1').prox, { a: utc('2026-11-11T08:00'), b: utc('2026-11-11T07:00') });
   assert.deepEqual(store.claves('agenda/'), ['agenda/202611110700/u1']);
+});
+
+test('despertar tras días en pausa: lo que toca en ese mismo rato no se pierde; sale en la pasada siguiente', async () => {
+  for (const volver of [
+    (store, ahora) => despertar(store, 'u1', ahora),
+    (store, ahora) => leerRecordatorios(store, 'u1', ahora),
+  ]) {
+    const store = almacenFalso();
+    await guardar(store, 'u1', 0, { poner: { a: cosa('Leche') } });
+    assert.equal((await pasar(store, LAS_9 + 1000)).pausadas, 1);
+    // Dos días después, tres minutos antes de las 9:00, activa las notificaciones (o abre la app, ya con dispositivo).
+    await conDispositivo(store, 'u1');
+    await volver(store, utc('2026-11-12T07:57'));
+    assert.deepEqual([store.json('recordar/u1').pausado, store.json('recordar/u1').prox], [null, { a: LAS_9 }]);
+    // La pasada de las 9:00 se encuentra apuntado lo de hace dos días: lo salta y apunta lo de hoy, que es de ahora mismo.
+    assert.deepEqual(await pasar(store, utc('2026-11-12T08:00:01')), { enviados: [], sesiones: 1, avisos: 0, pausadas: 0 });
+    assert.deepEqual(store.json('recordar/u1').prox, { a: utc('2026-11-12T08:00') });
+    assert.ok(enAgenda(store, 'u1'));
+    // Y la siguiente lo envía (cinco minutos tarde, en vez de perderlo hasta mañana).
+    assert.deepEqual(await pasar(store, utc('2026-11-12T08:05:01')), { enviados: ['u1:a'], sesiones: 1, avisos: 1, pausadas: 0 });
+    assert.deepEqual(store.json('recordar/u1').prox, { a: utc('2026-11-13T08:00') });
+    assert.deepEqual(store.claves('agenda/'), ['agenda/202611130800/u1']);
+  }
 });
 
 test('despertar: también al leer y al guardar, si la sesión ya tiene dispositivo', async () => {

@@ -42,7 +42,7 @@
      enviados/{lista}              lo último ya avisado de esa lista: { idCosa: cuándo }. */
 
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { SERVICIOS_PUSH, almacen, clavesVapid, enviarA, fichaValida, huella, limpiar, olvidar } from '../lib/envio.mjs';
+import { almacen, clavesVapid, enviarA, esDeServicioPush, fichaValida, huella, limpiar, olvidar } from '../lib/envio.mjs';
 import { envioDe, esIdDeCosa } from '../lib/recordar.mjs';
 import { despertar, guardarRecordatorios, leerRecordatorios, marcarHecha, olvidarRecordatorios } from '../lib/recordatorios.mjs';
 
@@ -136,11 +136,9 @@ async function clave() {
 }
 
 function suscripcionValida(s) {
-  let url = null;
-  try { url = s && typeof s.endpoint === 'string' ? new URL(s.endpoint) : null; } catch (error) { /* Abajo. */ }
-  const conocido = url && url.protocol === 'https:' && SERVICIOS_PUSH.some((d) => url.hostname === d || url.hostname.endsWith(`.${d}`));
+  const conocido = Boolean(s) && esDeServicioPush(s.endpoint);
   const claves = s && s.keys;
-  if (!conocido || s.endpoint.length > 1000 || !claves || typeof claves.p256dh !== 'string' || typeof claves.auth !== 'string'
+  if (!conocido || !claves || typeof claves.p256dh !== 'string' || typeof claves.auth !== 'string'
       || claves.p256dh.length > 200 || claves.auth.length > 100) {
     throw new Rechazo(400, 'suscripcion');
   }

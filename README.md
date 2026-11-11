@@ -77,8 +77,10 @@ Publicada en https://cosas-app.netlify.app
   añadir una cosa). Comprueba el token con las claves públicas de Google y lee la lista y la cosa de
   Firestore **con ese mismo token**, así que mandan las reglas: solo avisa quien está en la lista, de una
   cosa suya, recién añadida y una sola vez; los avisos van a los dispositivos de la demás gente de la
-  lista. Solo envía a los servicios push de los navegadores (Google, Apple, Mozilla, Microsoft) y olvida
-  las suscripciones que ya no existen. Guarda además los recordatorios de cada sesión: `recordar` (con
+  lista. Solo envía a los servicios push de los navegadores (Google, Apple, Mozilla, Microsoft): la
+  dirección de cada dispositivo se mira tal cual, letra a letra (https, uno de esos hosts, sin usuario ni
+  otro puerto), al darlo de alta y otra vez antes de cada envío. Olvida las suscripciones que ya no
+  existen. Guarda además los recordatorios de cada sesión: `recordar` (con
   GET, la app los lee; con POST envía lo que cambia, qué poner y qué quitar, sobre la versión que vio: si
   ya no es esa, 409 con lo que hay), `hecho` (lo llama el service worker al pulsar **Hecho** en un aviso;
   sin sesión, con la ficha que venía en ese aviso) y `olvidar` (borra los de esa sesión). Todo lo suyo
@@ -151,13 +153,15 @@ no recorre los documentos de todo el mundo. Cada cambio de un documento se escri
 - **A su hora, o en la pasada siguiente.** Las horas se eligen de cinco en cinco y la función pasa cada
   cinco minutos: lo normal es que salga en la pasada de su minuto. Una hora que no sea múltiplo de cinco
   (la función las admite) sale hasta cinco minutos tarde; y lo que una pasada no consigue enviar, o no le
-  da tiempo (trabaja 18 de los 30 segundos que le da Netlify), sale en la siguiente.
+  da tiempo (trabaja 18 de los 30 segundos que le da Netlify), sale en la siguiente. Un envío que no
+  acaba se corta a los 8 segundos y se repite después: un dispositivo que no contesta no retiene a los demás.
 - **Lo atrasado se sigue intentando seis horas; después se salta** hasta la vez siguiente que toque (y el
   servicio push tampoco lo guarda más de seis horas para un dispositivo apagado).
 - **Sin dispositivos, pausa.** A la sesión a la que le toca un aviso y no tiene a quién enviarlo (se
   desactivaron las notificaciones, se desinstaló la app) no se le envía nada. Si vuelve (activa las
   notificaciones, o la app lee o guarda teniendo ya dispositivo), despierta, y lo que le tocó en las
-  últimas seis horas sale con retraso.
+  últimas seis horas sale con retraso, en la pasada siguiente a la que lo ve; aunque la pausa haya durado
+  días, es un solo aviso por cosa, no uno por cada día que faltó.
 - **Límites**: 100 cosas con recordatorio por sesión (texto de hasta 500 caracteres; en el aviso, hasta
   300); 40 avisos por sesión en cada pasada (los demás, en la siguiente) y 300 por sesión al día (por
   encima se saltan: algo va mal, o alguien abusa); se avisa a los diez dispositivos más recientes de la
@@ -197,10 +201,13 @@ siempre:
 - `npm install` (una vez) y `npm run probar:servidor`, con Node 22: las funciones enteras y `netlify/lib/`
   con un almacén, un Google y un servicio push de mentira, incluidos los cruces (la app guarda mientras
   pasa la programada, o mientras la limpieza borra). `blobs-reales.test.mjs` usa el cliente de verdad de
-  Netlify Blobs contra su servidor local, y `web-push.test.mjs` el `web-push` de verdad, sin salir a la
-  red.
-- `python pruebas/e2e.py` (`--filtro TEXTO`, `--dispositivo "Pixel 7"`): la app en un navegador, con la
-  función de avisos y el push simulados.
+  Netlify Blobs contra su servidor local (también cuando una escritura pierde una carrera y el almacén
+  responde 409: por eso `@netlify/blobs` va fijado en 11.1.7, la primera versión que no la da por
+  guardada), y `web-push.test.mjs` el `web-push` de verdad, sin salir a la red.
+- `python pruebas/e2e.py` (`--filtro TEXTO`, `--dispositivo "Pixel 7"`): la app en un navegador. Casi
+  todo, con la función de avisos y el push simulados; el service worker, en Google Chrome de verdad; y el
+  recorrido entero, contra las dos funciones de verdad servidas en local por
+  `pruebas/servidor/funcion-local.mjs` (con el almacén, Google y el servicio push de mentira).
 - **Lo que no se puede probar fuera de producción:**
   - *Que Netlify lance la función programada.* Solo lo hace en el sitio publicado. En local,
     `netlify dev` no la ejecuta a su hora: `netlify functions:invoke recordatorios` la lanza una vez, a

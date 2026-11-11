@@ -1,8 +1,10 @@
 /* Un Netlify Blobs de mentira, en memoria, para las pruebas del servidor: lo que usan las funciones (get,
    getWithMetadata, set, setJSON, delete, list) con sus escrituras condicionadas (onlyIfNew, onlyIfMatch). Como el de
-   verdad, borra sin comparar. */
+   verdad, borra sin comparar. Con «etiquetaDelContenido», la etiqueta de cada dato sale de lo que vale (escribir lo
+   mismo no la cambia), como en los almacenes que la calculan así; sin ello, cambia en cada escritura. */
+import { createHash } from 'node:crypto';
 
-export function almacenFalso() {
+export function almacenFalso({ etiquetaDelContenido = false } = {}) {
   const datos = new Map(); // clave → { valor, etag }
   const ganchos = []; // { patron, hacer }: «hacer» se ejecuta una vez, justo antes de la próxima escritura cuya clave case.
   const ganchosDeBorrado = []; // Lo mismo, justo antes del próximo borrado.
@@ -43,7 +45,7 @@ export function almacenFalso() {
       if (opciones.onlyIfNew && dato) return { modified: false };
       if (opciones.onlyIfMatch !== undefined && (!dato || dato.etag !== opciones.onlyIfMatch)) return { modified: false };
       escrituras += 1;
-      const etag = `"e${escrituras}"`;
+      const etag = etiquetaDelContenido ? `"${createHash('md5').update(String(valor)).digest('hex')}"` : `"e${escrituras}"`;
       datos.set(clave, { valor: String(valor), etag });
       return { modified: true, etag };
     },

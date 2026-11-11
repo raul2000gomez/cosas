@@ -22,6 +22,18 @@ const MAX_DESTINOS = 10;
 // Solo se envía a los servicios push de los navegadores (Chrome y Android, Safari, Firefox, Edge): a ninguna otra dirección.
 export const SERVICIOS_PUSH = ['fcm.googleapis.com', 'android.googleapis.com', 'push.apple.com', 'push.services.mozilla.com', 'notify.windows.com'];
 
+// La dirección se mira tal cual, sin fiarse de cómo la lea nadie: web-push no la lee con «new URL» sino con el
+// url.parse antiguo de Node, y no siempre ven el mismo host («https://otro.sitio%2Efcm.googleapis.com/» es de
+// fcm.googleapis.com para uno y de otro.sitio para el otro). Así que https, un host de la lista escrito con sus letras
+// (sin usuario y sin más puerto que el de https) y, detrás de la barra, solo lo que cabe en una dirección sin espacios.
+const DE_SERVICIO_PUSH = new RegExp(`^https://(?:[a-z0-9-]+\\.)*(?:${SERVICIOS_PUSH.map((d) => d.replaceAll('.', '\\.')).join('|')})(?::443)?/[\\x21-\\x7e]*$`);
+
+/** ¿Es la dirección de un dispositivo en uno de esos servicios push? */
+export const esDeServicioPush = (endpoint) => typeof endpoint === 'string' && endpoint.length <= 1000 && DE_SERVICIO_PUSH.test(endpoint);
+
+// A lo guardado que no lo sea (de cuando se miraba de otra manera) no se le envía: se trata como un dispositivo que ya no existe.
+const noEsServicioPush = () => Object.assign(new Error('No es un servicio push'), { statusCode: 404 });
+
 export const almacen = () => getStore({ name: 'avisos', consistency: 'strong' });
 export const huella = (endpoint) => createHash('sha256').update(endpoint).digest('hex').slice(0, 40);
 
@@ -135,6 +147,7 @@ export async function enviarA(store, claves, uid, aviso) {
     const suscripcion = await store.get(key, { type: 'json' });
     if (!suscripcion) return 0;
     try {
+      if (!esDeServicioPush(suscripcion.endpoint)) throw noEsServicioPush();
       await webpush.sendNotification(suscripcion, aviso, {
         vapidDetails: { subject: 'https://cosas.info', publicKey: claves.publicKey, privateKey: claves.privateKey },
         TTL: 24 * 60 * 60,
@@ -229,6 +242,16 @@ export function mensajesDe(uid, cosas, clave) {
 // Con prisa (es para esa hora), sin que el servicio push lo guarde más allá de lo que tarda en caducar y sin tema:
 // cada mensaje lleva cosas distintas y ninguno sustituye a otro.
 const OPCIONES_DE_RECORDATORIO = { TTL: CADUCA / 1000, urgency: 'high', timeout: 5000 };
+// Ese «timeout» de web-push es de inactividad: quien contesta con cuentagotas no lo agota nunca y retendría la pasada
+// entera. Este es el plazo de un envío de principio a fin.
+export const PLAZO_DE_ENVIO = 8000;
+
+/** Esa promesa, o un fallo (sin código de estado: merece otro intento) si no acaba en «ms». */
+function conPlazo(promesa, ms) {
+  let reloj = null;
+  const plazo = new Promise((resolver, rechazar) => { reloj = setTimeout(() => rechazar(new Error('Sin respuesta a tiempo')), ms); });
+  return Promise.race([promesa, plazo]).finally(() => clearTimeout(reloj));
+}
 
 /**
  * Envía ese mensaje a un dispositivo y dice cómo ha ido: 'ok'; 'baja' (404 y 410, o una suscripción que no sirve:
@@ -239,10 +262,11 @@ const OPCIONES_DE_RECORDATORIO = { TTL: CADUCA / 1000, urgency: 'high', timeout:
  */
 async function enviarUno(store, claves, uid, dispositivo, aviso) {
   try {
-    await webpush.sendNotification(dispositivo.suscripcion, aviso, {
+    if (!esDeServicioPush(dispositivo.suscripcion.endpoint)) throw noEsServicioPush();
+    await conPlazo(webpush.sendNotification(dispositivo.suscripcion, aviso, {
       vapidDetails: { subject: 'https://cosas.info', publicKey: claves.publicKey, privateKey: claves.privateKey },
       ...OPCIONES_DE_RECORDATORIO,
-    });
+    }), PLAZO_DE_ENVIO);
     return 'ok';
   } catch (error) {
     const estado = error && error.statusCode;

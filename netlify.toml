@@ -4,8 +4,10 @@
   publish = "app"
   command = ""
 
-# La función de los avisos (notificaciones de Cosas con y Cosas de), en /api/avisos/…: sus dependencias
-# (package.json) las instala Netlify al publicar. Guarda lo suyo en Netlify Blobs, sin nada que configurar.
+# La función de los avisos (notificaciones de Cosas con y Cosas de, y los recordatorios), en /api/avisos/…, y
+# la programada que envía los recordatorios cada cinco minutos (recordatorios.mjs: su horario va escrito en
+# su archivo, y Netlify solo la lanza en el sitio publicado). Sus dependencias (package.json) las instala
+# Netlify al publicar. Guardan lo suyo en Netlify Blobs, sin nada que configurar.
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"

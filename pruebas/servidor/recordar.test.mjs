@@ -311,6 +311,35 @@ test('pausa: sale de la agenda y suelta los turnos; al despertar, lo reciente sa
   assert.equal(diaDeLimpieza(utc('2026-11-10T08:00')), '20261210');
 });
 
+test('pausa de días: al volver, lo que tocaba en las últimas seis horas sale (también lo del minuto que se atiende); lo anterior, no', () => {
+  const despierto = documentoDespierto(documentoPausado(documento({ a: cosa('Leche') }), LAS_9 + 1000));
+  assert.deepEqual(despierto.prox, { a: LAS_9 }); // Lo que tenía apuntado al quedarse en pausa: lo del día 10.
+  const HOY = utc('2026-11-12T08:00'); // Dos días después, a las 9:00 de Madrid.
+  // [cuándo lo atiende la primera pasada desde que volvió, lo que queda apuntado, ¿sale después?]
+  const casos = [
+    [HOY + 1000, HOY, true], // Volvió tres minutos antes de las 9:00: la pasada de las 9:00 ya lo ve.
+    [HOY + 300, HOY, true], // Aunque la pasada arranque unas décimas después del minuto.
+    [HOY + 3600 * 1000, HOY, true], // Una hora después: sale con retraso.
+    [HOY + CADUCA - 10 * 60 * 1000, HOY, true], // Casi seis horas después: todavía (a la pasada siguiente aún no ha caducado).
+    [HOY + CADUCA + 1000, utc('2026-11-13T08:00'), false], // Más de seis horas después: hasta mañana.
+    [HOY - 4000, HOY, true], // Y la que arranca un instante antes de su minuto lo apunta para ese minuto.
+  ];
+  for (const [ahora, apuntado, sale] of casos) {
+    const visto = reclamarAvisos(despierto, ahora);
+    // Lo caducado se salta sin avisar ni gastar el tope del día, y lo siguiente se cuenta desde hace seis horas.
+    assert.deepEqual([visto.avisar, visto.doc.prox, visto.doc.turno, visto.doc.enviados.n], [[], { a: apuntado }, {}, 0], String(ahora - HOY));
+    const despues = reclamarAvisos(visto.doc, ahora + 5 * 60 * 1000);
+    assert.deepEqual(despues ? despues.avisar : [], sale ? [{ id: 'a', texto: 'Leche', de: HOY }] : [], String(ahora - HOY));
+    if (!sale) continue;
+    // Una vez confirmado, lo siguiente es lo de mañana: uno solo por la pausa, no uno por cada día que faltó.
+    assert.deepEqual(confirmarAvisos(despues.doc, despues.avisar, ahora + 5 * 60 * 1000).prox, { a: utc('2026-11-13T08:00') });
+  }
+  // Lo de cada semana, igual: el martes siguiente una hora tarde, sale; el miércoles ya no, hasta el otro martes.
+  const semanal = documentoDespierto(documentoPausado(documento({ a: cosa('Basura', { hora: '09:00', frec: 'semana', dia: 2 }) }), LAS_9 + 1000));
+  assert.deepEqual(reclamarAvisos(semanal, utc('2026-11-17T09:00')).doc.prox, { a: utc('2026-11-17T08:00') });
+  assert.deepEqual(reclamarAvisos(semanal, utc('2026-11-18T09:00')).doc.prox, { a: utc('2026-11-24T08:00') });
+});
+
 test('limpiezaDe y caducado: lo que espera avisos no se borra; en pausa o sin nada pendiente, a los treinta días de seguir igual', () => {
   const pendiente = documento({ a: cosa('Leche'), b: cosa('Pan', DIARIO, true) });
   assert.equal(limpiezaDe(pendiente), null);

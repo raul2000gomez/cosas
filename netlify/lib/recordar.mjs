@@ -224,7 +224,11 @@ export function reclamarAvisos(doc, ahora, maximo = MAX_POR_TANDA) {
     // El que ya se tomó y no llegó a confirmarse se repite sin contar otra vez: que el servicio push falle un rato
     // no puede gastar el tope del día y dejar sin avisos a quien no ha hecho nada raro.
     if (ahora - instante > CADUCA || (!tomado && enviadosHoy >= MAX_AL_DIA)) {
-      const siguiente = siguienteAviso(cosa.r, doc.zona, ahora, instante);
+      // Lo que caducó se salta, pero no lo que tocaba en las últimas seis horas (quien vuelve de una pausa larga
+      // justo a su hora, o poco después, recibe ese aviso): el siguiente se cuenta desde ahí, no desde ahora.
+      const siguiente = ahora - instante > CADUCA
+        ? proximoAviso(cosa.r, doc.zona, ahora - CADUCA)
+        : siguienteAviso(cosa.r, doc.zona, ahora, instante);
       if (siguiente === null) delete prox[id];
       else prox[id] = siguiente;
       delete turno[id];

@@ -22,14 +22,36 @@ const LAS_9 = utc('2026-11-10T08:00');
 let carpeta;
 let servidor;
 let store;
+let conexion; // Con qué se llega al servidor local: lo que le hace falta a getStore.
 
 before(async () => {
   carpeta = await mkdtemp(join(tmpdir(), 'cosas-blobs-'));
   servidor = new BlobsServer({ directory: carpeta, token: 'de-prueba' });
   const { port } = await servidor.start();
   const url = `http://localhost:${port}`;
-  store = conEtiquetas(getStore({ name: 'avisos', consistency: 'strong', edgeURL: url, uncachedEdgeURL: url, token: 'de-prueba', siteID: 'sitio-de-prueba' }));
+  conexion = { name: 'avisos', consistency: 'strong', edgeURL: url, uncachedEdgeURL: url, token: 'de-prueba', siteID: 'sitio-de-prueba' };
+  store = conEtiquetas(getStore(conexion));
 });
+
+/**
+ * El mismo almacén, visto por quien va a perder una carrera: a su próxima escritura condicionada de «clave» se le
+ * adelanta «otro», y el almacén le responde 409, que es lo que responde Netlify cuando otra escritura de la misma clave
+ * llega a la vez y gana (el servidor local solo sabe responder 412). Devuelve [el almacén, cuántas veces ha pasado].
+ */
+function conCarrera(clave, otro) {
+  let veces = 0;
+  const real = getStore({
+    ...conexion,
+    fetch: async (direccion, opciones = {}) => {
+      const condicionada = String(opciones.method).toLowerCase() === 'put' && new Headers(opciones.headers).has('if-match');
+      if (veces || !condicionada || !String(direccion).endsWith(`/${clave}`)) return fetch(direccion, opciones);
+      veces += 1;
+      await otro();
+      return new Response(null, { status: 409 });
+    },
+  });
+  return [conEtiquetas(real), () => veces];
+}
 
 /**
  * El servidor local no devuelve la etiqueta (etag) al leer, como sí hace Netlify: aquí se le pone la de la lista,
@@ -186,4 +208,34 @@ test('Netlify Blobs de verdad: sin nada pendiente, clave de limpieza y borrado a
   assert.equal(await store.get('recordar/u5'), null);
   const nuevo = await guardar('u5', 0, { poner: { c: cosa('Pan') } }, utc('2026-12-21T09:00'));
   assert.deepEqual([nuevo.v, nuevo.nacido === actual.data.nacido], [1, false]);
+});
+
+test('Netlify Blobs de verdad: la escritura condicionada que pierde una carrera (409) no se da por guardada: se mira otra vez', async () => {
+  await guardar('u6', 0, { poner: { a: cosa('Leche'), b: cosa('Pan'), c: cosa('Sal') } });
+  // Dos «Hecho» a la vez (el service worker envía así los que tenía pendientes): el de «a» pierde la carrera con el de «b».
+  const [perdedor, carreras] = conCarrera('recordar/u6', () => marcarHecha(store, 'u6', 'b', LAS_9));
+  assert.equal(await marcarHecha(perdedor, 'u6', 'a', LAS_9), true);
+  assert.equal(carreras(), 1);
+  const cosas = (await leerRecordatorios(store, 'u6', LAS_9)).cosas;
+  assert.deepEqual([cosas.a.hecha, cosas.b.hecha, cosas.c.hecha], [true, true, false]); // Con el cliente de antes, «a» se quedaba sin marcar y la función decía que sí.
+  // Guardar mientras la pasada confirma un aviso: lo que la app guarda no se pierde.
+  await store.setJSON('dispositivos/u6/h1', { endpoint: 'https://fcm.googleapis.com/fcm/send/6', keys: { p256dh: 'p', auth: 'a' }, desde: 6 });
+  const [app, cruces] = conCarrera('recordar/u6', async () => assert.deepEqual((await pasar(LAS_9 + 2000)).enviados, ['u6:c@1']));
+  const guardado = await guardarRecordatorios(app, 'u6', envioDe({ siV: 3, zona: MADRID, poner: { d: cosa('Agua', { hora: '09:05', frec: 'dia' }) } }), LAS_9 + 1000);
+  assert.deepEqual([cruces(), guardado.v, guardado.rechazadas], [1, 4, []]);
+  const doc = await store.get('recordar/u6', { type: 'json' });
+  assert.deepEqual([doc.v, doc.prox], [4, { c: utc('2026-11-11T08:00'), d: utc('2026-11-10T08:05') }]);
+  assert.deepEqual((await pasar(LAS_9 + 5 * 60000 + 2000)).enviados, ['u6:d@1']);
+});
+
+test('Netlify Blobs de verdad: la limpieza que pierde esa carrera al poner su marca no borra lo que alguien acaba de guardar', async () => {
+  await guardar('u7', 0, { poner: { a: cosa('Sal', DIARIO, true) } });
+  assert.deepEqual((await claves('limpieza/')).filter((clave) => clave.endsWith('/u7')), ['limpieza/20261210/u7']);
+  // El día en que caduca, justo cuando la limpieza va a marcarlo, la app desmarca «a»: vuelve a esperar avisos.
+  const ahora = utc('2026-12-10T03:00:01');
+  const [limpiador, carreras] = conCarrera('recordar/u7', () => guardar('u7', 1, { poner: { a: cosa('Sal') } }, ahora));
+  assert.equal(await limpiar(limpiador, ahora), 0);
+  assert.equal(carreras(), 1);
+  const doc = await store.get('recordar/u7', { type: 'json' });
+  assert.deepEqual([doc.v, doc.cosas.a.hecha, doc.prox], [2, false, { a: utc('2026-12-10T08:00') }]);
 });

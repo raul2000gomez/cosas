@@ -3,10 +3,12 @@
 import assert from 'node:assert/strict';
 import { createECDH, randomBytes } from 'node:crypto';
 import { mock, test } from 'node:test';
+import url from 'node:url';
 import { almacenFalso } from './almacen-falso.mjs';
 
 const enviados = []; // Lo que sale hacia los servicios push: { endpoint, aviso, opciones }.
 // Lo que responde cada dispositivo: nada (lo acepta), un código de estado, 'tarde' (no contesta a tiempo), 'sin-red',
+// 'colgado' (ni contesta ni corta: el envío no acaba nunca),
 // 'claves-de-la-funcion' (lo que falla son las claves VAPID, no el dispositivo), o una función del aviso que dé una de esas cosas.
 const respuestas = new Map();
 
@@ -22,6 +24,7 @@ mock.module('web-push', {
       if (!suscripcion.keys || Buffer.from(String(suscripcion.keys.p256dh), 'base64url').length !== 65) throw new Error('The subscription p256dh value should be 65 bytes long.');
       enviados.push({ endpoint: suscripcion.endpoint, aviso: JSON.parse(aviso), opciones });
       if (respuesta === 'tarde') throw new Error('Socket timeout');
+      if (respuesta === 'colgado') return new Promise(() => {});
       if (respuesta === 'sin-red') throw Object.assign(new Error('getaddrinfo ENOTFOUND fcm.googleapis.com'), { code: 'ENOTFOUND' });
       if (respuesta) throw Object.assign(new Error('Received unexpected response code'), { statusCode: respuesta, body: 'no' });
       return { statusCode: 201 };
@@ -30,7 +33,8 @@ mock.module('web-push', {
 });
 
 const {
-  avisoDe, dispositivosDe, enviarA, enviarRecordatorios, fichaCon, fichaValida, limpiar, llavesDe, mensajesDe, secretoDe, suscripcionRota,
+  PLAZO_DE_ENVIO, SERVICIOS_PUSH, avisoDe, dispositivosDe, enviarA, enviarRecordatorios, esDeServicioPush, fichaCon, fichaValida, limpiar, llavesDe, mensajesDe,
+  secretoDe, suscripcionRota,
 } = await import('../../netlify/lib/envio.mjs');
 const { CADUCA } = await import('../../netlify/lib/recordar.mjs');
 
@@ -39,6 +43,8 @@ const LLAVES = { claves: { publicKey: 'CLAVE-PUBLICA', privateKey: 'CLAVE-PRIVAD
 const MOVIL = 'https://fcm.googleapis.com/fcm/send/movil';
 const TABLETA = 'https://web.push.apple.com/tableta';
 const INVENTADO = 'https://fcm.googleapis.com/fcm/send/inventado'; // El de un alta con claves que ningún navegador daría.
+// Una dirección que «new URL» lee como de fcm.googleapis.com y el lector antiguo que usa web-push, como de otro.sitio.
+const TRUCADA = 'https://otro.sitio%2Efcm.googleapis.com/fcm/send/trucada';
 const cosa = (id, texto = `Cosa ${id}`, de = 1000) => ({ id, texto, de });
 // Unas claves como las que da un navegador: un punto de la curva P-256 (65 bytes) y un secreto de 16.
 const CLAVES_DE_NAVEGADOR = { p256dh: createECDH('prime256v1').generateKeys().toString('base64url'), auth: randomBytes(16).toString('base64url') };
@@ -294,6 +300,84 @@ test('enviarRecordatorios: lo que falla sin código de estado con la suscripció
     assert.deepEqual((await enviar(store, dispositivos, [cosa('a')]))[0], [], fallo);
     assert.deepEqual([store.claves('dispositivos/u1/').length, store.claves('suscripciones/').length], [2, 2], fallo);
   }
+});
+
+test('esDeServicioPush: la dirección tal cual; lo que dos lectores de direcciones entenderían distinto no pasa', () => {
+  const deLaLista = (host) => SERVICIOS_PUSH.some((servicio) => host === servicio || host.endsWith(`.${servicio}`));
+  for (const endpoint of [
+    MOVIL, TABLETA, INVENTADO,
+    'https://fcm.googleapis.com/fcm/send/dA1b:APA91b-_xYz',
+    'https://android.googleapis.com/gcm/send/abc',
+    'https://api.push.apple.com/3/device/abc',
+    'https://updates.push.services.mozilla.com/wpush/v2/gAAAAABl',
+    'https://updates.push.services.mozilla.com:443/wpush/v1/gAAAAABl', // Con el puerto de https escrito, como las de antes de Firefox.
+    'https://wns2-par02p.notify.windows.com/w/?token=BQYAAAD%2bx%2f8%3d',
+    `https://fcm.googleapis.com/${'x'.repeat(1000 - 27)}`,
+  ]) {
+    assert.equal(esDeServicioPush(endpoint), true, endpoint);
+    // Los dos lectores (el de ahora y el antiguo, que es el que usa web-push) ven el mismo host, y es de la lista.
+    assert.equal(url.parse(endpoint).hostname, new URL(endpoint).hostname, endpoint);
+    assert.ok(deLaLista(url.parse(endpoint).hostname), endpoint);
+  }
+  // El truco: para «new URL» es un subdominio de fcm.googleapis.com; web-push se lo enviaría a otro.sitio.
+  assert.deepEqual([new URL(TRUCADA).hostname, url.parse(TRUCADA).hostname], ['otro.sitio.fcm.googleapis.com', 'otro.sitio']);
+  for (const endpoint of [
+    TRUCADA,
+    ...[';', "'", '{', '"', '`', '%2e', '%2F', '\\', '#', '?'].map((raro) => `https://otro.sitio${raro}fcm.googleapis.com/x`),
+    'https://usuario:clave@fcm.googleapis.com/x', 'https://otro.sitio@fcm.googleapis.com/x',
+    'https://fcm.googleapis.com:8443/x', 'https://fcm.googleapis.com:81/x', 'https://fcm.googleapis.com:/x',
+    'https://fcm.googleapis.com/fcm/send/語', 'https://fcm.googleapis.com/a b', 'https://fcm.googleapis.com/a\tb', 'https://fcm.googleapis.com/a\nb',
+    ' https://fcm.googleapis.com/x', 'https://FCM.googleapis.com/x', 'HTTPS://fcm.googleapis.com/x',
+    'http://fcm.googleapis.com/x', 'https://fcm.googleapis.com', 'https:/fcm.googleapis.com/x', '//fcm.googleapis.com/x',
+    'https://fcm.googleapis.com.otro.sitio/x', 'https://otrofcm.googleapis.com/x', 'https://googleapis.com/x', 'https://.fcm.googleapis.com/x',
+    'https://otro.sitio/fcm.googleapis.com/x', 'https://127.0.0.1/x', 'https://[::1]/x',
+    `https://fcm.googleapis.com/${'x'.repeat(1000 - 26)}`, '', 7, null, undefined, {}, ['https://fcm.googleapis.com/x'],
+  ]) {
+    assert.equal(esDeServicioPush(endpoint), false, String(endpoint));
+  }
+});
+
+test('enviarRecordatorios y enviarA: a lo guardado que no es de un servicio push no se le envía nada: se olvida, como el que ya no existe', async () => {
+  const [store, dispositivos] = await conDispositivos(MOVIL, TRUCADA);
+  respuestas.clear();
+  assert.deepEqual(await enviar(store, dispositivos, [cosa('a')]), [['a'], ['movil:a']]);
+  assert.deepEqual([store.claves('dispositivos/u1/'), store.claves('suscripciones/')], [['dispositivos/u1/h0'], ['suscripciones/h0']]);
+  // Si es el único, nada se da por avisado: sin dispositivos, a esa sesión le toca la pausa.
+  const [solo, suyos] = await conDispositivos(TRUCADA);
+  assert.deepEqual(await enviar(solo, suyos, [cosa('a')]), [[], []]);
+  assert.deepEqual(solo.claves(), []);
+  // Y lo mismo con los avisos de las listas.
+  const [otro] = await conDispositivos(TRUCADA, MOVIL);
+  enviados.length = 0;
+  assert.equal(await enviarA(otro, LLAVES.claves, 'u1', '{}'), 1);
+  assert.deepEqual([enviados.map((e) => e.endpoint), otro.claves('dispositivos/u1/')], [[MOVIL], ['dispositivos/u1/h1']]);
+});
+
+test('enviarRecordatorios: un envío que no acaba se corta a los ocho segundos y merece otro intento; no retiene a los demás', async () => {
+  const unMomento = () => new Promise((seguir) => { setImmediate(seguir); });
+  for (const [tableta, avisado] of [['colgado', false], [null, true]]) {
+    const [store, dispositivos] = await conDispositivos(MOVIL, TABLETA);
+    respuestas.clear();
+    respuestas.set(MOVIL, 'colgado');
+    respuestas.set(TABLETA, tableta);
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      let acabado = false;
+      const envio = enviar(store, dispositivos, [cosa('a')]).finally(() => { acabado = true; });
+      await unMomento();
+      mock.timers.tick(PLAZO_DE_ENVIO - 1);
+      await unMomento();
+      assert.equal(acabado, false); // Mientras no venza el plazo, se le espera (aunque al otro ya le haya llegado).
+      mock.timers.tick(1);
+      const [entregadas, salieron] = await envio;
+      assert.deepEqual([entregadas, salieron], [avisado ? ['a'] : [], ['movil:a', 'tableta:a']], String(tableta));
+      // No es culpa de los dispositivos (o no se sabe): siguen ahí para la pasada siguiente.
+      assert.deepEqual([store.claves('dispositivos/u1/').length, store.claves('suscripciones/').length], [2, 2]);
+    } finally {
+      mock.timers.reset();
+    }
+  }
+  assert.equal(PLAZO_DE_ENVIO, 8000); // Con los 18 s que la pasada da para empezar con otra sesión, por debajo de los 30 de la función.
 });
 
 test('enviarRecordatorios: un solo dispositivo, y sin ninguno no se da nada por avisado', async () => {

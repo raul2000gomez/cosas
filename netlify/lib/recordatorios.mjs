@@ -114,11 +114,14 @@ async function cambiar(store, uid, cambio, ahora) {
  * clave reciente. Esa misma clave pudo ponerla un instante antes alguien que estaba guardando: si su documento aún
  * no había entrado, con esto ya no entra sin volver a mirar (y al repetir pone la clave otra vez); si entró justo
  * después de lo último que guardó la pasada («escrito»), guardar de nuevo repone la clave de lo que haya. Lo normal
- * es lo primero, y sale por una sola escritura: lo que la pasada guardó, comparando con su etiqueta. Sin documento
- * (lo olvidaron entretanto) no hay nada que guardar.
+ * es lo primero, y sale por una sola escritura: lo que la pasada guardó, comparando con su etiqueta. Lleva una marca
+ * de más («reafirmado», que nadie lee y la siguiente escritura quita) para que no sea, byte a byte, lo que ya hay:
+ * si la etiqueta del almacén sale del contenido, escribir lo mismo no la cambiaría y no cortaría el paso a nadie.
+ * Sin documento (lo olvidaron entretanto) no hay nada que guardar.
  */
 async function reafirmar(store, uid, escrito, ahora) {
-  if (escrito.etiqueta && (await store.setJSON(claveDe(uid), escrito.despues, { onlyIfMatch: escrito.etiqueta })).modified) return;
+  const marcado = { ...escrito.despues, reafirmado: ahora };
+  if (escrito.etiqueta && (await store.setJSON(claveDe(uid), marcado, { onlyIfMatch: escrito.etiqueta })).modified) return;
   await cambiar(store, uid, (actual) => (actual.nacido ? actual : null), ahora);
 }
 
