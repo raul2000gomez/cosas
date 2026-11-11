@@ -16,7 +16,12 @@
    ejecución está enviando (hasta que caduca, otra no los toca; si no llega a confirmarlos, la siguiente los repite:
    un aviso puede llegar dos veces, pero no se pierde). «agenda»: el minuto de su clave en agenda/, que es lo único
    que mira la función programada. «pausado»: desde cuándo no tiene dispositivos a los que avisar (no gasta
-   ejecuciones y, si sigue así, se acaba borrando). «enviados»: cuántos avisos lleva hoy.
+   ejecuciones y, si sigue así, se acaba borrando). «enviados»: cuántos avisos lleva hoy. «actualizado»: la última
+   vez que lo cambió su dueño (la app al guardar, o un «Hecho» en un aviso).
+
+   Nada se guarda para siempre. El documento que espera algún aviso y tiene a quién dárselo sigue mientras sea así.
+   El que está en pausa, y el que no espera ninguno (todo hecho, o ya sin cosas), se borran a los treinta días de
+   seguir igual (limpiezaDe, caducado): si su dueño vuelve, la app lo sube otra vez («nacido» le dice que es otro).
 
    Aquí no se lee ni se escribe nada: solo se calcula, para poder probarlo sin almacén ni reloj. */
 
@@ -35,7 +40,8 @@ export const CESION = 2 * 60 * 1000;
 export const TOLERANCIA = 5000;
 export const MAX_POR_TANDA = 40; // Avisos de una sesión que una ejecución toma de una vez.
 export const MAX_AL_DIA = 300; // Avisos de una sesión en un día: por encima, algo va mal (o alguien abusa) y se dejan de enviar.
-// Lo que se guarda un documento en pausa (sin dispositivos a los que avisar) antes de borrarlo.
+// Lo que se guarda, antes de borrarlo, un documento en pausa (sin dispositivos a los que avisar) o sin nada pendiente
+// (todo hecho, o vacío) que nadie ha vuelto a tocar.
 export const RETENCION = 30 * 24 * 60 * 60 * 1000;
 
 // Con sentido como texto (sin mitades sueltas de un carácter: va en la dirección que abre el aviso) y que no sea
@@ -138,15 +144,19 @@ export function documentoCon(doc, envio, ahora) {
   };
 }
 
-/** El documento con esa cosa hecha («Hecho» en su aviso): ya no se avisa de ella. null si no hay nada que cambiar. */
-export function documentoConHecha(doc, id) {
+/**
+ * El documento con esa cosa hecha («Hecho» en su aviso): ya no se avisa de ella. null si no hay nada que cambiar.
+ * Cuenta como que su dueño lo ha tocado: si era lo último pendiente, la retención empieza ahora y no cuando la app
+ * guardó por última vez.
+ */
+export function documentoConHecha(doc, id, ahora) {
   const cosa = tiene(doc.cosas, id) ? doc.cosas[id] : null;
   if (!cosa || cosa.hecha) return null;
   const prox = { ...doc.prox };
   const turno = { ...doc.turno };
   delete prox[id];
   delete turno[id];
-  return { ...doc, v: doc.v + 1, cosas: { ...doc.cosas, [id]: { ...cosa, hecha: true } }, prox, turno };
+  return { ...doc, v: doc.v + 1, cosas: { ...doc.cosas, [id]: { ...cosa, hecha: true } }, prox, turno, actualizado: ahora };
 }
 
 /**
@@ -162,8 +172,29 @@ export function documentoDespierto(doc) {
   return doc.pausado === null ? null : { ...doc, pausado: null };
 }
 
-/** El día (UTC, «AAAAMMDD») a partir del cual se puede borrar un documento en pausa desde ese instante. */
-export const diaDeLimpieza = (pausado) => diaDe(pausado + RETENCION);
+/** El día (UTC, «AAAAMMDD») a partir del cual se puede borrar un documento que sigue igual desde ese instante. */
+export const diaDeLimpieza = (desde) => diaDe(desde + RETENCION);
+
+/**
+ * El día (UTC) desde el que ese documento se puede borrar si para entonces sigue igual; null si no se borra: espera
+ * algún aviso y no está en pausa (de él se ocupa la función programada). En pausa, cuenta desde que empezó la pausa;
+ * sin nada pendiente (todo hecho, o sin cosas), desde la última vez que su dueño lo cambió. Quien lo guarda deja
+ * puesta la clave de limpieza de ese día (ver recordatorios.mjs).
+ */
+export function limpiezaDe(doc) {
+  if (doc.pausado !== null) return diaDeLimpieza(doc.pausado);
+  return Object.keys(doc.prox).length ? null : diaDeLimpieza(doc.actualizado);
+}
+
+/**
+ * ¿Se puede borrar ya ese documento? «hoy» es el día (UTC) y «sola», si su sesión no tiene dispositivos. Al que está
+ * en pausa solo se le borra si sigue sin tener a quién avisar (si lo tiene, lo que toca es despertarlo). Al que no
+ * espera nada le da igual tener dispositivos: no hay nada que enviarles.
+ */
+export function caducado(doc, hoy, sola) {
+  const dia = limpiezaDe(doc);
+  return dia !== null && dia <= hoy && (doc.pausado === null || sola);
+}
 
 /**
  * Los avisos que esta ejecución toma para enviar: { doc, avisar: [{ id, texto, de }] }, o null si no hay nada que

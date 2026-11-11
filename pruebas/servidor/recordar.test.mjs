@@ -2,8 +2,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  CADUCA, CESION, MAX_AL_DIA, MAX_COSAS, MAX_POR_TANDA, RETENCION, agendaDe, confirmarAvisos, cosaDe, diaDeLimpieza, documentoCon, documentoConHecha,
-  documentoDe, documentoDespierto, documentoPausado, documentoVacio, envioDe, esIdDeCosa, publicoDe, reclamarAvisos, tocaAvisar,
+  CADUCA, CESION, MAX_AL_DIA, MAX_COSAS, MAX_POR_TANDA, RETENCION, agendaDe, caducado, confirmarAvisos, cosaDe, diaDeLimpieza, documentoCon, documentoConHecha,
+  documentoDe, documentoDespierto, documentoPausado, documentoVacio, envioDe, esIdDeCosa, limpiezaDe, publicoDe, reclamarAvisos, tocaAvisar,
 } from '../../netlify/lib/recordar.mjs';
 
 const MADRID = 'Europe/Madrid';
@@ -170,15 +170,16 @@ test('documentoCon: guardar no saca de la pausa (despertar es otra cosa)', () =>
 
 test('documentoConHecha: «Hecho» en el aviso; una sola vez y solo si está', () => {
   const doc = reclamarAvisos(documento({ a: cosa('Leche'), b: cosa('Pan') }), LAS_9).doc;
-  const hecha = documentoConHecha(doc, 'a');
+  const hecha = documentoConHecha(doc, 'a', LAS_9 + 60000);
   assert.equal(hecha.v, 2);
   assert.equal(hecha.cosas.a.hecha, true);
   assert.deepEqual([Object.keys(hecha.prox), Object.keys(hecha.turno)], [['b'], ['b']]); // Ni espera aviso ni turno.
+  assert.deepEqual([doc.actualizado, hecha.actualizado], [LAS_8, LAS_9 + 60000]); // Su dueño lo ha tocado: la retención cuenta desde ahora.
   assert.equal(doc.cosas.a.hecha, false); // El de antes no se toca.
-  assert.equal(documentoConHecha(hecha, 'a'), null);
-  assert.equal(documentoConHecha(doc, 'no-esta'), null);
-  assert.equal(documentoConHecha(doc, '__proto__'), null);
-  assert.equal(documentoConHecha(doc, 'constructor'), null);
+  assert.equal(documentoConHecha(hecha, 'a', LAS_9 + 60000), null);
+  assert.equal(documentoConHecha(doc, 'no-esta', LAS_9), null);
+  assert.equal(documentoConHecha(doc, '__proto__', LAS_9), null);
+  assert.equal(documentoConHecha(doc, 'constructor', LAS_9), null);
   // La app, que aún la tenía pendiente, escribe sobre la versión vieja: no puede (tiene que mirar antes).
   assert.equal(documentoCon(hecha, envio(1, { poner: { a: cosa('Leche') } }), LAS_9), null);
 });
@@ -305,9 +306,36 @@ test('pausa: sale de la agenda y suelta los turnos; al despertar, lo reciente sa
   const reclamo = reclamarAvisos(despierto, ahora);
   assert.deepEqual(reclamo.avisar, [{ id: 'b', texto: 'Pan', de: utc('2026-11-10T14:00') }]);
   assert.equal(reclamo.doc.prox.a, utc('2026-11-11T08:00'));
-  // El día de la limpieza: treinta días después de la pausa.
+  // El día de la limpieza: treinta días después.
   assert.equal(RETENCION, 30 * 24 * 3600 * 1000);
   assert.equal(diaDeLimpieza(utc('2026-11-10T08:00')), '20261210');
+});
+
+test('limpiezaDe y caducado: lo que espera avisos no se borra; en pausa o sin nada pendiente, a los treinta días de seguir igual', () => {
+  const pendiente = documento({ a: cosa('Leche'), b: cosa('Pan', DIARIO, true) });
+  assert.equal(limpiezaDe(pendiente), null);
+  assert.equal(caducado(pendiente, '20991231', true), false); // Ni sin dispositivos: de eso se ocupa la pausa.
+  // Sin nada pendiente (todo hecho; sin cosas; solo el recordatorio de todas): desde la última vez que su dueño lo cambió.
+  const hecho = documentoConHecha(pendiente, 'a', utc('2026-11-12T23:30'));
+  const vacio = documentoCon(pendiente, envio(1, { quitar: ['a', 'b'] }), utc('2026-11-12T23:30')).doc;
+  const soloGeneral = documentoCon(documentoVacio(), envio(0, { general: DIARIO }), utc('2026-11-12T23:30')).doc;
+  for (const doc of [hecho, vacio, soloGeneral]) {
+    assert.deepEqual(doc.prox, {});
+    assert.equal(limpiezaDe(doc), '20261212');
+    assert.deepEqual([caducado(doc, '20261211', true), caducado(doc, '20261212', true), caducado(doc, '20270101', true)], [false, true, true]);
+    assert.equal(caducado(doc, '20261212', false), true); // Tener dispositivos le da igual: no hay nada que enviarles.
+  }
+  // Se guarda otra vez sin que nada cambie: vuelve a contar. Y si algo vuelve a estar pendiente, deja de contar.
+  assert.equal(limpiezaDe(documentoCon(hecho, envio(2), utc('2026-11-20T10:00')).doc), '20261220');
+  assert.equal(limpiezaDe(documentoCon(hecho, envio(2, { poner: { a: cosa('Leche') } }), utc('2026-11-20T10:00')).doc), null);
+  // En pausa: desde que empezó la pausa, y solo si la sesión sigue sin dispositivos (con ellos, lo que toca es despertarla).
+  const pausado = documentoPausado(pendiente, LAS_9);
+  assert.equal(limpiezaDe(pausado), '20261210');
+  assert.deepEqual([caducado(pausado, '20261209', true), caducado(pausado, '20261210', true), caducado(pausado, '20261210', false)], [false, true, false]);
+  // En pausa y, además, ya sin nada pendiente: manda la pausa mientras dure; al despertar, lo que lleve sin tocarse.
+  const pausadoYHecho = documentoConHecha(pausado, 'a', utc('2026-11-12T10:00'));
+  assert.deepEqual([limpiezaDe(pausadoYHecho), limpiezaDe(documentoDespierto(pausadoYHecho))], ['20261210', '20261212']);
+  assert.equal(caducado(documentoVacio(), '20261210', true), true); // Lo que no se entiende como documento (o una marca vieja) no se guarda.
 });
 
 test('agendaDe: el minuto del aviso más cercano; si ya pasó, el de ahora (una clave recién puesta nunca es vieja)', () => {

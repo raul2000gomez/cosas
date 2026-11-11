@@ -2053,6 +2053,7 @@
     elegirRecordar.replaceChildren();
     recordandoA = null;
     cierreHoja = performance.now();
+    protegerPaginaTrasLaHoja();
     if (!devolverFoco) return;
     const fila = id === null ? null : filasPorId.get(id);
     const boton = fila && fila.isConnected ? fila.querySelector('.cuando') : null;
@@ -2210,6 +2211,7 @@
     cerrarPanel(hojaAvisada);
     listaAvisadas.replaceChildren();
     cierreHoja = performance.now();
+    protegerPaginaTrasLaHoja();
     const previo = focoAntesDeAvisadas;
     focoAntesDeAvisadas = null;
     if (!devolverFoco) return;
@@ -2527,6 +2529,7 @@
   let panelAbierto = null; // Como mucho hay una hoja abierta: la de pasos, la de edición o una de las de Recordar.
   let aperturaHoja = -Infinity;
   let temporizadorApertura = 0;
+  let temporizadorCierre = 0;
 
   /**
    * Mientras una hoja está abierta el resto de la página no cuenta: inerte donde se puede y, donde no
@@ -2563,6 +2566,19 @@
     }
   }
 
+  /**
+   * Las hojas de Recordar se cierran con un toque en su parte baja («Guardar», «Hecho», «Mantener»), justo encima de la
+   * barra de escribir, y la de los avisos sale sobre cualquier vista: al cerrarse, lo que tenían debajo queda bajo el
+   * dedo. Durante un instante la página no recibe toques (CSS): el segundo toque de un doble toque no enfoca el campo,
+   * ni empieza a dictar, ni sigue un enlace. (Se llama después de anotar «cierreHoja»: cuando la página vuelve a
+   * recibir toques, esa guarda también ha pasado.)
+   */
+  function protegerPaginaTrasLaHoja() {
+    raiz.toggleAttribute('data-hoja-cerrada', true);
+    clearTimeout(temporizadorCierre);
+    temporizadorCierre = setTimeout(() => raiz.removeAttribute('data-hoja-cerrada'), GUARDA_DOBLE_TOQUE);
+  }
+
   function cerrarHojaAbierta() {
     if (panelAbierto === hoja) cerrarHoja();
     else if (panelAbierto === hojaGrupo) cerrarHojaGrupo();
@@ -2576,9 +2592,11 @@
       return;
     }
     if (evento.key !== 'Tab' || !panelAbierto) return;
-    // El tabulador da vueltas dentro de la hoja y no sale a la página.
+    // El tabulador da vueltas dentro de la hoja y no sale a la página. De cada grupo de radios solo cuenta el elegido,
+    // que es donde se detiene: si el último control fuese un radio sin elegir (la hoja del recordatorio con «Guardar»
+    // apagado), nunca se llegaría a él y el foco se escaparía.
     const focables = Array.from(panelAbierto.querySelectorAll('button, input, select'))
-      .filter((elemento) => !elemento.disabled && elemento.offsetParent !== null);
+      .filter((elemento) => !elemento.disabled && elemento.offsetParent !== null && (elemento.type !== 'radio' || elemento.checked));
     if (!focables.length) return;
     const indice = focables.indexOf(document.activeElement);
     if (evento.shiftKey && indice <= 0) {
@@ -2591,8 +2609,10 @@
   }
 
   function alPulsarCierreDeHoja() {
-    // El velo y «Cerrar» aparecen bajo el dedo que abrió la hoja: el segundo toque de un doble toque no la cierra.
-    if (performance.now() - aperturaHoja >= GUARDA_DOBLE_TOQUE) cerrarHojaAbierta();
+    // El velo y «Cerrar» aparecen bajo el dedo que abrió la hoja: el segundo toque de un doble toque no la cierra. Ni
+    // el que sigue a contestar un aviso: la hoja encoge por arriba y «Cerrar» baja hasta donde estaba el botón pulsado.
+    const ahora = performance.now();
+    if (ahora - aperturaHoja >= GUARDA_DOBLE_TOQUE && ahora - ultimaRespuesta >= GUARDA_DOBLE_TOQUE) cerrarHojaAbierta();
   }
 
   // ---------- Aplicación (añadir a la pantalla de inicio) ----------

@@ -1,7 +1,7 @@
 /* Pruebas de netlify/lib/horario.mjs:  node --test --experimental-test-module-mocks pruebas/servidor/*.test.mjs */
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { diaDe, diasDelMes, esZona, instanteDe, minutoDe, proximoAviso, recordatorioDe, relojEn } from '../../netlify/lib/horario.mjs';
+import { mock, test } from 'node:test';
+import { MAX_FORMATOS, diaDe, diasDelMes, esZona, instanteDe, minutoDe, proximoAviso, recordatorioDe, relojEn } from '../../netlify/lib/horario.mjs';
 
 const MADRID = 'Europe/Madrid';
 const utc = (texto) => Date.parse(`${texto}Z`);
@@ -29,6 +29,37 @@ test('recordatorioDe: «una vez» ya no existe (un recordatorio siempre se repit
 test('zonas: las que Intl conoce', () => {
   for (const zona of [MADRID, 'UTC', 'America/New_York', 'Asia/Kolkata', 'Pacific/Auckland']) assert.equal(esZona(zona), true, zona);
   for (const zona of ['', 'Marte/Olimpo', null, 42, 'x'.repeat(65)]) assert.equal(esZona(zona), false, String(zona));
+});
+
+test('zonas: los formateadores se reutilizan, pero no se guardan sin fin (una zona se puede escribir de mil maneras)', () => {
+  const DeVerdad = Intl.DateTimeFormat;
+  let creados = 0;
+  mock.method(Intl, 'DateTimeFormat', function contado(...argumentos) {
+    creados += 1;
+    return new DeVerdad(...argumentos);
+  });
+  try {
+    // «Europe/Madrid» con las mayúsculas cambiadas de sitio: todas valen, y cada una es otra para la lista. (La
+    // última letra, siempre en mayúscula: así ninguna es una de las que ya han usado las pruebas de arriba.)
+    const letras = 'europemadri';
+    const variante = (n) => `${[...letras].map((letra, i) => ((n >> i) & 1 ? letra.toUpperCase() : letra)).join('').replace(/^(.{6})/, '$1/')}D`;
+    assert.equal(variante(1), 'Europe/madriD');
+    assert.equal(esZona(variante(1)), true);
+    const trasLaPrimera = creados;
+    assert.deepEqual(relojEn(variante(1), utc('2026-07-01T10:00')), relojEn(MADRID, utc('2026-07-01T10:00')));
+    assert.equal(esZona(variante(1)), true);
+    assert.equal(creados, trasLaPrimera); // La misma, otra vez: no se crea otro.
+    // Muchas más de las que se guardan: todas se atienden, y la primera ya no está guardada (hubo que hacer sitio).
+    for (let n = 2; n < 2 * MAX_FORMATOS + 2; n += 1) assert.equal(esZona(variante(n)), true, variante(n));
+    const trasTodas = creados;
+    assert.equal(trasTodas - trasLaPrimera, 2 * MAX_FORMATOS);
+    assert.equal(esZona(variante(1)), true);
+    assert.equal(creados, trasTodas + 1);
+    // Y las cuentas siguen saliendo, se haya vaciado la lista o no.
+    assert.equal(iso(proximoAviso({ hora: '09:00', frec: 'dia' }, MADRID, utc('2026-11-10T07:00'))), '2026-11-10T08:00');
+  } finally {
+    mock.restoreAll();
+  }
 });
 
 test('relojEn e instanteDe: ida y vuelta, también con medias horas', () => {

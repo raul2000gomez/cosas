@@ -476,3 +476,43 @@ test('la limpieza: en la ejecución de las 03:00 (UTC) se borran los documentos 
     acabar();
   }
 });
+
+test('la limpieza: también se borra el documento sin nada pendiente que nadie toca en un mes; si su dueño vuelve, la app lo sube de nuevo', async () => {
+  const consola = empezar('2026-11-10T07:30');
+  try {
+    await alta('u1', MOVIL);
+    await alta('u2', TABLETA);
+    const [, antes] = await guardar('u1', 0, { poner: { a: cosa('Comprar leche') } });
+    await guardar('u2', 0, { poner: { z: cosa('Lo de otra sesión') } });
+    aLas('2026-11-10T08:00:02');
+    await programada();
+    // «Hecho» en el aviso de «a»: a «u1» ya no le queda nada pendiente, y la programada no volvería a mirarla nunca.
+    const { ficha } = enviados.find((e) => e.endpoint === MOVIL).aviso.cosas[0];
+    assert.deepEqual(await hecho({ uid: 'u1', id: 'a', ficha }), [200, { ok: true }]);
+    assert.deepEqual(store.claves('limpieza/'), ['limpieza/20261210/u1']);
+    // Un mes sin que la app guarde nada ni se pulse otro «Hecho»: el día antes sigue ahí, con su texto…
+    aLas('2026-12-09T03:00:01');
+    await programada();
+    assert.deepEqual((await leer('u1'))[1], { nacido: antes.nacido, v: 2, zona: MADRID, general: null, cosas: { a: cosa('Comprar leche', DIARIO, true) } });
+    // …y el día 10, ya no. A «u2», que sigue esperando avisos, no se le toca nada.
+    aLas('2026-12-10T03:00:01');
+    await programada();
+    assert.deepEqual([store.claves('recordar/'), store.claves('limpieza/')], [['recordar/u2'], []]);
+    assert.ok(consola.pop().endsWith('1 documentos borrados'));
+    assert.equal(JSON.stringify([...store.datos]).includes('Comprar leche'), false); // Del texto no queda ni rastro.
+    // La app vuelve: ya no hay documento. Sobre la versión que recordaba no puede escribir (409 con lo que hay: nada);
+    // lo sube entero, y es otro documento.
+    aLas('2026-12-20T10:00:00');
+    assert.deepEqual(await leer('u1'), [200, SIN_DOCUMENTO]);
+    assert.deepEqual(await guardar('u1', 2, { poner: { b: cosa('Pan') } }), [409, SIN_DOCUMENTO]);
+    const [estado, despues] = await guardar('u1', 0, { poner: { a: cosa('Comprar leche', DIARIO, true), b: cosa('Pan') } });
+    assert.deepEqual([estado, despues.v, despues.rechazadas], [200, 1, []]);
+    assert.notEqual(despues.nacido, antes.nacido);
+    enviados.length = 0;
+    aLas('2026-12-21T08:00:02');
+    await programada();
+    assert.deepEqual(salidas().filter((salida) => salida.startsWith('movil-1')), ['movil-1:b']); // Y vuelve a avisar de lo pendiente.
+  } finally {
+    acabar();
+  }
+});

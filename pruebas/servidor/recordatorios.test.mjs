@@ -1,5 +1,5 @@
-/* Pruebas de netlify/lib/recordatorios.mjs (leer, guardar, «Hecho», la pasada programada, la pausa y la limpieza)
-   sobre un almacén de mentira:  node --test --experimental-test-module-mocks pruebas/servidor/*.test.mjs */
+/* Pruebas de netlify/lib/recordatorios.mjs (leer, guardar, «Hecho», la pasada programada, la pausa, la retención y
+   la limpieza) sobre un almacén de mentira:  node --test --experimental-test-module-mocks pruebas/servidor/*.test.mjs */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CADUCA, CESION, envioDe } from '../../netlify/lib/recordar.mjs';
@@ -18,6 +18,8 @@ const LAS_9 = utc('2026-11-10T08:00');
 const MINUTOS = 60000;
 const HOY_A_LAS_9 = 'agenda/202611100800/u1';
 const MANANA_A_LAS_9 = 'agenda/202611110800/u1';
+const SIN_DOCUMENTO = { nacido: null, v: 0, zona: 'UTC', general: null, cosas: {} };
+const UN_MES_DESPUES = utc('2026-12-10T03:00:02'); // La limpieza del día en que caduca lo que nadie toca desde el 10 de noviembre.
 
 const guardar = (store, uid, siV, cambio, ahora = LAS_8) => guardarRecordatorios(store, uid, envioDe({ siV, zona: MADRID, ...cambio }), ahora);
 const conDispositivo = (store, uid, huella = 'h1') => store.setJSON(`dispositivos/${uid}/${huella}`, { endpoint: `https://fcm.googleapis.com/fcm/send/${uid}-${huella}`, desde: 1 });
@@ -524,6 +526,74 @@ test('cruce 2, con la pasada: la app guarda mientras la pasada confirma y mueve 
   assert.deepEqual(store.claves('agenda/'), [MANANA_A_LAS_9]);
 });
 
+test('cruce 3: alguien guarda justo después de que la pasada confirme y antes de que quite la clave atendida: la clave vuelve', async () => {
+  const store = almacenFalso();
+  await conDispositivo(store, 'u1');
+  await guardar(store, 'u1', 0, { poner: { a: cosa('Leche') } });
+  // Dos segundos antes de las 9:00 la app añade «b», también para las 9:00: su clave es la misma de las 9:00 que la
+  // pasada, que ya ha avisado de «a», está a punto de quitar por atendida. Y entra entera justo antes de que la quite.
+  store.antesDeBorrar(/^agenda\/202611100800\/u1$/, () => guardar(store, 'u1', 1, { poner: { b: cosa('Pan') } }, LAS_9 - 2000));
+  assert.deepEqual((await pasar(store, LAS_9 + 2000)).enviados, ['u1:a']);
+  const doc = store.json('recordar/u1');
+  assert.deepEqual([doc.v, doc.prox, doc.agenda], [2, { a: utc('2026-11-11T08:00'), b: LAS_9 }, '202611100800']);
+  // La pasada la quitó, pero como era reciente guardó otra vez: y guardar siempre pone la clave de lo que haya.
+  assert.ok(store.datos.has(HOY_A_LAS_9) && enAgenda(store, 'u1'));
+  assert.deepEqual((await pasar(store, LAS_9 + 5 * MINUTOS + 2000)).enviados, ['u1:b']);
+  assert.deepEqual(store.claves('agenda/'), [MANANA_A_LAS_9]);
+});
+
+test('cruce 3, a medias: quien ya había puesto esa clave y aún no había escrito no entra sin volver a mirar, y la repone', async () => {
+  const store = almacenFalso();
+  await conDispositivo(store, 'u1');
+  await guardar(store, 'u1', 0, { poner: { a: cosa('Leche') } });
+  // Lo mismo, pero más fino: cuando la pasada va a quitar la clave, la app ya ha leído el documento (el de después de
+  // confirmar) y ha puesto la suya, la misma; su documento no llega hasta que la pasada ha acabado del todo.
+  let pasado;
+  let app;
+  store.antesDeBorrar(/^agenda\/202611100800\/u1$/, () => new Promise((yaHaPuestoSuClave) => {
+    store.antesDeEscribir(/^recordar\//, () => {
+      yaHaPuestoSuClave();
+      return pasado;
+    });
+    app = guardar(store, 'u1', 1, { poner: { b: cosa('Pan') } }, LAS_9 - 2000);
+  }));
+  pasado = pasar(store, LAS_9 + 2000);
+  assert.deepEqual((await pasado).enviados, ['u1:a']);
+  assert.deepEqual(await app, { nacido: store.json('recordar/u1').nacido, v: 2, rechazadas: [] });
+  // Sin ese guardar de más de la pasada, el documento de la app habría entrado a la primera con su clave ya quitada.
+  const doc = store.json('recordar/u1');
+  assert.deepEqual([doc.prox, doc.agenda], [{ a: utc('2026-11-11T08:00'), b: LAS_9 }, '202611100800']);
+  assert.ok(store.datos.has(HOY_A_LAS_9) && enAgenda(store, 'u1'));
+  assert.deepEqual((await pasar(store, LAS_9 + 5 * MINUTOS + 2000)).enviados, ['u1:b']);
+});
+
+test('la pasada solo guarda de más si ha quitado una clave reciente; y si entretanto olvidaron el documento, no lo crea', async () => {
+  const store = almacenFalso();
+  await conDispositivo(store, 'u1');
+  await guardar(store, 'u1', 0, { poner: { a: cosa('Leche', A_LAS_21) } });
+  // Nada que avisar y nada que quitar: ni una escritura.
+  const etiqueta = store.datos.get('recordar/u1').etag;
+  await store.set('agenda/202611100700/u1', '1'); // Una clave vieja que sobra: se quita sin más (nadie guarda con una de hace una hora).
+  await pasar(store, LAS_9 + 2000);
+  assert.deepEqual([store.claves('agenda/'), store.datos.get('recordar/u1').etag], [['agenda/202611102000/u1'], etiqueta]);
+  // A su hora avisa y quita la clave atendida, que es reciente: guarda una vez más. Lo normal (nadie se ha cruzado)
+  // le cuesta una sola escritura, sin volver a leer.
+  let lecturas = 0;
+  const leerCon = store.getWithMetadata;
+  store.getWithMetadata = (...argumentos) => {
+    lecturas += 1;
+    return leerCon(...argumentos);
+  };
+  assert.deepEqual((await pasar(store, utc('2026-11-10T20:00:02'))).enviados, ['u1:a']);
+  assert.equal(lecturas, 2); // Las de tomar el turno y confirmar.
+  assert.notEqual(store.datos.get('recordar/u1').etag, etiqueta);
+  assert.deepEqual(store.claves('agenda/'), ['agenda/202611112000/u1']);
+  // Y si justo antes de quitar la clave la sesión olvida sus recordatorios, no se crea un documento por guardar de más.
+  store.antesDeBorrar(/^agenda\/202611112000\/u1$/, () => olvidarRecordatorios(store, 'u1'));
+  assert.deepEqual((await pasar(store, utc('2026-11-11T20:00:02'))).enviados, ['u1:a']);
+  assert.deepEqual(store.claves('recordar/'), []);
+});
+
 // ---------- Sin dispositivos: pausa, despertar y limpieza ----------
 
 test('pausa: a quien le toca un aviso y no tiene dispositivos se le deja en pausa, con su clave de limpieza', async () => {
@@ -663,6 +733,246 @@ test('limpiar: una sesión que falla no para a las demás, y sin tiempo lo que q
   assert.equal(borrados, 1); // «u1» falla, «u2» se borra y para «u3» ya no hay tiempo.
   assert.deepEqual(store.claves('limpieza/'), ['limpieza/20261210/u1', 'limpieza/20261210/u3']);
   assert.deepEqual(store.claves('recordar/'), ['recordar/u1', 'recordar/u3']);
+});
+
+// ---------- Sin nada pendiente: la retención ----------
+
+test('retención: quien se queda sin nada pendiente (todo hecho, o sin cosas) deja su clave de limpieza; quien espera avisos, no', async () => {
+  const store = almacenFalso();
+  await guardar(store, 'u1', 0, { poner: { a: cosa('Leche') } });
+  assert.deepEqual(store.claves('limpieza/'), []);
+  // La app la marca hecha: ya no espera ningún aviso, y nadie lo miraría nunca. Clave para dentro de treinta días.
+  await guardar(store, 'u1', 1, { poner: { a: cosa('Leche', DIARIO, true) } });
+  assert.deepEqual([store.json('recordar/u1').agenda, store.claves('limpieza/')], [null, ['limpieza/20261210/u1']]);
+  // «Hecho» en el aviso de lo último pendiente: igual, y cuenta desde ese momento.
+  await guardar(store, 'u2', 0, { poner: { a: cosa('Pan') } });
+  assert.equal(await marcarHecha(store, 'u2', 'a', utc('2026-11-12T08:01')), true);
+  assert.equal(store.json('recordar/u2').actualizado, utc('2026-11-12T08:01'));
+  // Y el que se queda sin cosas (se les quitó el recordatorio a todas).
+  await guardar(store, 'u3', 0, { poner: { a: cosa('Sal') }, general: DIARIO });
+  await guardar(store, 'u3', 1, { quitar: ['a'], general: null }, utc('2026-11-13T10:00'));
+  assert.deepEqual(store.claves('limpieza/'), ['limpieza/20261210/u1', 'limpieza/20261212/u2', 'limpieza/20261213/u3']);
+  // Cada vez que se guarda sin nada pendiente, la clave del día que toque: una por día, no una por vez.
+  await guardar(store, 'u1', 2, { poner: { z: cosa('Otra', DIARIO, true) } }, utc('2026-11-20T10:00'));
+  await guardar(store, 'u1', 3, { poner: { z: cosa('Otra más', DIARIO, true) } }, utc('2026-11-20T18:00'));
+  assert.deepEqual(store.claves('limpieza/').filter((clave) => clave.endsWith('/u1')), ['limpieza/20261210/u1', 'limpieza/20261220/u1']);
+  // Vuelve a esperar avisos: ni clave nueva ni se quita ninguna (las quitará la limpieza cuando les llegue el día).
+  await guardar(store, 'u1', 4, { poner: { a: cosa('Leche') } }, utc('2026-11-21T10:00'));
+  assert.equal(store.claves('limpieza/').length, 4);
+  assert.ok(enAgenda(store, 'u1'));
+});
+
+test('limpiar: borra el documento que lleva un mes sin nada pendiente y sin que nadie lo toque, tenga o no dispositivos; la app lo sube de nuevo', async () => {
+  const store = almacenFalso();
+  await conDispositivo(store, 'u1');
+  const { nacido } = await guardar(store, 'u1', 0, { poner: { a: cosa('Leche', DIARIO, true), b: cosa('Pan') } });
+  assert.equal((await pasar(store, LAS_9 + 2000)).avisos, 1);
+  await marcarHecha(store, 'u1', 'b', LAS_9 + MINUTOS); // «Hecho» en su aviso: ya no queda nada pendiente.
+  // Para la pasada ya no existe: no está en la agenda (la clave de mañana que quedó se quita al llegar su hora).
+  assert.deepEqual(await pasar(store, utc('2026-11-11T08:00:02')), { enviados: [], sesiones: 1, avisos: 0, pausadas: 0 });
+  await pasar(store, utc('2026-11-11T08:15:02'));
+  assert.deepEqual(store.claves(), ['dispositivos/u1/h1', 'limpieza/20261210/u1', 'recordar/u1']);
+  // Sus textos siguen ahí un mes, por si su dueño vuelve…
+  assert.equal(await limpiar(store, utc('2026-12-09T03:00:02')), 0);
+  assert.equal(store.json('recordar/u1').cosas.b.texto, 'Pan');
+  // …y al mes se borran: ni documento, ni marca, ni claves. El dispositivo no se toca (es de los demás avisos).
+  assert.equal(await limpiar(store, UN_MES_DESPUES), 1);
+  assert.deepEqual(store.claves(), ['dispositivos/u1/h1']);
+  assert.equal(await limpiar(store, UN_MES_DESPUES), 0); // Repetida: nada más.
+  // Si su dueño vuelve, la app lee que ya no hay documento («nacido» null): lo que sabía de él no vale, y lo sube todo.
+  const vuelta = utc('2026-12-20T10:00');
+  assert.deepEqual(await leerRecordatorios(store, 'u1', vuelta), SIN_DOCUMENTO);
+  assert.deepEqual(await guardar(store, 'u1', 2, { poner: { b: cosa('Pan') } }, vuelta), { conflicto: SIN_DOCUMENTO }); // Sobre la versión que recordaba: no.
+  const otro = await guardar(store, 'u1', 0, { poner: { a: cosa('Leche', DIARIO, true), b: cosa('Pan') } }, vuelta);
+  assert.equal(otro.v, 1);
+  assert.notEqual(otro.nacido, nacido);
+  assert.deepEqual((await pasar(store, utc('2026-12-21T08:00:02'))).enviados, ['u1:b']);
+});
+
+test('limpiar: no borra al que se tocó después ni al que volvió a esperar avisos; las claves que sobran se van al llegar su día', async () => {
+  const store = almacenFalso();
+  for (const uid of ['u1', 'u2', 'u3']) await guardar(store, uid, 0, { poner: { a: cosa('Leche', DIARIO, true) } });
+  // «u1»: el 25 la app guarda otra cosa, también hecha. «u2»: el 20 desmarca la suya. «u3»: el 15 olvida sus recordatorios.
+  await guardar(store, 'u1', 1, { poner: { b: cosa('Pan', DIARIO, true) } }, utc('2026-11-25T10:00'));
+  await guardar(store, 'u2', 1, { poner: { a: cosa('Leche') } }, utc('2026-11-20T10:00'));
+  await olvidarRecordatorios(store, 'u3');
+  assert.deepEqual(store.claves('limpieza/'), ['limpieza/20261210/u1', 'limpieza/20261210/u2', 'limpieza/20261210/u3', 'limpieza/20261225/u1']);
+  // El día 10 no se borra nada: uno se tocó, otro espera avisos y el tercero ya no existe. Sus claves de ese día, fuera.
+  assert.equal(await limpiar(store, UN_MES_DESPUES), 0);
+  assert.deepEqual([store.claves('recordar/'), store.claves('limpieza/')], [['recordar/u1', 'recordar/u2'], ['limpieza/20261225/u1']]);
+  // «u2» da por hecha la suya el 12 de diciembre: vuelve a contar desde entonces.
+  await marcarHecha(store, 'u2', 'a', utc('2026-12-12T08:01'));
+  // El 25 le llega el día a «u1»; a «u2», el 11 de enero.
+  assert.equal(await limpiar(store, utc('2026-12-25T03:00:02')), 1);
+  assert.deepEqual([store.claves('recordar/'), store.claves('limpieza/')], [['recordar/u2'], ['limpieza/20270111/u2']]);
+  assert.equal(await limpiar(store, utc('2027-01-10T03:00:02')), 0);
+  assert.equal(await limpiar(store, utc('2027-01-11T03:00:02')), 1);
+  assert.deepEqual(store.claves().filter((clave) => !clave.startsWith('agenda/')), []);
+});
+
+test('el que se queda sin cosas no se borra en el acto: vacío ya no guarda textos, y dice a otro dispositivo que aquello se quitó', async () => {
+  const store = almacenFalso();
+  const { nacido } = await guardar(store, 'u1', 0, { poner: { a: cosa('Comprar leche') }, general: DIARIO });
+  assert.deepEqual(await guardar(store, 'u1', 1, { quitar: ['a'], general: null }, LAS_8 + MINUTOS), { nacido, v: 2, rechazadas: [] });
+  // El mismo documento («nacido»), una versión más y sin la cosa: el otro dispositivo de la cuenta entiende que se le
+  // quitó el recordatorio. Sin documento («nacido» null) entendería que hay que subirla otra vez.
+  assert.deepEqual(await leerRecordatorios(store, 'u1', LAS_8 + 2 * MINUTOS), { nacido, v: 2, zona: MADRID, general: null, cosas: {} });
+  assert.equal(JSON.stringify(store.json('recordar/u1')).includes('leche'), false); // El texto sí se ha ido ya.
+  // Y al mes de no tocarlo nadie, también el documento.
+  assert.equal(await limpiar(store, utc('2026-12-09T03:00:02')), 0);
+  assert.equal(await limpiar(store, UN_MES_DESPUES), 1);
+  assert.deepEqual(store.claves('recordar/'), []);
+});
+
+test('limpiar: en pausa y ya sin nada pendiente: sin dispositivos se borra al mes de la pausa; con ellos despierta y cuenta lo que lleve sin tocarse', async () => {
+  const store = almacenFalso();
+  for (const uid of ['u1', 'u2', 'u3']) await guardar(store, uid, 0, { poner: { a: cosa('Leche') } });
+  assert.equal((await pasar(store, LAS_9 + 3000)).pausadas, 3);
+  await pasar(store, LAS_9 + 15 * MINUTOS); // Sus claves de la agenda, ya viejas, se quitan.
+  // Las tres marcan hecha su cosa desde la app, sin dispositivos (siguen en pausa): «u1» y «u2», el día 12; «u3», el mismo 10.
+  await guardar(store, 'u1', 1, { poner: { a: cosa('Leche', DIARIO, true) } }, utc('2026-11-12T10:00'));
+  await guardar(store, 'u2', 1, { poner: { a: cosa('Leche', DIARIO, true) } }, utc('2026-11-12T10:00'));
+  await guardar(store, 'u3', 1, { poner: { a: cosa('Leche', DIARIO, true) } }, utc('2026-11-10T10:00'));
+  assert.deepEqual(store.claves('limpieza/'), ['limpieza/20261210/u1', 'limpieza/20261210/u2', 'limpieza/20261210/u3']);
+  // «u2» y «u3» tienen dispositivo desde hace poco, pero nadie las despertó.
+  await conDispositivo(store, 'u2');
+  await conDispositivo(store, 'u3');
+  // El día 10: «u1» (sin dispositivos) se borra. «u2» y «u3» despiertan; «u3» no espera nada ni se toca desde hace un
+  // mes, y se borra en la misma limpieza (su clave de ahora es la misma que se está mirando); a «u2» le faltan dos días.
+  assert.equal(await limpiar(store, UN_MES_DESPUES), 2);
+  assert.deepEqual([store.claves('recordar/'), store.claves('limpieza/')], [['recordar/u2'], ['limpieza/20261212/u2']]);
+  assert.equal(store.json('recordar/u2').pausado, null);
+  assert.equal(await limpiar(store, utc('2026-12-12T03:00:02')), 1);
+  assert.deepEqual(store.claves().filter((clave) => !clave.startsWith('dispositivos/')), []);
+});
+
+test('limpiar: atiende a varias sesiones a la vez, pero no a todas; y de cada una mira el documento una vez, tenga las claves vencidas que tenga', async () => {
+  const store = almacenFalso();
+  for (let i = 0; i < 20; i += 1) await guardar(store, `u${i}`, 0, { poner: { a: cosa('Leche', DIARIO, true) } });
+  // «u0» se guardó además los dos días siguientes: tres claves, y solo la última dice cuándo caduca.
+  await guardar(store, 'u0', 1, {}, utc('2026-11-11T10:00'));
+  await guardar(store, 'u0', 1, {}, utc('2026-11-12T10:00'));
+  let ahoraMismo = 0;
+  let maximo = 0;
+  const lecturas = new Map();
+  const leerCon = store.getWithMetadata;
+  store.getWithMetadata = async (clave, opciones) => {
+    lecturas.set(clave, (lecturas.get(clave) || 0) + 1);
+    ahoraMismo += 1;
+    maximo = Math.max(maximo, ahoraMismo);
+    await new Promise((resolver) => { setTimeout(resolver, 5); });
+    ahoraMismo -= 1;
+    return leerCon(clave, opciones);
+  };
+  assert.equal(await limpiar(store, UN_MES_DESPUES), 19);
+  assert.equal(maximo, 6);
+  assert.deepEqual([store.claves('recordar/'), store.claves('limpieza/')], [['recordar/u0'], ['limpieza/20261211/u0', 'limpieza/20261212/u0']]);
+  lecturas.clear();
+  assert.equal(await limpiar(store, utc('2026-12-12T03:00:02')), 1);
+  assert.equal(lecturas.get('recordar/u0'), 1); // Dos claves vencidas, una sola mirada.
+  assert.deepEqual(store.claves(), []);
+});
+
+// ---------- Borrar: lo que se cruza con la limpieza ----------
+
+test('cruce al borrar: la app guarda entre que la limpieza mira el documento y lo borra: no se borra, y su aviso sale', async () => {
+  const store = almacenFalso();
+  await conDispositivo(store, 'u1');
+  const { nacido } = await guardar(store, 'u1', 0, { poner: { a: cosa('Leche', DIARIO, true) } });
+  // La limpieza ya ha leído el documento (un mes sin nada pendiente) y va a borrarlo. Justo entonces la app desmarca «a».
+  store.antesDeEscribir(/^recordar\//, async () => assert.equal((await guardar(store, 'u1', 1, { poner: { a: cosa('Leche') } }, UN_MES_DESPUES)).v, 2));
+  assert.equal(await limpiar(store, UN_MES_DESPUES), 0);
+  const doc = store.json('recordar/u1');
+  assert.deepEqual([doc.nacido, doc.v, doc.cosas, doc.prox], [nacido, 2, { a: cosa('Leche') }, { a: utc('2026-12-10T08:00') }]);
+  assert.ok(enAgenda(store, 'u1'));
+  // A su hora, el aviso sale. Y la clave de limpieza, que se quedó, no borra nada al día siguiente: se quita y ya.
+  assert.deepEqual((await pasar(store, utc('2026-12-10T08:00:02'))).enviados, ['u1:a']);
+  assert.deepEqual(store.claves('limpieza/'), ['limpieza/20261210/u1']);
+  assert.equal(await limpiar(store, utc('2026-12-11T03:00:02')), 0);
+  assert.deepEqual([store.claves('limpieza/'), store.claves('recordar/')], [[], ['recordar/u1']]);
+});
+
+test('cruce al borrar, en pausa: un alta que despierta la sesión cuando la limpieza va a borrarla la salva', async () => {
+  const store = almacenFalso();
+  await guardar(store, 'u1', 0, { poner: { a: cosa('Leche') } });
+  assert.equal((await pasar(store, LAS_9 + 3000)).pausadas, 1);
+  // Un mes después, la limpieza ya ha visto que sigue en pausa y sin dispositivos. Antes de que la borre, vuelve.
+  store.antesDeEscribir(/^recordar\//, async () => {
+    await conDispositivo(store, 'u1');
+    assert.equal(await despertar(store, 'u1', UN_MES_DESPUES), true);
+  });
+  assert.equal(await limpiar(store, UN_MES_DESPUES), 0);
+  assert.deepEqual([store.json('recordar/u1').pausado, store.json('recordar/u1').cosas], [null, { a: cosa('Leche') }]);
+  assert.ok(enAgenda(store, 'u1'));
+  // El aviso de hace un mes ya no sale (caducó); el de hoy, sí.
+  assert.deepEqual((await pasar(store, utc('2026-12-10T03:05:02'))).enviados, []);
+  assert.deepEqual((await pasar(store, utc('2026-12-10T08:00:02'))).enviados, ['u1:a']);
+});
+
+test('cruce al borrar: quien llega mientras la limpieza borra espera a que acabe en vez de escribir sobre lo que se va a quitar', async () => {
+  const store = almacenFalso();
+  await conDispositivo(store, 'u1');
+  const { nacido } = await guardar(store, 'u1', 0, { poner: { a: cosa('Leche', DIARIO, true) } });
+  // La limpieza ha cambiado el documento por su marca y va a quitarla. En ese instante se abre la app: lee que ya no
+  // hay documento y lo sube todo de nuevo, con «a» otra vez pendiente.
+  let app;
+  store.antesDeBorrar(/^recordar\/u1$/, async () => {
+    assert.deepEqual(store.json('recordar/u1'), { borrando: UN_MES_DESPUES }); // De los textos ya no queda nada.
+    assert.deepEqual(await leerRecordatorios(store, 'u1', UN_MES_DESPUES + 500), SIN_DOCUMENTO);
+    app = guardar(store, 'u1', 0, { poner: { a: cosa('Leche') } }, UN_MES_DESPUES + 500);
+    await new Promise((resolver) => { setTimeout(resolver, 30); });
+    // La app espera. Si hubiera escrito sobre la marca, la limpieza se lo llevaría ahora por delante, y con un 200 en la mano.
+    assert.deepEqual(store.json('recordar/u1'), { borrando: UN_MES_DESPUES });
+  });
+  assert.equal(await limpiar(store, UN_MES_DESPUES), 1);
+  // Borrado del todo, lo de la app entra: es otro documento, está en la agenda y avisa.
+  const otro = await app;
+  assert.deepEqual([otro.v, otro.rechazadas], [1, []]);
+  assert.notEqual(otro.nacido, nacido);
+  assert.deepEqual([store.json('recordar/u1').nacido, store.json('recordar/u1').cosas], [otro.nacido, { a: cosa('Leche') }]);
+  assert.ok(enAgenda(store, 'u1'));
+  assert.deepEqual((await pasar(store, utc('2026-12-10T08:00:02'))).enviados, ['u1:a']);
+});
+
+test('una limpieza que se corta entre la marca y el borrado: reciente, nadie escribe sobre ella; vieja, vale por «no hay documento»', async () => {
+  const cortada = async () => {
+    const store = almacenFalso();
+    await conDispositivo(store, 'u1');
+    await guardar(store, 'u1', 0, { poner: { a: cosa('Leche', DIARIO, true) } });
+    const borrar = store.delete;
+    store.delete = async () => { throw new Error('Se acabó el tiempo'); };
+    assert.equal(await callando(async () => assert.equal(await limpiar(store, UN_MES_DESPUES), 0)), 1);
+    store.delete = borrar;
+    assert.deepEqual([store.json('recordar/u1'), store.claves('limpieza/')], [{ borrando: UN_MES_DESPUES }, ['limpieza/20261210/u1']]);
+    return store;
+  };
+  // Mientras la marca es reciente (esa limpieza podría seguir viva), quien guarda espera y, si no desaparece, falla:
+  // la app lo repetirá. Ni «Hecho», ni otra limpieza a la vez, ni la pasada escriben sobre ella.
+  let store = await cortada();
+  const pronto = UN_MES_DESPUES + 30000;
+  await assert.rejects(() => guardar(store, 'u1', 0, { poner: { b: cosa('Pan') } }, pronto), /No se pudo guardar recordar\/u1/);
+  // Quien no tiene nada que escribir no espera: para él ya no hay documento (un «Hecho» que llega tarde, la app que escribía sobre su versión).
+  assert.equal(await marcarHecha(store, 'u1', 'a', pronto), false);
+  assert.deepEqual(await guardar(store, 'u1', 1, { poner: { b: cosa('Pan') } }, pronto), { conflicto: SIN_DOCUMENTO });
+  assert.equal(await limpiar(store, pronto), 0);
+  assert.deepEqual(await pasar(store, pronto), { enviados: [], sesiones: 0, avisos: 0, pausadas: 0 });
+  assert.deepEqual([store.json('recordar/u1'), store.claves('limpieza/')], [{ borrando: UN_MES_DESPUES }, ['limpieza/20261210/u1']]);
+  // Cinco minutos después esa limpieza ya no existe: la marca vale por «no hay documento» y se escribe sobre ella.
+  const tarde = UN_MES_DESPUES + 5 * MINUTOS;
+  assert.deepEqual(await leerRecordatorios(store, 'u1', tarde), SIN_DOCUMENTO);
+  assert.equal(await marcarHecha(store, 'u1', 'a', tarde), false);
+  assert.deepEqual(await guardar(store, 'u1', 1, { poner: { b: cosa('Pan') } }, tarde), { conflicto: SIN_DOCUMENTO });
+  const nuevo = await guardar(store, 'u1', 0, { poner: { b: cosa('Pan') } }, tarde);
+  assert.equal(nuevo.v, 1);
+  assert.deepEqual([store.json('recordar/u1').nacido, store.json('recordar/u1').cosas], [nuevo.nacido, { b: cosa('Pan') }]);
+  assert.ok(enAgenda(store, 'u1'));
+  // La clave de limpieza que quedó no borra el documento nuevo: al día siguiente se quita y ya.
+  assert.equal(await limpiar(store, utc('2026-12-11T03:00:02')), 0);
+  assert.deepEqual([store.claves('recordar/'), store.claves('limpieza/')], [['recordar/u1'], []]);
+  // Y si nadie escribe, la limpieza del día siguiente acaba lo que la otra dejó a medias.
+  store = await cortada();
+  assert.equal(await limpiar(store, utc('2026-12-11T03:00:02')), 1);
+  assert.deepEqual(store.claves(), ['dispositivos/u1/h1']);
 });
 
 test('tocaLimpiar: solo la pasada de las 03:00 (UTC), aunque arranque unos segundos antes o después', () => {

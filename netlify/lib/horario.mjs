@@ -31,6 +31,10 @@ export function recordatorioDe(bruto) {
 }
 
 const formatos = new Map(); // Un formateador por zona: crearlos es lo caro.
+// Cuántos se guardan como mucho. Zonas hay unos pocos cientos, pero cada una se puede escribir de mil maneras
+// («europe/madrid», «EUROPE/Madrid»: todas valen) y cada formateador ocupa decenas de KB: sin tope, quien enviara
+// una distinta cada vez llenaría la memoria de la función. Al llegar al tope se empieza de cero.
+export const MAX_FORMATOS = 300;
 
 function formatoDe(zona) {
   let formato = formatos.get(zona);
@@ -38,6 +42,7 @@ function formatoDe(zona) {
     formato = new Intl.DateTimeFormat('en-US', {
       timeZone: zona, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
     });
+    if (formatos.size >= MAX_FORMATOS) formatos.clear();
     formatos.set(zona, formato);
   }
   return formato;

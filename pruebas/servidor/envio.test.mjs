@@ -1,21 +1,26 @@
 /* Pruebas de netlify/lib/envio.mjs (las fichas, los mensajes push de los recordatorios y su envío), con un servicio
    push de mentira:  node --test --experimental-test-module-mocks pruebas/servidor/*.test.mjs */
 import assert from 'node:assert/strict';
+import { createECDH, randomBytes } from 'node:crypto';
 import { mock, test } from 'node:test';
 import { almacenFalso } from './almacen-falso.mjs';
 
 const enviados = []; // Lo que sale hacia los servicios push: { endpoint, aviso, opciones }.
 // Lo que responde cada dispositivo: nada (lo acepta), un código de estado, 'tarde' (no contesta a tiempo), 'sin-red',
-// o una función del aviso que dé una de esas cosas.
+// 'claves-de-la-funcion' (lo que falla son las claves VAPID, no el dispositivo), o una función del aviso que dé una de esas cosas.
 const respuestas = new Map();
 
 mock.module('web-push', {
   defaultExport: {
     generateVAPIDKeys: () => ({ publicKey: 'CLAVE-PUBLICA', privateKey: 'CLAVE-PRIVADA' }),
     sendNotification: async (suscripcion, aviso, opciones) => {
-      enviados.push({ endpoint: suscripcion.endpoint, aviso: JSON.parse(aviso), opciones });
       const dicho = respuestas.get(suscripcion.endpoint);
       const respuesta = typeof dicho === 'function' ? dicho(JSON.parse(aviso)) : dicho;
+      // Como el de verdad: antes de salir a la red comprueba las claves (las suyas y las del navegador) y, si no
+      // valen, lanza un error sin código de estado. De eso no sale nada hacia el servicio push.
+      if (respuesta === 'claves-de-la-funcion') throw new Error('Vapid private key should be 32 bytes long when decoded.');
+      if (!suscripcion.keys || Buffer.from(String(suscripcion.keys.p256dh), 'base64url').length !== 65) throw new Error('The subscription p256dh value should be 65 bytes long.');
+      enviados.push({ endpoint: suscripcion.endpoint, aviso: JSON.parse(aviso), opciones });
       if (respuesta === 'tarde') throw new Error('Socket timeout');
       if (respuesta === 'sin-red') throw Object.assign(new Error('getaddrinfo ENOTFOUND fcm.googleapis.com'), { code: 'ENOTFOUND' });
       if (respuesta) throw Object.assign(new Error('Received unexpected response code'), { statusCode: respuesta, body: 'no' });
@@ -25,7 +30,7 @@ mock.module('web-push', {
 });
 
 const {
-  avisoDe, dispositivosDe, enviarA, enviarRecordatorios, fichaCon, fichaValida, limpiar, llavesDe, mensajesDe, secretoDe,
+  avisoDe, dispositivosDe, enviarA, enviarRecordatorios, fichaCon, fichaValida, limpiar, llavesDe, mensajesDe, secretoDe, suscripcionRota,
 } = await import('../../netlify/lib/envio.mjs');
 const { CADUCA } = await import('../../netlify/lib/recordar.mjs');
 
@@ -33,13 +38,17 @@ const CLAVE = 'clave-de-prueba';
 const LLAVES = { claves: { publicKey: 'CLAVE-PUBLICA', privateKey: 'CLAVE-PRIVADA' }, secreto: CLAVE };
 const MOVIL = 'https://fcm.googleapis.com/fcm/send/movil';
 const TABLETA = 'https://web.push.apple.com/tableta';
+const INVENTADO = 'https://fcm.googleapis.com/fcm/send/inventado'; // El de un alta con claves que ningún navegador daría.
 const cosa = (id, texto = `Cosa ${id}`, de = 1000) => ({ id, texto, de });
+// Unas claves como las que da un navegador: un punto de la curva P-256 (65 bytes) y un secreto de 16.
+const CLAVES_DE_NAVEGADOR = { p256dh: createECDH('prime256v1').generateKeys().toString('base64url'), auth: randomBytes(16).toString('base64url') };
+const CLAVES_INVENTADAS = { p256dh: 'p', auth: 'a' };
 
 /** Un almacén con esos dispositivos dados de alta en «u1», como los deja la función de avisos: [store, dispositivos]. */
 async function conDispositivos(...endpoints) {
   const store = almacenFalso();
   for (const [i, endpoint] of endpoints.entries()) {
-    await store.setJSON(`dispositivos/u1/h${i}`, { endpoint, keys: { p256dh: 'p', auth: 'a' }, desde: 100 - i });
+    await store.setJSON(`dispositivos/u1/h${i}`, { endpoint, keys: endpoint === INVENTADO ? CLAVES_INVENTADAS : CLAVES_DE_NAVEGADOR, desde: 100 - i });
     await store.set(`suscripciones/h${i}`, 'u1');
   }
   return [store, await dispositivosDe(store, 'u1')];
@@ -204,6 +213,7 @@ test('enviarRecordatorios: qué se da por avisado según lo que responda cada di
     [500, 500, false, 2], // Los que merecen otro intento: no se confirma, y se repite.
     [503, null, true, 2],
     [429, 429, false, 2],
+    [408, 403, false, 2], // «Ahora no» (408, 429): como los 5xx, merece otro intento.
     ['tarde', 'tarde', false, 2],
     ['sin-red', 500, false, 2],
     [403, 400, true, 2], // Lo rechazan y lo seguirán rechazando: no hay nada que repetir.
@@ -223,6 +233,66 @@ test('enviarRecordatorios: qué se da por avisado según lo que responda cada di
     assert.deepEqual(salieron, ['movil:a', 'tableta:a'], caso);
     assert.equal(store.claves('dispositivos/u1/').length, quedan, caso);
     assert.equal(store.claves('suscripciones/').length, quedan, caso); // Al que se olvida, del todo.
+  }
+});
+
+test('suscripcionRota: la que no tiene las claves de un navegador (del tamaño que toca, y la pública en la curva)', () => {
+  const buena = { endpoint: MOVIL, keys: CLAVES_DE_NAVEGADOR };
+  assert.equal(suscripcionRota(buena), false);
+  assert.equal(suscripcionRota({ ...buena, desde: 7, keys: { ...CLAVES_DE_NAVEGADOR, auth: randomBytes(32).toString('base64url') } }), false);
+  // La misma clave escrita en base64 corriente (con + y /) también vale: web-push la lee igual.
+  assert.equal(suscripcionRota({ ...buena, keys: { ...CLAVES_DE_NAVEGADOR, p256dh: Buffer.from(CLAVES_DE_NAVEGADOR.p256dh, 'base64url').toString('base64') } }), false);
+  const comprimida = createECDH('prime256v1');
+  comprimida.generateKeys();
+  for (const [caso, rota] of Object.entries({
+    'claves inventadas': { ...buena, keys: CLAVES_INVENTADAS },
+    'sin claves': { endpoint: MOVIL },
+    'claves que no son texto': { ...buena, keys: { p256dh: 7, auth: {} } },
+    'pública vacía': { ...buena, keys: { ...CLAVES_DE_NAVEGADOR, p256dh: '' } },
+    '65 bytes que no son un punto de la curva': { ...buena, keys: { ...CLAVES_DE_NAVEGADOR, p256dh: Buffer.alloc(65, 7).toString('base64url') } },
+    'pública comprimida (33 bytes)': { ...buena, keys: { ...CLAVES_DE_NAVEGADOR, p256dh: comprimida.getPublicKey('base64url', 'compressed') } },
+    'secreto corto': { ...buena, keys: { ...CLAVES_DE_NAVEGADOR, auth: randomBytes(15).toString('base64url') } },
+    'sin dirección': { endpoint: '', keys: CLAVES_DE_NAVEGADOR },
+    'no es una suscripción': 'texto',
+    nada: null,
+  })) {
+    assert.equal(suscripcionRota(rota), true, caso);
+  }
+});
+
+test('enviarRecordatorios: a una suscripción que no sirve (claves inventadas) no se le reintenta nada: se olvida, y no cuenta como entregado', async () => {
+  const casos = [
+    // [lo que responde el móvil (el otro es el inventado), ¿avisado?, dispositivos que quedan]
+    [null, true, 1], // Al de verdad le llega.
+    [500, false, 1], // El de verdad merece otro intento: se repite, ya sin el inventado.
+    ['tarde', false, 1],
+    [403, true, 1],
+    [410, false, 0],
+  ];
+  for (const [movil, avisado, quedan] of casos) {
+    const [store, dispositivos] = await conDispositivos(MOVIL, INVENTADO);
+    respuestas.clear();
+    respuestas.set(MOVIL, movil);
+    const [entregadas, salieron] = await enviar(store, dispositivos, [cosa('a')]);
+    assert.deepEqual([entregadas, salieron], [avisado ? ['a'] : [], ['movil:a']], String(movil)); // Hacia el inventado no sale nada.
+    assert.deepEqual([store.claves('dispositivos/u1/').length, store.claves('suscripciones/').length], [quedan, quedan], String(movil));
+  }
+  // Si es el único, nada se da por avisado (antes se habría reintentado en balde seis horas, y la sesión parecería
+  // tener a quién avisar): sin dispositivos, a esa sesión le toca la pausa, y lo pendiente la espera.
+  const [store, dispositivos] = await conDispositivos(INVENTADO);
+  assert.deepEqual(await enviar(store, dispositivos, [cosa('a'), cosa('b', 'x'.repeat(2500))]), [[], []]);
+  assert.deepEqual(store.claves(), []);
+});
+
+test('enviarRecordatorios: lo que falla sin código de estado con la suscripción en regla merece otro intento, y no se olvida a nadie', async () => {
+  for (const fallo of ['claves-de-la-funcion', 'tarde', 'sin-red']) {
+    const [store, dispositivos] = await conDispositivos(MOVIL, TABLETA);
+    respuestas.clear();
+    respuestas.set(MOVIL, fallo);
+    respuestas.set(TABLETA, fallo);
+    // Ni se da por entregado (se perdería) ni es culpa de los dispositivos: siguen ahí para la pasada siguiente.
+    assert.deepEqual((await enviar(store, dispositivos, [cosa('a')]))[0], [], fallo);
+    assert.deepEqual([store.claves('dispositivos/u1/').length, store.claves('suscripciones/').length], [2, 2], fallo);
   }
 });
 
@@ -287,6 +357,15 @@ test('enviarA (los avisos de Cosas con y Cosas de): como siempre, a todos los di
   assert.deepEqual(enviados[0].opciones, { vapidDetails: { subject: 'https://cosas.info', publicKey: 'CLAVE-PUBLICA', privateKey: 'CLAVE-PRIVADA' }, TTL: 86400, urgency: 'normal', timeout: 8000 });
   assert.deepEqual(store.claves('dispositivos/u1/'), ['dispositivos/u1/h0']); // El que ya no existe se olvida.
   assert.equal(await enviarA(store, LLAVES.claves, 'nadie', '{}'), 0);
+  // Y el de claves inventadas, también; pero no si lo que falla es otra cosa.
+  const [otro] = await conDispositivos(MOVIL, INVENTADO, TABLETA);
+  respuestas.clear();
+  respuestas.set(TABLETA, 'sin-red');
+  const avisos = mock.method(console, 'warn', () => {});
+  assert.equal(await enviarA(otro, LLAVES.claves, 'u1', '{}'), 1);
+  assert.equal(avisos.mock.callCount(), 1); // Solo se queja del que no ha podido ser; al inventado lo quita sin más.
+  avisos.mock.restore();
+  assert.deepEqual(otro.claves('dispositivos/u1/'), ['dispositivos/u1/h0', 'dispositivos/u1/h2']);
   assert.equal(limpiar('  Comprar \n leche  '), 'Comprar leche');
   assert.equal(limpiar('x'.repeat(50)), `${'x'.repeat(39)}…`);
 });

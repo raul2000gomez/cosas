@@ -192,6 +192,10 @@ button {
    el botón que acaba de aparecer en la misma esquina. */
 :root[data-cambiando] .redondo { pointer-events: none; }
 
+/* Ni, en la página de Recordar, nada de su cuerpo: toda la fila fija de la lista es su enlace, y justo bajo ella
+   aparecen el check, el «−» y el recordatorio de la primera cosa. */
+:root[data-cambiando] [data-recordar] .cuerpo-grupo { pointer-events: none; }
+
 .redondo:active,
 .borrar:active,
 .hecho:active,
@@ -1506,6 +1510,10 @@ a.boton-ancho {
 /* Recién abierta (app.js), el panel no recibe toques: el segundo toque de un doble toque sobre lo que la abrió
    caería en uno de sus botones. */
 .hoja[data-abriendo] .hoja-panel { pointer-events: none; }
+
+/* Y recién cerrada una de las hojas de Recordar (app.js), tampoco la página: «Guardar», «Hecho» y «Mantener» quedan
+   justo sobre la barra de escribir, y el segundo toque caería en su campo, en el micrófono o en un enlace. */
+:root[data-hoja-cerrada] main { pointer-events: none; }
 
 @keyframes velar {
   from { opacity: 0; }

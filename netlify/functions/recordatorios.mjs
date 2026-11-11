@@ -11,8 +11,9 @@
    que ha llegado; lo demás lo repite la ejecución siguiente, y lo atrasado sale en cuanto se puede (hasta seis horas
    después; más tarde ya no). Ver ../lib/recordatorios.mjs.
 
-   Una vez al día (en la ejecución de las 03:00 UTC) borra además los documentos de las sesiones que llevan un mes
-   sin dispositivos a los que avisar. */
+   Una vez al día (en la ejecución de las 03:00 UTC) borra además los documentos que ya no hacen falta: los de las
+   sesiones que llevan un mes sin dispositivos a los que avisar y los que llevan un mes sin esperar ningún aviso (todo
+   hecho, o ya sin cosas) y sin que su dueño los toque. */
 
 import { almacen, dispositivosDe, enviarRecordatorios, llavesDe } from '../lib/envio.mjs';
 import { limpiar, pasada, tocaLimpiar } from '../lib/recordatorios.mjs';

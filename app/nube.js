@@ -440,6 +440,8 @@ export async function sesionDeAvisos(intento = 0) {
  */
 const ESPERA_RECORDATORIOS = 15000;
 const VUELTAS_RECORDATORIOS = 4;
+// La función no admite envíos de más de 100000 bytes (netlify/functions/avisos.mjs): con este margen, lo que no quepa en uno se reparte.
+const MAX_ENVIO = 90000;
 
 const firmaDe = (valor) => JSON.stringify(valor === undefined ? null : valor);
 
@@ -515,6 +517,30 @@ export function reconciliarRecordatorios(local, base, servidor, conocidas) {
     aplicar: { general: firmaDe(general) === firmaDe(local.general) ? undefined : general, cosas: aplicar },
     base: { general, cosas },
   };
+}
+
+const bytesDe = (valor) => new TextEncoder().encode(JSON.stringify(valor)).length;
+
+/**
+ * Lo que hay que decirle a la función (el «parche» de reconciliarRecordatorios), en los envíos que hagan falta para
+ * que ninguno pase de lo que ella admite: uno casi siempre, pero cien cosas de 500 letras con tilde ya no caben en
+ * uno, y rechazado entero no avisaría de ninguna. Lo que se quita y el de todas van en el primero; lo que hay que
+ * poner, repartido en orden. Sin parche (solo hay que decirle la zona), un envío sin nada más.
+ */
+function enviosDe(parche) {
+  if (!parche) return [{}];
+  const envios = [{ ...parche, poner: {} }];
+  let bytes = bytesDe(envios[0]);
+  for (const [id, cosa] of Object.entries(parche.poner)) {
+    const suyos = bytesDe(id) + bytesDe(cosa) + 2; // Con sus dos puntos y su coma.
+    if (bytes + suyos > MAX_ENVIO) {
+      envios.push({ poner: {}, quitar: [] });
+      bytes = 0;
+    }
+    envios[envios.length - 1].poner[id] = cosa;
+    bytes += suyos;
+  }
+  return envios;
 }
 
 /** La base guardada, si es de esta sesión y se entiende; si no, null (la primera vez, o tras entrar con otra cuenta). */
@@ -609,24 +635,30 @@ export async function sincronizarRecordatorios(app, intento = 0) {
     // Aunque no cambie nada más, si este dispositivo ha cambiado de zona horaria la función tiene que saberlo.
     const cambiaZona = servidor.nacido !== null && zona !== servidor.zona;
     let { nacido, v } = servidor;
-    if (resultado.parche || cambiaZona) {
-      const respuesta = await pedirAvisos(app.api, 'recordar', sesion, 'POST', { siV: servidor.v, zona, ...(resultado.parche || {}) });
+    let otraVuelta = false;
+    // En un envío o, si en uno no cabe, en varios seguidos: cada uno sobre la versión que deja el anterior.
+    for (const envio of resultado.parche || cambiaZona ? enviosDe(resultado.parche) : []) {
+      const respuesta = await pedirAvisos(app.api, 'recordar', sesion, 'POST', { siV: v, zona, ...envio });
       if (respuesta.estado === 409) {
         // Entretanto ha cambiado allí (otro dispositivo, o un «Hecho» en un aviso): se junta otra vez con lo que tiene.
         servidor = recordatoriosDelServidor(respuesta.datos, app.recordatorio);
-        continue;
+        otraVuelta = true;
+        break;
       }
       if (respuesta.estado !== 200 || !respuesta.datos || !Number.isInteger(respuesta.datos.v)) return null;
-      nacido = esTexto(respuesta.datos.nacido) && respuesta.datos.nacido ? respuesta.datos.nacido : null;
-      if (servidor.nacido !== null && nacido !== servidor.nacido) {
+      const escrito = esTexto(respuesta.datos.nacido) && respuesta.datos.nacido ? respuesta.datos.nacido : null;
+      if (nacido !== null && escrito !== nacido) {
         // Se ha escrito sobre un documento que no era el que se creía (aquel se borró y hay otro): se mira qué tiene y se junta de nuevas.
         base = null;
         servidor = await preguntar();
-        continue;
+        otraVuelta = true;
+        break;
       }
+      nacido = escrito;
       v = respuesta.datos.v;
       // Lo que la función no admite («rechazadas»: no le caben más) queda en la base como enviado: no se le repite sin fin.
     }
+    if (otraVuelta) continue;
     app.guardarBase({
       uid: sesion.uid,
       nacido,

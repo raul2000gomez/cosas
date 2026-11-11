@@ -7,7 +7,7 @@
      dispositivos/{uid}/{huella}   la suscripción push de uno de los dispositivos de esa sesión.
      suscripciones/{huella}        de quién es ahora ese dispositivo (avisa a una sola sesión). */
 
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createECDH, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getStore } from '@netlify/blobs';
 import webpush from 'web-push';
 import { CADUCA } from './recordar.mjs';
@@ -88,6 +88,46 @@ export async function olvidar(store, uid, h) {
   if ((await store.get(`suscripciones/${h}`)) === uid) await store.delete(`suscripciones/${h}`);
 }
 
+// La curva de las claves de los navegadores (P-256), con una clave propia cualquiera: sirve para ver si una clave
+// pública es de verdad un punto suyo. Se prepara una vez, al cargar: si no se pudiera, fallaría todo a la vista en
+// vez de parecer rota cada suscripción.
+const CURVA = createECDH('prime256v1');
+CURVA.generateKeys();
+
+/**
+ * ¿Es una suscripción a la que no se puede enviar nada, ni ahora ni nunca? Lo mismo que web-push le exige antes de
+ * salir a la red (y con sus mismas cuentas): las dos claves del navegador, del tamaño que toca, y que la pública sea
+ * un punto de la curva. El alta solo mira que estén (un navegador de verdad no da otras), así que cualquiera puede
+ * dar de alta unas inventadas. Se mira la suscripción y no el error con el que web-push la rechaza: igual de mudo
+ * (sin código de estado) falla si lo que está mal son las claves de la función, y eso no es culpa del dispositivo.
+ */
+export function suscripcionRota(suscripcion) {
+  if (!suscripcion || typeof suscripcion !== 'object' || typeof suscripcion.endpoint !== 'string' || !suscripcion.endpoint) return true;
+  const claves = suscripcion.keys;
+  if (!claves || typeof claves.p256dh !== 'string' || typeof claves.auth !== 'string') return true;
+  const publica = Buffer.from(claves.p256dh, 'base64url');
+  if (publica.length !== 65 || Buffer.from(claves.auth, 'base64url').length < 16) return true;
+  try {
+    CURVA.computeSecret(publica); // La cuenta que web-push hará con ella: solo sale si es un punto de la curva.
+    return false;
+  } catch (error) {
+    return true;
+  }
+}
+
+/**
+ * ¿Hay que olvidar ese dispositivo, visto el error con el que ha fallado un envío? Sí con 404 y 410 (el servicio push
+ * dice que esa suscripción ya no existe: se desactivaron las notificaciones o se borró la app) y sí cuando ni
+ * siquiera ha salido a la red porque la suscripción no sirve. A esa no le va a llegar nada nunca, y dejarla sería
+ * peor que quitarla: se reintentaría en balde en cada pasada y, mientras siga ahí, la sesión parece tener a quién
+ * avisar, así que ni se pone en pausa ni se limpia. Olvidada, pasa lo que tiene que pasar con quien no tiene
+ * dispositivos. (Un navegador de verdad no da claves así; y si las cambia, la app se da de alta con las nuevas.)
+ */
+function yaNoSirve(error, suscripcion) {
+  const estado = error && error.statusCode;
+  return estado === 404 || estado === 410 || (!Number.isInteger(estado) && suscripcionRota(suscripcion));
+}
+
 /** Envía ese aviso (el de una cosa nueva en una lista) a todos los dispositivos de esa sesión y devuelve a cuántos ha llegado. */
 export async function enviarA(store, claves, uid, aviso) {
   const { blobs } = await store.list({ prefix: `dispositivos/${uid}/` });
@@ -103,8 +143,8 @@ export async function enviarA(store, claves, uid, aviso) {
       });
       return 1;
     } catch (error) {
-      // 404 y 410: esa suscripción ya no existe (se desactivaron o se borró la app): se olvida.
-      if (error && (error.statusCode === 404 || error.statusCode === 410)) await olvidar(store, uid, key.split('/').pop());
+      // Esa suscripción ya no existe (404 y 410), o nunca sirvió: se olvida.
+      if (yaNoSirve(error, suscripcion)) await olvidar(store, uid, key.split('/').pop());
       else console.warn('No se pudo enviar un aviso', error && error.statusCode, error && error.body);
       return 0;
     }
@@ -191,9 +231,11 @@ export function mensajesDe(uid, cosas, clave) {
 const OPCIONES_DE_RECORDATORIO = { TTL: CADUCA / 1000, urgency: 'high', timeout: 5000 };
 
 /**
- * Envía ese mensaje a un dispositivo y dice cómo ha ido: 'ok'; 'baja' (404 y 410: esa suscripción ya no existe, y se
- * olvida); 'no' (el servicio push lo rechaza y lo seguirá rechazando); 'luego' (429, 5xx, sin respuesta o sin red:
- * merece otro intento). Nunca lanza.
+ * Envía ese mensaje a un dispositivo y dice cómo ha ido: 'ok'; 'baja' (404 y 410, o una suscripción que no sirve:
+ * ese dispositivo ya no cuenta, y se olvida); 'no' (el servicio push lo rechaza y lo seguirá rechazando); 'luego'
+ * (408, 429, 5xx, sin respuesta o sin red: merece otro intento). Lo que falla sin código de estado y con la suscripción
+ * en regla también es 'luego', sea lo que sea: un aviso que se repite de más molesta, uno que se da por entregado
+ * sin haber salido se pierde. Nunca lanza.
  */
 async function enviarUno(store, claves, uid, dispositivo, aviso) {
   try {
@@ -204,12 +246,13 @@ async function enviarUno(store, claves, uid, dispositivo, aviso) {
     return 'ok';
   } catch (error) {
     const estado = error && error.statusCode;
-    if (estado === 404 || estado === 410) {
+    if (yaNoSirve(error, dispositivo.suscripcion)) {
       await olvidar(store, uid, dispositivo.huella).catch((fallo) => console.warn('No se pudo olvidar un dispositivo', fallo));
       return 'baja';
     }
     console.warn('No se pudo enviar un recordatorio', estado || (error && error.message), error && error.body);
-    return Number.isInteger(estado) && estado < 500 && estado !== 429 ? 'no' : 'luego';
+    // 408 y 429 son un «ahora no» del servicio push, como los 5xx: lo demás por debajo de 500 es un «así, no».
+    return Number.isInteger(estado) && estado < 500 && estado !== 408 && estado !== 429 ? 'no' : 'luego';
   }
 }
 

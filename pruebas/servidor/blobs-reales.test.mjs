@@ -145,7 +145,8 @@ test('Netlify Blobs de verdad: sin dispositivos, pausa y clave de limpieza; desp
   await guardar('u3', 0, { poner: { a: cosa('Pan') } });
   const primera = await pasar(LAS_9 + 2000);
   assert.deepEqual([primera.enviados, primera.pausadas], [[], 2]);
-  assert.deepEqual(await claves('limpieza/'), ['limpieza/20261210/u2', 'limpieza/20261210/u3']);
+  // (La de «u1» es de la prueba de arriba: de cuando se quedó sin nada pendiente, antes de olvidar y volver a empezar.)
+  assert.deepEqual(await claves('limpieza/'), ['limpieza/20261210/u2', 'limpieza/20261210/u3', 'limpieza/20261211/u1']);
   assert.equal((await store.get('recordar/u2', { type: 'json' })).pausado, LAS_9 + 2000);
   // «u2» da de alta un dispositivo y despierta: lo de las 9:00 sale con retraso. «u3» no vuelve.
   assert.equal(await despertar(store, 'u2', LAS_9 + 20 * 60000), false);
@@ -158,6 +159,31 @@ test('Netlify Blobs de verdad: sin dispositivos, pausa y clave de limpieza; desp
   // Al mes: se borra el documento de «u3» y las dos claves de limpieza; el de «u2» sigue.
   assert.equal(await limpiar(store, utc('2026-12-09T03:00:01')), 0);
   assert.equal(await limpiar(store, utc('2026-12-10T03:00:01')), 1);
-  assert.deepEqual(await claves('limpieza/'), []);
-  assert.deepEqual((await claves('recordar/')).filter((clave) => clave !== 'recordar/u1'), ['recordar/u2']);
+  assert.deepEqual(await claves('limpieza/'), ['limpieza/20261211/u1']);
+  assert.deepEqual(await claves('recordar/'), ['recordar/u1', 'recordar/u2']);
+  // La clave que le quedaba a «u1» no borra su documento de ahora, que espera avisos: al llegar su día se quita y ya.
+  assert.equal(await limpiar(store, utc('2026-12-11T03:00:01')), 0);
+  assert.deepEqual([await claves('limpieza/'), await claves('recordar/')], [[], ['recordar/u1', 'recordar/u2']]);
+});
+
+test('Netlify Blobs de verdad: sin nada pendiente, clave de limpieza y borrado al mes (la marca, comparando, y después quitarla)', async () => {
+  await guardar('u4', 0, { poner: { a: cosa('Sal') } });
+  assert.equal(await marcarHecha(store, 'u4', 'a', LAS_9), true);
+  await guardar('u5', 0, { poner: { a: cosa('Agua', DIARIO, true) } });
+  assert.deepEqual(await claves('limpieza/'), ['limpieza/20261210/u4', 'limpieza/20261210/u5']);
+  // «u5» se toca el día 20 (la app guarda otra cosa hecha): cuenta desde entonces.
+  await guardar('u5', 1, { poner: { b: cosa('Vino', DIARIO, true) } }, utc('2026-11-20T10:00'));
+  assert.equal(await limpiar(store, utc('2026-12-10T03:00:01')), 1);
+  assert.equal(await store.get('recordar/u4'), null); // Ni el documento ni la marca.
+  assert.deepEqual([(await claves('recordar/')).filter((clave) => /u[45]$/.test(clave)), await claves('limpieza/')], [['recordar/u5'], ['limpieza/20261220/u5']]);
+  // Una marca que se quedó puesta (la limpieza se cortó): reciente, quien guarda no escribe sobre ella; la limpieza
+  // siguiente la quita, y entonces el documento que se guarda es nuevo.
+  const actual = await store.getWithMetadata('recordar/u5', { type: 'json' });
+  assert.equal((await store.setJSON('recordar/u5', { borrando: utc('2026-12-20T03:00:01') }, { onlyIfMatch: actual.etag })).modified, true);
+  assert.deepEqual(await leerRecordatorios(store, 'u5', utc('2026-12-20T03:00:02')), { nacido: null, v: 0, zona: 'UTC', general: null, cosas: {} });
+  await assert.rejects(() => guardar('u5', 0, { poner: { c: cosa('Pan') } }, utc('2026-12-20T03:00:02')), /No se pudo guardar/);
+  assert.equal(await limpiar(store, utc('2026-12-21T03:00:01')), 1);
+  assert.equal(await store.get('recordar/u5'), null);
+  const nuevo = await guardar('u5', 0, { poner: { c: cosa('Pan') } }, utc('2026-12-21T09:00'));
+  assert.deepEqual([nuevo.v, nuevo.nacido === actual.data.nacido], [1, false]);
 });

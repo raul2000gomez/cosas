@@ -33,6 +33,10 @@
    - «olvidar» borra el documento de la sesión y nada más (la app lo pide al desactivar las notificaciones en un
      dispositivo sin cuenta de Google). Una sesión que se queda sin dispositivos a los que avisar se pone sola en
      pausa; «alta», y leer o guardar los recordatorios, la despiertan.
+   - Nada de esto se guarda para siempre: el texto de una cosa se va en cuanto la app la quita («quitar»), y el
+     documento entero, a los treinta días de seguir en pausa o de no esperar ningún aviso sin que nadie lo toque (lo
+     borra la función programada). Si su dueño vuelve, GET dice que ya no hay documento («nacido» null) y la app lo
+     sube de nuevo.
 
    Lo guardado vive en Netlify Blobs (almacén «avisos»; ver también ../lib/envio.mjs y ../lib/recordatorios.mjs):
      enviados/{lista}              lo último ya avisado de esa lista: { idCosa: cuándo }. */
