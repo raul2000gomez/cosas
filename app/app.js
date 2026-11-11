@@ -32,6 +32,7 @@
   // La función de avisos mira cada cinco minutos a quién le toca: las horas se eligen de cinco en cinco.
   const PASO_MINUTOS = 5;
   const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  const DIAS_CORTOS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']; // En la fila de una cosa, cuando son tres o más.
   const ULTIMO_DIA_DE_TODOS = 28; // Del 29 en adelante no todos los meses llegan: avisa el último día.
   // Lo que admite la función de avisos de una sesión (netlify/lib/recordar.mjs).
   const MAX_RECORDADAS = 100;
@@ -479,6 +480,7 @@
    * Lo que se apunta en Recordar puede llevar un recordatorio: a qué hora y cada cuánto avisar. Se repite siempre,
    * hasta que la cosa está hecha:
    *   { hora: 'HH:MM', frec: 'dia' } | { …, frec: 'laborables' } | { …, frec: 'semana', dia: 0..6 } (0 = domingo)
+   *   | { …, frec: 'semana', dias: [0..6] } (dos días o más, sin repetir y de menor a mayor)
    *   | { …, frec: 'mes', diaMes: 1..31 } (en los meses más cortos, el último día)
    * Avisa la función de avisos (netlify/functions), con una notificación por cosa: nube.js le lleva los
    * recordatorios (y trae los que se pusieron en otro dispositivo con la misma sesión) y sw.js enseña cada aviso
@@ -490,11 +492,20 @@
    * avisos aún no ha dicho cuál tiene: ver aplicarDeLaNube).
    */
 
-  /** Un recordatorio con su forma exacta (la misma que en la función de avisos: mismos campos, mismo orden), o null. */
+  /**
+   * Un recordatorio con su forma exacta (la misma que en la función de avisos, netlify/lib/horario.mjs: mismos campos,
+   * mismo orden), o null. Uno semanal lleva sus días sin repetir y de menor a mayor; si es uno solo, en «dia», la
+   * forma de siempre (la que entienden también las versiones de antes de poder elegir varios).
+   */
   function recordatorioDe(bruto) {
     if (!bruto || typeof bruto !== 'object' || typeof bruto.hora !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(bruto.hora) || !FRECUENCIAS.includes(bruto.frec)) return null;
     const { hora, frec } = bruto;
-    if (frec === 'semana') return Number.isInteger(bruto.dia) && bruto.dia >= 0 && bruto.dia <= 6 ? { hora, frec, dia: bruto.dia } : null;
+    if (frec === 'semana') {
+      const lista = Array.isArray(bruto.dias) ? bruto.dias : [bruto.dia];
+      if (lista.length === 0 || lista.length > 7 || !lista.every((dia) => Number.isInteger(dia) && dia >= 0 && dia <= 6)) return null;
+      const dias = [...new Set(lista)].sort((a, b) => a - b);
+      return dias.length === 1 ? { hora, frec, dia: dias[0] } : { hora, frec, dias };
+    }
     if (frec === 'mes') return Number.isInteger(bruto.diaMes) && bruto.diaMes >= 1 && bruto.diaMes <= 31 ? { hora, frec, diaMes: bruto.diaMes } : null;
     return { hora, frec };
   }
@@ -588,10 +599,24 @@
   /** «9:05» (la hora, sin el cero de delante). */
   const horaLegible = (hora) => `${Number(hora.slice(0, 2))}:${hora.slice(3)}`;
 
-  /** Cada cuánto avisa: «cada día», «de lunes a viernes», «cada lunes», «el día 1 de cada mes». */
-  function cadaCuanto(r) {
+  /** Los días de un recordatorio semanal, de lunes a domingo (como se ven en la hoja). */
+  const diasDe = (r) => (r.dias || [r.dia]).slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
+
+  /** «lunes», «lunes y jueves», «lunes, miércoles y viernes». */
+  const enLista = (palabras) => (palabras.length < 2 ? palabras.join('') : `${palabras.slice(0, -1).join(', ')} y ${palabras[palabras.length - 1]}`);
+
+  /**
+   * Cada cuánto avisa: «cada día», «de lunes a viernes», «cada lunes», «cada lunes y jueves», «el día 1 de cada
+   * mes». Con «cortos», los días de la semana abreviados cuando son tres o más («cada lun, mié y vie»).
+   */
+  function cadaCuanto(r, cortos = false) {
     if (r.frec === 'laborables') return 'de lunes a viernes';
-    if (r.frec === 'semana') return `cada ${DIAS[r.dia]}`;
+    if (r.frec === 'semana') {
+      const dias = diasDe(r);
+      if (dias.length === 7) return 'todos los días';
+      if (dias.join() === '1,2,3,4,5') return 'de lunes a viernes';
+      return `cada ${enLista(dias.map((dia) => (cortos && dias.length > 2 ? DIAS_CORTOS : DIAS)[dia]))}`;
+    }
     if (r.frec === 'mes') return `el día ${r.diaMes} de cada mes`;
     return 'cada día';
   }
@@ -599,9 +624,9 @@
   /** Cuándo avisa, dicho de corrido: «cada día a las 9:05» («a la 1:00»). */
   const cuandoDe = (r) => `${cadaCuanto(r)} ${Number(r.hora.slice(0, 2)) === 1 ? 'a la' : 'a las'} ${horaLegible(r.hora)}`;
 
-  /** Y en corto, para la fila de la cosa: «9:00 · Cada día», «9:00 · Día 1 de cada mes». */
+  /** Y en corto, para la fila de la cosa: «9:00 · Cada día», «9:00 · Día 1 de cada mes», «9:00 · Cada lun, mié y vie». */
   function resumenDe(r) {
-    const cada = r.frec === 'mes' ? `día ${r.diaMes} de cada mes` : cadaCuanto(r);
+    const cada = r.frec === 'mes' ? `día ${r.diaMes} de cada mes` : cadaCuanto(r, true);
     return `${horaLegible(r.hora)} · ${cada.charAt(0).toLocaleUpperCase('es-ES')}${cada.slice(1)}`;
   }
 
@@ -1952,6 +1977,19 @@
     for (const radio of formularioRecordar.querySelectorAll(`input[name="${nombre}"]`)) radio.checked = radio.value === String(valor);
   }
 
+  /** Los días de la semana marcados en la hoja (0 = domingo). */
+  const diasElegidos = () => Array.from(formularioRecordar.querySelectorAll('input[name="dia"]:checked'), (casilla) => Number(casilla.value));
+
+  function elegirDias(dias) {
+    for (const casilla of formularioRecordar.querySelectorAll('input[name="dia"]')) casilla.checked = dias.includes(Number(casilla.value));
+  }
+
+  /** Al cambiar algo en la hoja. Los días se marcan y desmarcan, pero siempre queda alguno: el último no se desmarca. */
+  function alCambiarLaHoja(evento) {
+    if (evento.target.name === 'dia' && diasElegidos().length === 0) evento.target.checked = true;
+    pintarHojaRecordar();
+  }
+
   /** ¿Se están eligiendo las cosas una a una? (Solo desde la campana: desde una fila, la cosa ya está dicha.) */
   const eligiendo = () => recordandoA === null && radioElegido('alcance') === 'elegir';
 
@@ -1960,7 +1998,7 @@
     return recordatorioDe({
       hora: `${selectorHora.value}:${selectorMinuto.value}`,
       frec: radioElegido('frecuencia'),
-      dia: Number(radioElegido('dia')),
+      dias: diasElegidos(),
       diaMes: Number(selectorDiaMes.value),
     });
   }
@@ -2060,7 +2098,7 @@
     selectorMinuto.value = dosCifras(Math.floor(Number(r.hora.slice(3)) / PASO_MINUTOS) * PASO_MINUTOS);
     elegirRadio('frecuencia', r.frec);
     // Lo que no dice el recordatorio que se edita, por hoy: el día de la semana y el del mes.
-    elegirRadio('dia', r.frec === 'semana' ? r.dia : hoy.getDay());
+    elegirDias(r.frec === 'semana' ? diasDe(r) : [hoy.getDay()]);
     selectorDiaMes.value = String(r.frec === 'mes' ? r.diaMes : hoy.getDate());
     pintarHojaRecordar();
     abrirPanel(hojaRecordar, tituloHojaRecordar);
@@ -3634,7 +3672,7 @@
     botonConfigurar.addEventListener('click', () => abrirHojaRecordar());
     botonNotaRecordar.addEventListener('click', alPulsarNotaRecordar);
     formularioRecordar.addEventListener('submit', guardarHojaRecordar);
-    formularioRecordar.addEventListener('change', pintarHojaRecordar);
+    formularioRecordar.addEventListener('change', alCambiarLaHoja);
     botonQuitarRecordar.addEventListener('click', quitarDesdeLaHoja);
     botonCerrarHojaRecordar.addEventListener('click', alPulsarCierreDeHoja);
     veloHojaRecordar.addEventListener('click', alPulsarCierreDeHoja);

@@ -103,11 +103,46 @@ test('de lunes a viernes: se salta el fin de semana', () => {
   assert.equal(iso(proximoAviso(r, MADRID, utc('2026-11-15T12:00'))), '2026-11-16T07:00'); // Domingo.
 });
 
+test('recordatorioDe, cada semana con varios días: «dias» sin repetir y de menor a mayor; uno solo, con «dia», la forma de siempre', () => {
+  assert.equal(JSON.stringify(recordatorioDe({ dias: [4, 1], frec: 'semana', hora: '17:00' })), '{"hora":"17:00","frec":"semana","dias":[1,4]}');
+  assert.deepEqual(recordatorioDe({ hora: '17:00', frec: 'semana', dias: [0, 6, 0, 3, 6] }), { hora: '17:00', frec: 'semana', dias: [0, 3, 6] });
+  assert.deepEqual(recordatorioDe({ hora: '17:00', frec: 'semana', dias: [5] }), { hora: '17:00', frec: 'semana', dia: 5 });
+  assert.deepEqual(recordatorioDe({ hora: '17:00', frec: 'semana', dias: [3, 3] }), { hora: '17:00', frec: 'semana', dia: 3 });
+  assert.deepEqual(recordatorioDe({ hora: '17:00', frec: 'semana', dias: [0, 1, 2, 3, 4, 5, 6] }), { hora: '17:00', frec: 'semana', dias: [0, 1, 2, 3, 4, 5, 6] });
+  assert.deepEqual(recordatorioDe({ hora: '17:00', frec: 'semana', dia: 2, dias: [1, 4] }), { hora: '17:00', frec: 'semana', dias: [1, 4] }, 'Con los dos, manda la lista');
+  assert.deepEqual(recordatorioDe({ hora: '17:00', frec: 'dia', dias: [1, 4] }), { hora: '17:00', frec: 'dia' }, 'Fuera de «cada semana», los días sobran');
+  for (const dias of [[], [1, 7], [1, -1], [1, 2.5], ['1', 2], [1, null], [0, 1, 2, 3, 4, 5, 6, 0], 'lunes', { 0: 1 }]) {
+    assert.equal(recordatorioDe({ hora: '17:00', frec: 'semana', dias }), null, JSON.stringify(dias));
+  }
+});
+
 test('cada semana: ese día (0 = domingo)', () => {
   assert.equal(iso(proximoAviso({ hora: '10:00', frec: 'semana', dia: 2 }, MADRID, utc('2026-11-10T08:00'))), '2026-11-10T09:00'); // Martes, antes de la hora.
   assert.equal(iso(proximoAviso({ hora: '10:00', frec: 'semana', dia: 2 }, MADRID, utc('2026-11-10T09:00'))), '2026-11-17T09:00');
   assert.equal(iso(proximoAviso({ hora: '10:00', frec: 'semana', dia: 0 }, MADRID, utc('2026-11-10T09:00'))), '2026-11-15T09:00');
   assert.equal(iso(proximoAviso({ hora: '10:00', frec: 'semana', dia: 1 }, MADRID, utc('2026-11-10T09:00'))), '2026-11-16T09:00');
+});
+
+test('cada semana, varios días: el siguiente de ellos, y de uno a otro sin saltarse ninguno', () => {
+  const lunesYJueves = { hora: '17:00', frec: 'semana', dias: [1, 4] };
+  // El martes 10 de noviembre de 2026: el jueves; el jueves, antes de la hora, ese mismo día; después, el lunes.
+  assert.equal(iso(proximoAviso(lunesYJueves, MADRID, utc('2026-11-10T08:00'))), '2026-11-12T16:00');
+  assert.equal(iso(proximoAviso(lunesYJueves, MADRID, utc('2026-11-12T15:59'))), '2026-11-12T16:00');
+  assert.equal(iso(proximoAviso(lunesYJueves, MADRID, utc('2026-11-12T16:00'))), '2026-11-16T16:00');
+  let instante = utc('2026-11-09T00:00');
+  const seguidos = [];
+  for (let i = 0; i < 4; i += 1) seguidos.push(iso((instante = proximoAviso(lunesYJueves, MADRID, instante))));
+  assert.deepEqual(seguidos, ['2026-11-09T16:00', '2026-11-12T16:00', '2026-11-16T16:00', '2026-11-19T16:00']);
+  // El fin de semana: del viernes por la noche al sábado y al domingo.
+  const finde = { hora: '10:00', frec: 'semana', dias: [0, 6] };
+  assert.equal(iso(proximoAviso(finde, MADRID, utc('2026-11-13T20:00'))), '2026-11-14T09:00');
+  assert.equal(iso(proximoAviso(finde, MADRID, utc('2026-11-14T09:00'))), '2026-11-15T09:00');
+  assert.equal(iso(proximoAviso(finde, MADRID, utc('2026-11-15T09:00'))), '2026-11-21T09:00');
+  // Los siete días: como cada día.
+  const todos = { hora: '10:00', frec: 'semana', dias: [0, 1, 2, 3, 4, 5, 6] };
+  assert.equal(iso(proximoAviso(todos, MADRID, utc('2026-11-10T09:00'))), iso(proximoAviso({ hora: '10:00', frec: 'dia' }, MADRID, utc('2026-11-10T09:00'))));
+  // Y cruzan el cambio de hora sin moverse de su hora de reloj (el 25 de octubre de 2026 es domingo).
+  assert.equal(iso(proximoAviso({ hora: '08:00', frec: 'semana', dias: [0, 3] }, MADRID, utc('2026-10-22T07:00'))), '2026-10-25T07:00');
 });
 
 test('cada mes: ese día, o el último si el mes no llega', () => {

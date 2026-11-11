@@ -4,6 +4,7 @@
      { hora: 'HH:MM', frec: 'dia' }                  cada día
      { hora: 'HH:MM', frec: 'laborables' }           de lunes a viernes
      { hora: 'HH:MM', frec: 'semana', dia: 0..6 }    cada semana, ese día (0 = domingo, como Date)
+     { hora: 'HH:MM', frec: 'semana', dias: [0..6] } cada semana, esos días (dos o más, sin repetir, de menor a mayor)
      { hora: 'HH:MM', frec: 'mes', diaMes: 1..31 }   cada mes, ese día (o el último, si el mes no llega)
 
    La hora es la del reloj de quien lo puso: su zona horaria (IANA, «Europe/Madrid») viaja con sus recordatorios y
@@ -19,13 +20,28 @@ const esEntero = (v, minimo, maximo) => Number.isInteger(v) && v >= minimo && v 
 export const diasDelMes = (anio, mes) => new Date(Date.UTC(anio, mes, 0)).getUTCDate();
 
 /**
+ * Los días de un recordatorio semanal, sin repetir y de menor a mayor: los de «dias» (una lista) o, sin ella, el de
+ * «dia»; null si alguno no es un día de la semana o no hay ninguno.
+ */
+function diasDeLaSemana(bruto) {
+  const lista = Array.isArray(bruto.dias) ? bruto.dias : [bruto.dia];
+  if (lista.length === 0 || lista.length > 7 || !lista.every((dia) => esEntero(dia, 0, 6))) return null;
+  return [...new Set(lista)].sort((a, b) => a - b);
+}
+
+/**
  * El recordatorio con su forma exacta (solo sus campos, siempre en el mismo orden: así dos iguales dan el mismo
- * JSON), o null si no es válido.
+ * JSON), o null si no es válido. Uno semanal de un solo día lleva «dia», aunque llegue como una lista de uno: es la
+ * forma de siempre, la que entienden también las versiones de la app de antes de poder elegir varios.
  */
 export function recordatorioDe(bruto) {
   if (!bruto || typeof bruto !== 'object' || typeof bruto.hora !== 'string' || !HORA.test(bruto.hora) || !FRECUENCIAS.includes(bruto.frec)) return null;
   const { hora, frec } = bruto;
-  if (frec === 'semana') return esEntero(bruto.dia, 0, 6) ? { hora, frec, dia: bruto.dia } : null;
+  if (frec === 'semana') {
+    const dias = diasDeLaSemana(bruto);
+    if (!dias) return null;
+    return dias.length === 1 ? { hora, frec, dia: dias[0] } : { hora, frec, dias };
+  }
   if (frec === 'mes') return esEntero(bruto.diaMes, 1, 31) ? { hora, frec, diaMes: bruto.diaMes } : null;
   return { hora, frec };
 }
@@ -93,7 +109,7 @@ export function instanteDe(zona, anio, mes, dia, hora, minuto) {
 
 function tocaEseDia(r, anio, mes, dia, diaSemana) {
   if (r.frec === 'laborables') return diaSemana >= 1 && diaSemana <= 5;
-  if (r.frec === 'semana') return diaSemana === r.dia;
+  if (r.frec === 'semana') return r.dias ? r.dias.includes(diaSemana) : diaSemana === r.dia;
   if (r.frec === 'mes') return dia === Math.min(r.diaMes, diasDelMes(anio, mes));
   return true; // Cada día.
 }

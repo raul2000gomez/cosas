@@ -909,7 +909,7 @@ button {
   gap: 8px;
 }
 
-/* Una opción: el radio de verdad va encima, transparente, y la pastilla se rellena al elegirla. */
+/* Una opción: el radio (o la casilla, en los días de la semana) de verdad va encima, transparente, y la pastilla se rellena al elegirla. */
 .pastilla {
   position: relative;
   display: block;

@@ -57,7 +57,7 @@ Publicada en https://cosas-app.netlify.app
   con y Cosas de quitan los avisos de una lista al verla.
 - **Recordar** — el grupo fijo, arriba de la lista (`#acceso-recordar`; su pantalla, `#grupo/recordar`). A
   cada cosa que se apunta en él se le puede poner un **recordatorio**: una hora (de cinco en cinco minutos)
-  y cada cuánto (**Cada día**, **De lunes a viernes**, **Cada semana**, un día, o **Cada mes**, un día del
+  y cada cuánto (**Cada día**, **De lunes a viernes**, **Cada semana**, uno o varios días, o **Cada mes**, un día del
   mes: en los meses más cortos, el último), de una en una, a varias o a todas. Siempre se repite, hasta que
   la cosa se da por hecha. A su hora llega un aviso por cada cosa, con **Hecho** (la marca, y no se vuelve
   a avisar de ella) y **Mantener** (se volverá a avisar cuando toque). Donde los avisos no tienen botones
