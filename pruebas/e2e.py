@@ -1264,6 +1264,213 @@ def t_deshacer_con_foco(e):
     igual(p.evaluate("() => document.activeElement.id"), "titulo-lista", "Foco tras cerrarse el aviso que lo tenía")
 
 
+# ----------------------------------------------------------------------------
+# Cambiar el texto de una cosa (se toca y se escribe ahí mismo)
+# ----------------------------------------------------------------------------
+
+# Lo que se ve de la edición: en qué texto se escribe (si se escribe en alguno), la marca de la raíz, la visibilidad de
+# las barras de abajo de la vista abierta, el aro de la fila y el de foco.
+JS_EDICION = r"""() => {
+  const activo = document.activeElement;
+  const enTexto = Boolean(activo && activo.matches('.fila .texto'));
+  const vista = [...document.querySelectorAll('.vista')].find((v) => v.checkVisibility());
+  return {
+    escribiendo: enTexto ? activo.textContent : null,
+    editando: document.documentElement.hasAttribute('data-editando'),
+    barras: vista ? [...vista.querySelectorAll('.barra')].map((b) => getComputedStyle(b).visibility) : [],
+    aro: enTexto ? getComputedStyle(activo.closest('.fila')).boxShadow : null,
+    foco: enTexto ? getComputedStyle(activo).outlineStyle : null,
+  };
+}"""
+
+
+def edicion(pagina):
+    return pagina.evaluate(JS_EDICION)
+
+
+def texto_de(fila):
+    return fila.locator(".texto")
+
+
+def texto_por_id(pagina, id):
+    """El texto de la fila de esa cosa en la vista abierta (por su id: sigue siendo ella aunque cambie lo que dice)."""
+    return pagina.locator(f'.vista:not([hidden]) .lista li[data-id="{id}"] .texto')
+
+
+def escribir_en(pagina, texto, nuevo, insertar=False):
+    """Toca el texto de una fila, lo selecciona entero y escribe «nuevo» encima (con «insertar», de una vez: como al pegar)."""
+    texto.tap()
+    esperar(pagina, "(t) => document.activeElement === t", arg=texto.element_handle(), que="se escribe en el texto tocado")
+    pagina.keyboard.press("Control+A")
+    if insertar:
+        pagina.keyboard.insert_text(nuevo)
+    else:
+        pagina.keyboard.type(nuevo)
+
+
+def textos_guardados(pagina):
+    return {c["id"]: c["texto"] for c in leer_estado(pagina)["cosas"]}
+
+
+def sin_editar(pagina, que):
+    ed = edicion(pagina)
+    igual((ed["escribiendo"], ed["editando"]), (None, False), f"{que}: ya no se escribe en ninguna fila")
+    comprobar(all(v == "visible" for v in ed["barras"]), f"{que}: las barras de abajo vuelven: {ed['barras']}")
+
+
+@prueba("cambiar el texto de una cosa: se toca y se escribe ahí mismo (con un aro en la fila y la barra de abajo apartada); Intro o salir lo guarda y la cosa sigue en su sitio; Escape lo deja como estaba, y vacío también; en una línea, sin espacios de más y hasta 500 caracteres; con el teclado, igual")
+def t_editar_texto(e):
+    p = sembrar(e, estado_con([cosa(3, "Comprar pan"), cosa(2, "Regar las plantas", hecha=True), cosa(1, "Llamar a Ana")]), ruta="#lista")
+    esperar_filas(p, 3)
+    texto = texto_de(fila_de(p, "Comprar pan"))
+    igual(texto.evaluate("(t) => [t.isContentEditable, t.contentEditable, t.getAttribute('enterkeyhint'), t.getAttribute('autocapitalize')]"),
+          [True, "plaintext-only", "done", "sentences"], "El texto se puede escribir (solo texto) y el Intro del teclado dice «hecho»")
+    sin_editar(p, "Antes de tocar nada")
+    escribir_en(p, texto, "Comprar pan integral")
+    ed = edicion(p)
+    igual((ed["escribiendo"], ed["editando"], ed["barras"], ed["foco"]), ("Comprar pan integral", True, ["hidden"], "none"),
+          "Mientras se escribe: la raíz lo sabe, la barra de «Crear grupo» se aparta y no hay aro de foco")
+    comprobar("0px 0px 0px 2px inset" in ed["aro"], f"La fila que se escribe no lleva su aro: {ed['aro']}")
+    igual(textos_guardados(p)["id-3"], "Comprar pan", "Mientras se escribe aún no se guarda")
+    p.keyboard.press("Enter")
+    sin_editar(p, "Tras Intro")
+    igual((textos_guardados(p)["id-3"], textos_lista(p)), ("Comprar pan integral", ["Comprar pan integral", "Llamar a Ana", "Regar las plantas"]),
+          "Intro lo guarda y la cosa sigue en su sitio (sin salto de línea)")
+    esperar_sin_toast(p, ms=500)  # Sin aviso: el texto nuevo ya se ve en la fila.
+
+    # Salir del texto (tocar en otro sitio) también lo guarda.
+    texto = texto_de(fila_de(p, "Llamar a Ana"))
+    texto.tap()
+    p.keyboard.press("End")
+    p.keyboard.type(" mañana")
+    p.locator("#titulo-lista").tap()
+    sin_editar(p, "Tras tocar fuera")
+    igual(textos_guardados(p)["id-1"], "Llamar a Ana mañana", "Al salir del texto se guarda")
+
+    # Escape lo deja como estaba (en una hecha, que sigue hecha).
+    texto = texto_de(fila_de(p, "Regar las plantas"))
+    escribir_en(p, texto, "Otra cosa")
+    p.keyboard.press("Escape")
+    sin_editar(p, "Tras Escape")
+    igual((texto.text_content(), textos_guardados(p)["id-2"], leer_estado(p)["cosas"][1]["hecha"]), ("Regar las plantas", "Regar las plantas", True),
+          "Escape deja el texto como estaba")
+
+    # Vacío: se queda como estaba (para quitarla está la papelera).
+    texto = texto_de(fila_de(p, "Comprar pan integral"))
+    texto.tap()
+    p.keyboard.press("Control+A")
+    p.keyboard.press("Backspace")
+    p.locator("#titulo-lista").tap()
+    sin_editar(p, "Tras dejarlo vacío")
+    igual((texto.text_content(), textos_guardados(p)["id-3"]), ("Comprar pan integral", "Comprar pan integral"), "Vacío, el texto se queda como estaba")
+
+    # Lo pegado: en una línea y sin espacios de más; y hasta 500 caracteres.
+    texto = texto_por_id(p, "id-1")
+    escribir_en(p, texto, "  Llamar\na   Ana\tel lunes  ", insertar=True)
+    p.keyboard.press("Enter")
+    sin_editar(p, "Tras pegar con saltos")
+    igual((textos_guardados(p)["id-1"], texto.text_content()), ("Llamar a Ana el lunes", "Llamar a Ana el lunes"), "Lo pegado queda en una línea, sin espacios de más")
+    escribir_en(p, texto, "x" * 600, insertar=True)
+    p.keyboard.press("Enter")
+    igual((textos_guardados(p)["id-1"], texto.text_content()), ("x" * 500, "x" * 500), "Hasta 500 caracteres, como al apuntarla")
+
+    # Con el teclado: el texto está en el orden del tabulador, entre el check y la papelera.
+    check_de(fila_de(p, "Comprar pan integral")).focus()
+    p.keyboard.press("Tab")
+    igual(edicion(p)["escribiendo"], "Comprar pan integral", "Tras el check, el tabulador lleva al texto")
+    p.keyboard.press("End")
+    p.keyboard.type(" y leche")
+    p.keyboard.press("Enter")
+    igual(textos_guardados(p)["id-3"], "Comprar pan integral y leche", "Con el teclado, Intro lo guarda")
+    sin_editar(p, "Tras Intro con el teclado")
+
+    # El check sigue siendo el check, y la cosa cambiada se marca como cualquier otra.
+    check_de(fila_de(p, "Comprar pan integral y leche")).tap()
+    esperar(p, "() => JSON.parse(localStorage.getItem('cosas:v1')).cosas.find((c) => c.id === 'id-3').hecha === true", que="la cosa cambiada se marca como hecha")
+    p.reload()
+    esperar_filas(p, 3)
+    igual(sorted(textos_lista(p)), sorted(["x" * 500, "Comprar pan integral y leche", "Regar las plantas"]), "Tras recargar, los textos nuevos")
+
+
+@prueba("cambiar el texto en la página de un grupo, en un grupo desplegado de la lista y en Recordar (en las hechas también); el desplegable de «Añadir cosas» no se escribe; mientras se escribe, deslizar desde el texto no vuelve, y cambiar de vista lo guarda")
+def t_editar_texto_en_grupos(e):
+    datos = estado_con([cosa(4, "Bombillas", grupo="g-casa"), cosa(3, "Pan"), cosa(2, "Pagar la luz", grupo="recordar"), cosa(1, "Sal", grupo="g-casa", hecha=True, hecha_en=1_700_000_000_100)],
+                       grupos=[grupo(9, "Casa", id="g-casa", abierto=True), dict(GRUPO_RECORDAR)])
+    p = sembrar(e, datos, ruta="#lista")
+    esperar_filas(p, 2)
+    # En el grupo desplegado de la lista.
+    anidado = p.locator("#lista-cosas .anidada .texto", has_text="Bombillas")
+    escribir_en(p, anidado, "Bombillas LED")
+    p.keyboard.press("Enter")
+    igual(textos_guardados(p)["id-4"], "Bombillas LED", "Se cambia desde el grupo desplegado de la lista")
+    # Mientras se escribe, deslizar desde el texto no vuelve a la pantalla principal (sin escribir, sí: t_deslizar_volver).
+    pan = texto_de(fila_de(p, "Pan"))
+    pan.tap()
+    caja = pan.bounding_box()
+    deslizar(p, (caja["x"] + caja["width"] / 2, caja["y"] + caja["height"] / 2), -120, pausa=40)
+    p.wait_for_timeout(400)
+    igual(vista_visible(p), "lista", "Deslizar desde el texto en el que se escribe no vuelve")
+    # Volver con lo escrito a medias: se guarda.
+    p.keyboard.press("End")
+    p.keyboard.type(" de molde")
+    p.get_by_role("button", name="Volver", exact=True).tap()
+    esperar_vista(p, "inicio")
+    sin_editar(p, "Tras volver con lo escrito a medias")
+    igual(textos_guardados(p)["id-3"], "Pan de molde", "Al cambiar de vista, lo escrito se guarda")
+    # En la página del grupo: también la hecha; el desplegable de «Añadir cosas» es para añadir, no se escribe.
+    abrir_lista(p)
+    p.wait_for_timeout(400)
+    abrir_grupo(p, "Casa")
+    sal = texto_de(p.locator("#lista-grupo > li").filter(has_text="Sal"))
+    escribir_en(p, sal, "Sal gorda")
+    ed = edicion(p)
+    igual((ed["escribiendo"], ed["barras"]), ("Sal gorda", ["hidden"]), "En el grupo, la barra de «Añadir cosas» se aparta mientras se escribe")
+    p.keyboard.press("Enter")
+    igual(textos_guardados(p)["id-1"], "Sal gorda", "Se cambia en la página del grupo (una hecha)")
+    sin_editar(p, "Tras Intro en el grupo")
+    p.locator("#anadir-cosas").tap()
+    esperar(p, "() => document.querySelectorAll('#lista-candidatas > li').length === 1", que="el desplegable enseña la cosa suelta")
+    igual(p.evaluate("() => [...document.querySelectorAll('#lista-candidatas .texto')].map((t) => t.isContentEditable)"), [False], "Las del desplegable no se escriben")
+    # Con el desplegable abierto, Escape en el texto (con el teclado: tocar fuera ya lo cierra) solo deshace lo escrito.
+    bombillas = texto_por_id(p, "id-4")
+    bombillas.focus()
+    p.keyboard.press("Control+A")
+    p.keyboard.type("Otra")
+    p.keyboard.press("Escape")
+    igual((bombillas.text_content(), p.locator("#anadir-cosas").get_attribute("aria-expanded")), ("Bombillas LED", "true"), "Escape deshace lo escrito y el desplegable sigue abierto")
+    # En Recordar.
+    p.get_by_role("button", name="Volver", exact=True).tap()
+    esperar_vista(p, "lista")
+    p.wait_for_timeout(400)
+    p.locator("#acceso-recordar").tap()
+    esperar_vista(p, "grupo")
+    luz = texto_de(p.locator("#lista-grupo > li").filter(has_text="Pagar la luz"))
+    escribir_en(p, luz, "Pagar la luz y el agua")
+    p.keyboard.press("Enter")
+    igual(textos_guardados(p)["id-2"], "Pagar la luz y el agua", "Se cambia en Recordar")
+    igual(p.locator("#lista-grupo > li").filter(has_text="Pagar la luz y el agua").locator(".cuando-texto").text_content(), "Poner recordatorio", "La fila de Recordar sigue con su botón de recordatorio")
+
+
+@prueba("cambiar el texto con otra pestaña abierta: lo cambiado en una se ve en la otra; lo que se está escribiendo no se pisa y, al repintarse la lista, se guarda sobre lo de la otra")
+def t_editar_texto_dos_pestanas(e):
+    contexto = e.contexto()
+    a = sembrar(e, estado_con([cosa(2, "Leche"), cosa(1, "Huevos")]), ruta="#lista", contexto=contexto)
+    b = e.pagina("#lista", contexto=contexto)
+    esperar_filas(a, 2)
+    esperar_filas(b, 2)
+    escribir_en(a, texto_de(fila_de(a, "Leche")), "Leche sin lactosa")
+    a.keyboard.press("Enter")
+    esperar(b, "() => [...document.querySelectorAll('#lista-cosas .texto')].map((t) => t.textContent).join() === 'Leche sin lactosa,Huevos'", que="la otra pestaña ve el texto nuevo")
+    # B está escribiendo en «Huevos» cuando A marca «Leche»: B repinta la lista y lo escrito se guarda sobre lo de A.
+    escribir_en(b, texto_de(fila_de(b, "Huevos")), "Huevos camperos")
+    check_de(fila_de(a, "Leche sin lactosa")).tap()
+    esperar(b, "() => JSON.parse(localStorage.getItem('cosas:v1')).cosas.map((c) => c.texto + ':' + c.hecha).sort().join() === 'Huevos camperos:false,Leche sin lactosa:true'",
+            que="lo escrito en B y lo marcado en A, los dos guardados")
+    esperar(b, "() => [...document.querySelectorAll('#lista-cosas .texto')].map((t) => t.textContent).join() === 'Huevos camperos,Leche sin lactosa'", que="B enseña los dos cambios")
+    sin_editar(b, "B, tras repintarse la lista")
+    esperar(a, "() => [...document.querySelectorAll('#lista-cosas .texto')].map((t) => t.textContent).join() === 'Huevos camperos,Leche sin lactosa'", que="A ve lo escrito en B")
+
+
 @prueba("estado vacío: «No tienes cosas apuntadas.» centrado y discreto")
 def t_lista_vacia(e):
     p = e.pagina()
@@ -6848,13 +7055,15 @@ def t_recordar_pagina(e):
                   f"El recordatorio no ocupa su propia línea bajo el texto, alineado con él y dentro de la fila: {d}")
         igual((d["ultimo"], d["tipo"], d["pildora"], d["dedo"], d["desborde"] <= 0), (True, "button", True, [True, True], True), "El recordatorio: el último de la fila, un botón en píldora con 44 px de alto para el dedo, sin desbordar")
         comprobar(cuando["alto"] >= 32 and d["fuente"] >= 14, f"El recordatorio es demasiado pequeño para leerse: {d}")
-    # El orden del tabulador sigue al de la vista: check, «−» y, el último, el recordatorio; después, la fila siguiente.
+    # El orden del tabulador sigue al de la vista: check, texto (se cambia escribiendo en él), «−» y, el último, el
+    # recordatorio; después, la fila siguiente.
     check_de(fila_recordada(p, "Llamar al dentista")).focus()
     orden = []
-    for _ in range(4):
+    for _ in range(5):
         p.keyboard.press("Tab")
-        orden.append(p.evaluate("() => [document.activeElement.getAttribute('aria-label'), document.activeElement.closest('li').querySelector('.texto').textContent]"))
-    igual(orden, [["Quitar de Recordar", "Llamar al dentista"], ["Recordatorio: cada día a las 9:00. Cambiar", "Llamar al dentista"], ["Marcar como hecha", "Sacar la basura"], ["Quitar de Recordar", "Sacar la basura"]],
+        orden.append(p.evaluate("() => { const a = document.activeElement; return [a.matches('.texto') ? 'texto' : a.getAttribute('aria-label'), a.closest('li').querySelector('.texto').textContent]; }"))
+    igual(orden, [["texto", "Llamar al dentista"], ["Quitar de Recordar", "Llamar al dentista"], ["Recordatorio: cada día a las 9:00. Cambiar", "Llamar al dentista"],
+                  ["Marcar como hecha", "Sacar la basura"], ["texto", "Sacar la basura"]],
           "Orden de tabulación en las filas de Recordar")
     # Un grupo cualquiera abierto después: su lápiz, su nota y sus filas de siempre; y de vuelta en Recordar, otra vez la campana.
     p2 = sembrar_recordar(e, estado_recordar([recordada(3, "Recordada"), cosa(2, "En Casa", grupo="g-5")], grupos=[grupo(5, "Casa"), grupo(4, "Vacío")]), ruta="#lista")
@@ -9497,6 +9706,41 @@ def t_recordar_nube_varios_dias(e):
         sin_mas_llamadas(p, funcion, "Tras el cambio, nada más que enviar")
     finally:
         funcion.cerrar()
+
+
+@prueba("cambiar el texto con sesión: viaja por la nube al otro dispositivo, que lo ve en su página abierta sin pisar lo que se está escribiendo allí (y si allí se acaba de escribir, gana lo de allí); en Recordar llega también a la función de avisos: los avisos dicen lo nuevo")
+def t_editar_texto_en_la_nube(e):
+    nube, api = NubeFalsa(), ApiRecordarFalsa()
+    movil, tableta = ENDPOINT_PRUEBA + "movil", ENDPOINT_PRUEBA + "tableta"
+    datos = estado_recordar([recordada(2, "Llamar al dentista"), recordada(1, "Sacar la basura")])
+    a = abrir_con_recordar(dispositivo_con_recordar(e, api, usuario="u1", endpoint=movil, nube=nube), e, datos, recordar_guardado(cosas={"id-2": recordatorio()}), sesion="u1", endpoint=movil, cuenta=True)
+    esperar_nube(a, "al-dia")
+    esperar_envios(a, api, 1)
+    esperar_base(a, "el móvil sube su recordatorio", v=1)
+    b = abrir_con_recordar(dispositivo_con_recordar(e, api, usuario="u1", endpoint=tableta, nube=nube), e, sesion="u1", endpoint=tableta, cuenta=True)
+    esperar_recordadas(b, "a la tableta le llegan las cosas y el recordatorio", textos=["Llamar al dentista", "Sacar la basura"], cuandos=["9:00 · Cada día", "Poner recordatorio"])
+    esperar_base(b, "la tableta se queda con lo que tiene la función", v=1)
+    envios = len(api.envios())
+    # En el móvil se cambia: a la nube, a la función (con el recordatorio de siempre) y a la página abierta de la tableta.
+    escribir_en(a, texto_por_id(a, "id-2"), "Llamar al dentista para la revisión")
+    a.keyboard.press("Enter")
+    esperar_en_la_nube(a, nube, lambda d: d["c-id-2"]["texto"] == "Llamar al dentista para la revisión", "el texto nuevo llega a la nube")
+    esperar_envios(a, api, envios + 1)
+    igual(api.envios()[envios]["cuerpo"]["poner"], {"id-2": recordada_enviada("Llamar al dentista para la revisión")}, "Lo que se le cuenta a la función: el texto nuevo, con su recordatorio")
+    esperar_base(a, "la función guarda el texto nuevo", v=2)
+    igual(api.de_la_sesion("u1")["cosas"]["id-2"]["texto"], "Llamar al dentista para la revisión", "La función tiene el texto nuevo (el de los avisos)")
+    esperar_recordadas(b, "la tableta ve el texto nuevo en su página abierta", textos=["Llamar al dentista para la revisión", "Sacar la basura"], cuandos=["9:00 · Cada día", "Poner recordatorio"])
+    # En la tableta se está escribiendo en «Sacar la basura» cuando el móvil la cambia: lo que se escribe no se pisa.
+    escribir_en(b, texto_por_id(b, "id-1"), "Sacar la basura y el vidrio")
+    escribir_en(a, texto_por_id(a, "id-1"), "Sacar la basura orgánica")
+    a.keyboard.press("Enter")
+    esperar_guardado(b, "(s) => s.cosas.find((c) => c.id === 'id-1').texto === 'Sacar la basura orgánica'", "a la tableta le llega lo del móvil")
+    b.wait_for_timeout(300)
+    igual(edicion(b)["escribiendo"], "Sacar la basura y el vidrio", "En la tableta sigue lo que se está escribiendo")
+    b.keyboard.press("Enter")  # Y gana: es lo último que se ha escrito.
+    esperar_en_la_nube(b, nube, lambda d: d["c-id-1"]["texto"] == "Sacar la basura y el vidrio", "lo de la tableta llega a la nube")
+    esperar_recordadas(a, "el móvil ve lo de la tableta", textos=["Llamar al dentista para la revisión", "Sacar la basura y el vidrio"], cuandos=["9:00 · Cada día", "Poner recordatorio"])
+    sin_editar(b, "La tableta, tras Intro")
 
 
 @prueba("recordatorios entre dos dispositivos de la misma cuenta: las cosas viajan por la nube y sus recordatorios por la función de avisos; el que se pone en uno aparece en la fila del otro, y al revés; el de todas puesto en uno pasa a ser el de todas en el otro; el que se quita en uno se quita en el otro; y un «Hecho» pulsado en un aviso marca el check en los dos")

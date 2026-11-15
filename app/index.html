@@ -425,12 +425,13 @@
 
   <noscript><p class="sin-js">Cosas necesita JavaScript para funcionar.</p></noscript>
 
+  <!-- Una cosa de la lista: check, texto y papelera. El texto se cambia tocándolo (app.js: editable, solo texto). -->
   <template id="plantilla-fila">
     <li class="fila">
       <button type="button" class="hecho" data-accion="alternar" aria-pressed="false" aria-label="Marcar como hecha">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 7 10 16.5 5 12"/></svg>
       </button>
-      <p class="texto"></p>
+      <p class="texto" contenteditable="plaintext-only" enterkeyhint="done" autocapitalize="sentences"></p>
       <button type="button" class="borrar" data-accion="eliminar" aria-label="Eliminar">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9.5 7V5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2M6.5 7l.8 11.2a2 2 0 0 0 2 1.8h5.4a2 2 0 0 0 2-1.8L17.5 7M10 11v5M14 11v5"/></svg>
       </button>
@@ -457,13 +458,13 @@
     </li>
   </template>
 
-  <!-- Una cosa en la página de su grupo: check y «Quitar del grupo». -->
+  <!-- Una cosa en la página de su grupo: check y «Quitar del grupo». Su texto, como en la lista, se cambia tocándolo. -->
   <template id="plantilla-miembro">
     <li class="fila">
       <button type="button" class="hecho" data-accion="alternar" aria-pressed="false" aria-label="Marcar como hecha">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 7 10 16.5 5 12"/></svg>
       </button>
-      <p class="texto"></p>
+      <p class="texto" contenteditable="plaintext-only" enterkeyhint="done" autocapitalize="sentences"></p>
       <button type="button" class="borrar quitar" data-accion="quitar" aria-label="Quitar del grupo">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14"/></svg>
       </button>
@@ -479,7 +480,7 @@
       <button type="button" class="hecho" data-accion="alternar" aria-pressed="false" aria-label="Marcar como hecha">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 7 10 16.5 5 12"/></svg>
       </button>
-      <p class="texto"></p>
+      <p class="texto" contenteditable="plaintext-only" enterkeyhint="done" autocapitalize="sentences"></p>
       <button type="button" class="borrar quitar" data-accion="quitar" aria-label="Quitar de Recordar">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14"/></svg>
       </button>

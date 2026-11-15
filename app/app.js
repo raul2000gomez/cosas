@@ -742,6 +742,7 @@
   function mostrarVista(nombre, opciones = {}) {
     const { animar = true, enfocar = true } = opciones;
     const anterior = vistaActual;
+    acabarEdicion(); // Lo que se estaba escribiendo en una fila se guarda antes de que deje de verse.
     vistaActual = nombre;
 
     if (anterior === 'inicio' && nombre !== 'inicio') escrituraInicio.campo.blur();
@@ -1157,9 +1158,17 @@
   function crearFila(cosa, plantilla) {
     const fila = plantilla.content.firstElementChild.cloneNode(true);
     fila.dataset.id = cosa.id;
-    fila.querySelector('.texto').textContent = cosa.texto; // Nunca innerHTML con texto del usuario.
+    const texto = fila.querySelector('.texto');
+    texto.textContent = cosa.texto; // Nunca innerHTML con texto del usuario.
+    if (!SOLO_TEXTO && texto.hasAttribute('contenteditable')) texto.contentEditable = 'true';
     pintarFila(fila, cosa.hecha);
     return fila;
+  }
+
+  /** El texto de una fila, al día (se puede cambiar en otro dispositivo); el que se está escribiendo no se toca. */
+  function pintarTexto(fila, cosa) {
+    const texto = fila.querySelector('.texto');
+    if (texto.textContent !== cosa.texto && !(edicion && edicion.texto === texto)) texto.textContent = cosa.texto;
   }
 
   function aparecer(fila) {
@@ -1172,6 +1181,7 @@
     const existente = filasPorId.get(cosa.id);
     if (existente && existente.parentElement === contenedor && !existente.classList.contains('saliendo')) {
       pintarFila(existente, cosa.hecha);
+      pintarTexto(existente, cosa);
       return existente;
     }
     // Estaba en otro sitio (otro grupo, el desplegable…): si no se está yendo con su animación, se quita.
@@ -1255,6 +1265,9 @@
     if (vistaActual === 'lista') sincronizarLista();
     else sincronizarGrupo();
     if (medidas) deslizarFilas(medidas);
+    // La cosa que se estaba escribiendo se ha ido (la han borrado o cambiado de grupo en otro dispositivo), o su fila
+    // ha cambiado de sitio y el navegador le ha quitado el foco: lo escrito se guarda y la edición acaba.
+    if (edicion && (!edicion.texto.isConnected || edicion.texto.closest('.saliendo') || document.activeElement !== edicion.texto)) acabarEdicion();
   }
 
   /** Anima la salida de la fila y la quita del DOM al terminar. */
@@ -1325,6 +1338,100 @@
   /** Intro mantenido sobre un botón de una lista no repite la pulsación fila tras fila. */
   function alTeclearEnLista(evento) {
     if (evento.repeat && evento.key === 'Enter' && evento.target.closest('button')) evento.preventDefault();
+  }
+
+  // ---------- Cambiar el texto de una cosa ----------
+
+  /*
+   * El texto de una cosa se cambia ahí mismo: se toca y se escribe (es editable, solo texto: lo que se pega llega sin
+   * formato). Intro, o salir de él, lo guarda; Escape lo deja como estaba. Si se queda vacío, también se queda como
+   * estaba: para quitar una cosa está la papelera. Mientras se escribe, la fila lleva un aro y las barras de abajo se
+   * apartan (styles.css: data-editando), que el teclado ya ocupa ese sitio. En Recordar, el texto nuevo llega también
+   * a la función de avisos (guardarEstado: los avisos dirán lo que dice ahora la cosa).
+   */
+  const SOLO_TEXTO = (() => {
+    const prueba = document.createElement('p');
+    try {
+      prueba.contentEditable = 'plaintext-only';
+    } catch (error) {
+      return false; // Navegadores de antes (Firefox hasta 2025): editable sin más; el formato pegado se quita al guardar.
+    }
+    return prueba.contentEditable === 'plaintext-only';
+  })();
+
+  let edicion = null; // { id, texto: el <p> en el que se escribe, escrito: si se ha tocado algo }
+
+  const esTextoEditable = (elemento) => elemento instanceof Element && elemento.matches('.fila .texto[contenteditable]');
+
+  function alEntrarEnTexto(evento) {
+    if (!esTextoEditable(evento.target)) return;
+    const fila = evento.target.closest('.fila');
+    if (!estado.cosas.some((cosa) => cosa.id === fila.dataset.id)) return;
+    edicion = { id: fila.dataset.id, texto: evento.target, escrito: false };
+    raiz.setAttribute('data-editando', '');
+  }
+
+  /** Lo escrito, como se guarda: en una línea, sin espacios en las puntas y hasta el máximo. '' si no se ha tocado. */
+  function textoEscrito() {
+    if (!edicion.escrito) return '';
+    // innerText, y no textContent: un salto de línea pegado es un <br> (o un bloque) y separa palabras.
+    return textoLimpio(edicion.texto.innerText.replace(/\s+/g, ' '), MAX_TEXTO);
+  }
+
+  /** Guarda lo escrito, si cambia algo (la edición sigue). */
+  function guardarTexto() {
+    if (!edicion) return;
+    const cosa = estado.cosas.find((candidata) => candidata.id === edicion.id);
+    const nuevo = textoEscrito();
+    if (!cosa || !nuevo || nuevo === cosa.texto) return;
+    cosa.texto = nuevo;
+    if (!guardarEstado()) avisarFallo();
+  }
+
+  /** Acaba la edición sin guardar nada: la fila vuelve al texto de la cosa, limpio (sin saltos, espacios duros ni formato pegado). */
+  function cerrarEdicion() {
+    if (!edicion) return;
+    const { id, texto } = edicion;
+    edicion = null;
+    raiz.removeAttribute('data-editando');
+    const cosa = estado.cosas.find((candidata) => candidata.id === id);
+    if (cosa && texto.textContent !== cosa.texto) texto.textContent = cosa.texto;
+    if (document.activeElement === texto) texto.blur();
+  }
+
+  /** Guarda lo escrito y acaba la edición. */
+  function acabarEdicion() {
+    guardarTexto();
+    cerrarEdicion();
+  }
+
+  function alSalirDeTexto(evento) {
+    if (edicion && evento.target === edicion.texto) acabarEdicion();
+  }
+
+  function alEscribirTexto(evento) {
+    if (edicion && evento.target === edicion.texto) edicion.escrito = true;
+  }
+
+  function alTeclearEnTexto(evento) {
+    if (!edicion || evento.target !== edicion.texto || evento.isComposing) return;
+    if (evento.key === 'Escape') {
+      evento.preventDefault();
+      evento.stopPropagation(); // Solo deshace lo escrito: el desplegable de «Añadir cosas», si está abierto, sigue.
+      edicion.escrito = false;
+      acabarEdicion();
+    } else if (evento.key === 'Enter') {
+      evento.preventDefault();
+      acabarEdicion();
+    }
+  }
+
+  /** Un salto de línea (Intro en el teclado del móvil, que no siempre dice qué tecla es) también lo guarda. */
+  function alIrAEscribirEnTexto(evento) {
+    if (!edicion || evento.target !== edicion.texto) return;
+    if (evento.inputType !== 'insertParagraph' && evento.inputType !== 'insertLineBreak') return;
+    evento.preventDefault();
+    acabarEdicion();
   }
 
   // ---------- Lista ----------
@@ -2571,8 +2678,10 @@
     soltarTiron();
     if (evento.touches.length !== 1 || evento.currentTarget !== vistas[vistaActual] || !AL_DESLIZAR[vistaActual]) return;
     if (cambiandoVista || volviendo || panelAbierto || conZoom()) return;
-    // En las barras de abajo y en los campos de texto (el nombre), el dedo es para escribir.
-    if (evento.target.closest('.barra') || esCampoDeTexto(evento.target)) return;
+    // En las barras de abajo y en los campos de texto (el nombre, o la cosa cuyo texto se escribe), el dedo es para
+    // escribir. El texto de una fila, mientras no se escribe en él, es una fila más: desde él se desliza igual.
+    const escribiendo = esCampoDeTexto(evento.target) && (!esTextoEditable(evento.target) || (edicion !== null && edicion.texto === evento.target));
+    if (evento.target.closest('.barra') || escribiendo) return;
     const { clientX: x, clientY: y } = evento.touches[0];
     if (x < BORDE_DEL_SISTEMA || x > window.innerWidth - BORDE_DEL_SISTEMA) return;
     tiron = { vista: vistaActual, x, y, inicio: performance.now(), horizontal: null };
@@ -3521,7 +3630,7 @@
   // ---------- Teclado en pantalla ----------
 
   const esCampoDeTexto = (elemento) =>
-    Boolean(elemento && elemento.matches && elemento.matches('input:not([type="radio"]):not([type="color"])'));
+    Boolean(elemento && elemento.matches && (elemento.matches('input:not([type="radio"]):not([type="color"])') || elemento.isContentEditable));
 
   /** iOS no encoge la página con el teclado: se mide con visualViewport y se suben las barras. */
   function medirTeclado() {
@@ -3558,8 +3667,16 @@
 
   /** Vuelve a leer el almacenamiento (otra pestaña lo ha cambiado) y repinta. */
   function recargarEstado() {
+    // La lista se repinta entera: lo que se estaba escribiendo en una fila se guarda sobre lo que ha dejado la otra pestaña.
+    const escrito = edicion && textoEscrito() ? { id: edicion.id, texto: textoEscrito() } : null;
+    cerrarEdicion();
     estado = leerEstado();
     recordar = leerRecordar();
+    const escrita = escrito && estado.cosas.find((cosa) => cosa.id === escrito.id);
+    if (escrita && escrita.texto !== escrito.texto) {
+      escrita.texto = escrito.texto;
+      if (!guardarEstado()) avisarFallo();
+    }
     consolidarRescate();
     if (nube) nube.cambio();
     if (accionAviso) ocultarAviso();
@@ -3646,6 +3763,13 @@
     }
     listaEl.addEventListener('click', alPulsarLista);
     listaEl.addEventListener('keydown', alTeclearEnLista);
+    for (const lista of [listaEl, listaGrupo]) {
+      lista.addEventListener('focusin', alEntrarEnTexto);
+      lista.addEventListener('focusout', alSalirDeTexto);
+      lista.addEventListener('input', alEscribirTexto);
+      lista.addEventListener('keydown', alTeclearEnTexto);
+      lista.addEventListener('beforeinput', alIrAEscribirEnTexto);
+    }
     accesoRecordar.addEventListener('click', alPulsarRecordar);
     toast.addEventListener('click', alPulsarAviso);
     toast.addEventListener('focusin', pausarAviso);
@@ -3705,6 +3829,8 @@
     document.addEventListener('visibilitychange', alVolverALaApp);
     window.addEventListener('pageshow', (evento) => { if (evento.persisted) recargarEstado(); });
     window.addEventListener('pagehide', guardarDatosPersonales);
+    window.addEventListener('pagehide', guardarTexto);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) guardarTexto(); }); // Sin salir de la fila.
     window.addEventListener('pagehide', cancelarDictado);
     document.addEventListener('visibilitychange', () => { if (document.hidden) cancelarDictado(); });
     // iOS solo aplica :active al tocar si existe algún oyente táctil (pasivo: no frena nada).

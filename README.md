@@ -6,7 +6,9 @@ Publicada en https://cosas-app.netlify.app
 
 ## Carpetas
 
-- `app/` — la app. Es lo único que se publica. En la pantalla de inicio, deslizar el dedo abre el
+- `app/` — la app. Es lo único que se publica. El texto de una cosa se cambia tocándolo, en la lista,
+  en un grupo y en Recordar: Intro, o tocar fuera, lo guarda, y Escape (o dejarlo vacío) lo deja como
+  estaba. En Recordar, los avisos dicen ya lo nuevo. En la pantalla de inicio, deslizar el dedo abre el
   botón de la esquina de la que se tira (hacia la derecha, la lista; hacia la izquierda, los
   ajustes), sin nada que se mueva ni se marque; en la lista y en los ajustes, el gesto de vuelta
   (hacia la izquierda en la lista, hacia la derecha en los ajustes) es «Volver». En esas vistas el

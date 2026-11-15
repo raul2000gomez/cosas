@@ -591,6 +591,20 @@ button {
 /* Hecha: el check en verde y el texto atenuado (sin tachar: se sigue leyendo bien). */
 .fila.hecha .texto { opacity: .65; }
 
+/* El texto de una cosa se cambia tocándolo (app.js). Mientras se escribe, la fila lleva un aro (el de foco sobraría:
+   ya lo marca el aro) y las barras de abajo se apartan: el teclado ocupa ese sitio y taparían la fila. */
+.texto[contenteditable] {
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.texto[contenteditable]:focus { outline: none; }
+
+.fila:has(> .texto:focus) { box-shadow: inset 0 0 0 2px var(--tinta); }
+
+:root[data-editando] .barra { visibility: hidden; }
+
 /* Check pendiente: gris neutro sobre superficie clara, se lee gris en cualquier fondo. */
 .hecho {
   flex: none;
