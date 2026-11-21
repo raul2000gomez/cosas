@@ -2295,7 +2295,7 @@ def t_xss(e):
     p.reload()
     esperar_filas(p, 1)
     p.wait_for_timeout(200)
-    igual(p.evaluate("() => document.querySelectorAll('main img, main script, main b').length"), 0, "Elementos inyectados tras recargar")
+    igual(p.evaluate("() => document.querySelectorAll('main img:not(.foto-cosa > img):not(.foto-barra > img), main script, main b').length"), 0, "Elementos inyectados tras recargar")
     igual(p.evaluate("() => window.__xss"), None, "Se ejecutó código inyectado")
 
 
@@ -5718,7 +5718,7 @@ def t_grupo_xss_y_largos(e):
         p.wait_for_timeout(400)
     p.reload()
     esperar_filas(p, 5)
-    igual(p.evaluate("() => document.querySelectorAll('main img, main script, main b').length + (window.__xss || 0)"), 0, "Código inyectado tras recargar")
+    igual(p.evaluate("() => document.querySelectorAll('main img:not(.foto-cosa > img):not(.foto-barra > img), main script, main b').length + (window.__xss || 0)"), 0, "Código inyectado tras recargar")
 
 
 @prueba("500 cosas y 50 grupos (la mitad abiertos): la lista y la página de un grupo se pintan rápido y marcar sigue siendo ágil")
@@ -8268,7 +8268,8 @@ def t_recordar_xss_y_largos(e):
     palabra = "A" * 200
     datos = estado_recordar([recordada(3, XSS), recordada(2, largo), recordada(1, palabra)])
     propios = recordar_guardado(cosas={"id-3": recordatorio("21:30", "semana", dia=3)})
-    inyectado = "() => [document.querySelectorAll('main img, main script, main b, .hoja img, .hoja script, .hoja b').length, window.__xss === undefined]"
+    # (Las <img> de las fotos, en las filas, en las cámaras y en su hoja, son de la app: no cuentan.)
+    inyectado = "() => [document.querySelectorAll('main img:not(.foto-cosa > img):not(.foto-barra > img), main script, main b, .hoja img:not(#imagen-hoja-foto), .hoja script, .hoja b').length, window.__xss === undefined]"
     for ancho, alto in ((e.ancho, e.alto), (320, 568)):
         p = sembrar_recordar(e, datos, propios, contexto=e.contexto(viewport={"width": ancho, "height": alto}))
         esperar_vista(p, "grupo")
