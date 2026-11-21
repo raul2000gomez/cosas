@@ -12,6 +12,17 @@
   const TINTA_CLARA = '#FFFFFF';
   const MAX_TEXTO = 500;
   const MAX_NOMBRE = 60;
+  // La foto de cada cosa. La pequeña (para su fila) va dentro de la cosa, en localStorage y en la nube; la grande vive
+  // en este dispositivo (IndexedDB) y, con sesión, en su propio documento de la nube. Firestore admite hasta 1 MiB por
+  // documento: 600 KB de JPEG en base64 caben de sobra. Se prueba de mayor a menor hasta que cabe.
+  const LADOS_FOTO = [1600, 1280, 1024];
+  const CALIDADES_FOTO = [0.82, 0.7];
+  const MAX_BYTES_FOTO = 600 * 1024;
+  // Lado y calidad de la pequeña: la fila la enseña a 44px. Va en cada cosa, en localStorage (y en la base de la nube):
+  // pequeña de verdad, unos 4 KB, para que quepan cientos.
+  const MINIS = [[128, 0.7], [96, 0.6]];
+  const MAX_MINI = 30000; // Caracteres de la pequeña (data:…): lo que admiten las reglas de la nube, con margen.
+  const MAX_V_FOTO = 40;
   // La cuenta de Google con la que se ha entrado ({ nombre, correo }). La escriben las páginas de
   // Cosas con, Cosas de y Tu cuenta (mismo dominio); la app solo la lee para enseñarla.
   const CLAVE_CUENTA = 'cosascon:cuenta';
@@ -148,6 +159,15 @@
   const veloHojaGrupo = $('#velo-hoja-grupo');
   const tituloHojaGrupo = $('#titulo-hoja-grupo');
   const botonCerrarHojaGrupo = $('#cerrar-hoja-grupo');
+  const hojaFoto = $('#hoja-foto');
+  const veloHojaFoto = $('#velo-hoja-foto');
+  const tituloHojaFoto = $('#titulo-hoja-foto');
+  const botonCerrarHojaFoto = $('#cerrar-hoja-foto');
+  const imagenHojaFoto = $('#imagen-hoja-foto');
+  const notaHojaFoto = $('#nota-hoja-foto');
+  const botonCambiarFoto = $('#cambiar-foto');
+  const botonQuitarFoto = $('#quitar-foto');
+  const entradaFoto = $('#elegir-foto');
   const formularioEdicion = $('#formulario-edicion');
   const campoNombreGrupo = $('#nombre-grupo');
   const muestrasGrupo = $('#muestras-grupo');
@@ -186,16 +206,19 @@
   const plantillaToast = $('#plantilla-toast');
   const menosMovimiento = window.matchMedia('(prefers-reduced-motion: reduce)');
 
-  /** Una barra de escribir: campo, micrófono y enviar (los dos últimos comparten hueco). */
+  /** Una barra de escribir: campo, cámara, micrófono y enviar (los dos últimos comparten hueco). «foto», la que se ha
+   *  puesto para lo que se va a apuntar. */
   function barraDeEscribir(formulario) {
     const campoBarra = formulario.querySelector('.campo');
     return {
       formulario,
       pildora: formulario.querySelector('.pildora'),
       campo: campoBarra,
+      camara: formulario.querySelector('.foto-barra'),
       micro: formulario.querySelector('.micro'),
       enviar: formulario.querySelector('.enviar'),
       marcador: campoBarra.placeholder,
+      foto: null,
     };
   }
 
@@ -285,6 +308,16 @@
     return id;
   }
 
+  /** La foto de una cosa ({ v, mini, ancho, alto }: «v» la identifica y cambia al cambiarla; «mini», la pequeña), o null. */
+  function fotoDe(bruta) {
+    if (!bruta || typeof bruta !== 'object') return null;
+    const { v, mini, ancho, alto } = bruta;
+    const valida = typeof v === 'string' && v !== '' && v.length <= MAX_V_FOTO
+      && typeof mini === 'string' && mini.startsWith('data:image/') && mini.length <= MAX_MINI
+      && Number.isInteger(ancho) && ancho > 0 && Number.isInteger(alto) && alto > 0;
+    return valida ? { v, mini, ancho, alto } : null;
+  }
+
   /** Devuelve una cosa válida o null; nunca lanza. */
   function normalizarCosa(bruta, idsVistos) {
     if (!bruta || typeof bruta !== 'object') return null;
@@ -292,6 +325,7 @@
     if (!texto) return null;
     const hecha = bruta.hecha === true;
     const creada = Number.isFinite(bruta.creada) ? bruta.creada : Date.now();
+    const foto = fotoDe(bruta.foto);
     return {
       id: idDe(bruta, idsVistos),
       texto,
@@ -300,6 +334,7 @@
       // Las hechas de la versión 1 no saben cuándo se marcaron: se toma la creación (orden estable).
       hechaEn: hecha ? (Number.isFinite(bruta.hechaEn) ? bruta.hechaEn : creada) : null,
       grupo: typeof bruta.grupo === 'string' && bruta.grupo !== '' ? bruta.grupo : null,
+      ...(foto ? { foto } : {}), // Sin foto, ni la clave: lo guardado queda como antes de las fotos.
     };
   }
 
@@ -751,10 +786,14 @@
     if (anterior === 'grupo') cerrarCandidatas();
     if (accionAviso) ocultarAviso();
     cancelarDictado();
-    // Lo que quedó a medio escribir en la página de un grupo era para ese grupo: no pasa a otro.
-    if (anterior === 'grupo') vaciarBarra(escrituraGrupo);
+    // Lo que quedó a medio escribir en la página de un grupo (y su foto) era para ese grupo: no pasa a otro.
+    if (anterior === 'grupo') {
+      vaciarBarra(escrituraGrupo);
+      soltarFotoDeBarra(escrituraGrupo);
+    }
     cerrarHoja(false); // El foco lo coloca la vista que llega.
     cerrarHojaGrupo(false);
+    cerrarHojaFoto(false);
     cerrarHojaRecordar(false);
     cerrarHojaAvisada(false);
 
@@ -978,9 +1017,17 @@
     if (barra === escrituraGrupo && !grupo) return;
 
     const id = nuevoId();
+    const { foto } = barra;
     if (esRecordar(grupo)) asegurarRecordar();
-    estado.cosas.unshift({ id, texto, hecha: false, creada: marcaDeTiempo(ultimaCreacion()), hechaEn: null, grupo: grupo ? grupo.id : null });
+    estado.cosas.unshift({
+      id, texto, hecha: false, creada: marcaDeTiempo(ultimaCreacion()), hechaEn: null, grupo: grupo ? grupo.id : null,
+      ...(foto ? { foto: resumenDeFoto(foto) } : {}),
+    });
     const correcto = guardarEstado();
+    if (foto) {
+      guardarFotoGrande(id, foto);
+      soltarFotoDeBarra(barra);
+    }
 
     barra.campo.value = '';
     ultimoEnvio = performance.now();
@@ -1162,7 +1209,20 @@
     texto.textContent = cosa.texto; // Nunca innerHTML con texto del usuario.
     if (!SOLO_TEXTO && texto.hasAttribute('contenteditable')) texto.contentEditable = 'true';
     pintarFila(fila, cosa.hecha);
+    pintarFoto(fila, cosa);
     return fila;
+  }
+
+  /** La foto de la fila (la pequeña), o ninguna. Las del desplegable de «Añadir cosas» no la enseñan. */
+  function pintarFoto(fila, cosa) {
+    const boton = fila.querySelector('.foto-cosa');
+    if (!boton) return;
+    const foto = cosa.foto || null;
+    fila.classList.toggle('con-foto', Boolean(foto));
+    boton.hidden = !foto;
+    const imagen = boton.querySelector('img');
+    if (foto && imagen.getAttribute('src') !== foto.mini) imagen.src = foto.mini;
+    else if (!foto && imagen.hasAttribute('src')) imagen.removeAttribute('src');
   }
 
   /** El texto de una fila, al día (se puede cambiar en otro dispositivo); el que se está escribiendo no se toca. */
@@ -1182,6 +1242,7 @@
     if (existente && existente.parentElement === contenedor && !existente.classList.contains('saliendo')) {
       pintarFila(existente, cosa.hecha);
       pintarTexto(existente, cosa);
+      pintarFoto(existente, cosa);
       return existente;
     }
     // Estaba en otro sitio (otro grupo, el desplegable…): si no se está yendo con su animación, se quita.
@@ -1267,7 +1328,11 @@
     if (medidas) deslizarFilas(medidas);
     // La cosa que se estaba escribiendo se ha ido (la han borrado o cambiado de grupo en otro dispositivo), o su fila
     // ha cambiado de sitio y el navegador le ha quitado el foco: lo escrito se guarda y la edición acaba.
-    if (edicion && (!edicion.texto.isConnected || edicion.texto.closest('.saliendo') || document.activeElement !== edicion.texto)) acabarEdicion();
+    if (edicion && (!edicion.texto.isConnected || edicion.texto.closest('.saliendo') || document.activeElement !== edicion.texto)) {
+      const fila = edicion.texto.closest('.fila');
+      if (fila) fila.classList.remove('escribiendo');
+      acabarEdicion();
+    }
   }
 
   /** Anima la salida de la fila y la quita del DOM al terminar. */
@@ -1369,6 +1434,7 @@
     if (!estado.cosas.some((cosa) => cosa.id === fila.dataset.id)) return;
     edicion = { id: fila.dataset.id, texto: evento.target, escrito: false };
     raiz.setAttribute('data-editando', '');
+    fila.classList.add('escribiendo'); // Con la cámara al lado (styles.css), mientras el foco no salga del texto o de ella.
   }
 
   /** Lo escrito, como se guarda: en una línea, sin espacios en las puntas y hasta el máximo. '' si no se ha tocado. */
@@ -1405,8 +1471,16 @@
     cerrarEdicion();
   }
 
+  /**
+   * El foco sale del texto o de la cámara de su fila. Si va del uno a la otra (el tabulador, desde el texto, lleva a la
+   * cámara), la fila sigue marcada: si no, la cámara se escondería antes de recibirlo.
+   */
   function alSalirDeTexto(evento) {
-    if (edicion && evento.target === edicion.texto) acabarEdicion();
+    const { target: saliente, relatedTarget: entrante } = evento;
+    const fila = saliente instanceof Element && saliente.matches('.texto, .poner-foto') ? saliente.closest('.fila') : null;
+    const sigue = fila && entrante instanceof Element && fila.contains(entrante) && entrante.matches('.texto, .poner-foto');
+    if (fila && !sigue) fila.classList.remove('escribiendo');
+    if (edicion && saliente === edicion.texto) acabarEdicion();
   }
 
   function alEscribirTexto(evento) {
@@ -1432,6 +1506,430 @@
     if (evento.inputType !== 'insertParagraph' && evento.inputType !== 'insertLineBreak') return;
     evento.preventDefault();
     acabarEdicion();
+  }
+
+  // ---------- Fotos ----------
+
+  /*
+   * Cada cosa puede llevar una foto. La pequeña va en la propia cosa (cosa.foto: { v, mini, ancho, alto }; «v» es el id
+   * de esa foto, y cambia al cambiarla). La grande vive en este dispositivo, en IndexedDB (localStorage no da para
+   * fotos), por cosa: { v, tipo, bytes, subida }. Con sesión, también en la nube (nube.js: un documento por cosa), y de
+   * allí la trae otro dispositivo al verla en grande; «subida» dice si la nube ya la tiene. La grande que ya no es la
+   * foto de ninguna cosa se borra al abrir la app (con sesión, al ponerse al día con la nube): hasta entonces,
+   * «Deshacer» puede devolverla.
+   */
+  let baseFotos = null; // Promesa de la base de IndexedDB (o de null, si este navegador no la da).
+  const fotosEnMemoria = new Map(); // Las que IndexedDB no ha querido guardar (no está, o falla): se ven y se suben igual.
+  const fotosRetenidas = new Set(); // Cosas cuya foto aún puede volver con «Deshacer»: no se limpian.
+  let destinoFoto = null; // Para qué es la foto que se está eligiendo: { id } (una cosa) o { barra } (lo que se va a apuntar).
+  let fotoEnHoja = null; // La que enseña su hoja: { id, v, url, abridor }.
+
+  function abrirBaseFotos() {
+    if (!baseFotos) {
+      baseFotos = new Promise((resolver) => {
+        try {
+          const peticion = window.indexedDB.open('cosas-fotos', 1);
+          peticion.onupgradeneeded = () => peticion.result.createObjectStore('fotos');
+          peticion.onsuccess = () => resolver(peticion.result);
+          peticion.onerror = () => resolver(null);
+          peticion.onblocked = () => resolver(null);
+        } catch (error) {
+          resolver(null);
+        }
+      });
+    }
+    return baseFotos;
+  }
+
+  /** Una transacción sobre el almacén de fotos; «operacion» recibe el almacén. Acaba (o falla) con ella. Sin base, false. */
+  async function enFotos(modo, operacion) {
+    const base = await abrirBaseFotos();
+    if (!base) return false;
+    await new Promise((resolver, rechazar) => {
+      const transaccion = base.transaction('fotos', modo);
+      operacion(transaccion.objectStore('fotos'));
+      transaccion.oncomplete = () => resolver();
+      transaccion.onerror = () => rechazar(transaccion.error);
+      transaccion.onabort = () => rechazar(transaccion.error);
+    });
+    return true;
+  }
+
+  const esFotoGuardada = (registro) => Boolean(registro) && typeof registro.v === 'string' && typeof registro.tipo === 'string'
+    && registro.bytes instanceof ArrayBuffer && typeof registro.subida === 'boolean';
+
+  async function leerFotoLocal(id) {
+    if (fotosEnMemoria.has(id)) return fotosEnMemoria.get(id);
+    let leida = null;
+    try {
+      await enFotos('readonly', (almacen) => {
+        const peticion = almacen.get(id);
+        peticion.onsuccess = () => {
+          leida = peticion.result;
+        };
+      });
+    } catch (error) { /* Como si no estuviera. */ }
+    return esFotoGuardada(leida) ? leida : null;
+  }
+
+  async function guardarFotoLocal(id, registro) {
+    let guardada = false;
+    try {
+      guardada = await enFotos('readwrite', (almacen) => almacen.put(registro, id));
+    } catch (error) { /* En memoria, abajo. */ }
+    // Sin IndexedDB queda en memoria: se ve en esta sesión y, con sesión, se sube igual.
+    if (guardada) fotosEnMemoria.delete(id);
+    else fotosEnMemoria.set(id, registro);
+  }
+
+  async function borrarFotoLocal(id) {
+    fotosEnMemoria.delete(id);
+    try {
+      await enFotos('readwrite', (almacen) => almacen.delete(id));
+    } catch (error) { /* La próxima vez. */ }
+  }
+
+  /** Todas las fotos grandes de este dispositivo: Map id de la cosa → registro. */
+  async function fotosLocales() {
+    const todas = new Map();
+    try {
+      await enFotos('readonly', (almacen) => {
+        const cursor = almacen.openCursor();
+        cursor.onsuccess = () => {
+          const actual = cursor.result;
+          if (!actual) return;
+          if (typeof actual.key === 'string' && esFotoGuardada(actual.value)) todas.set(actual.key, actual.value);
+          actual.continue();
+        };
+      });
+    } catch (error) { /* Lo que se haya podido leer. */ }
+    for (const [id, registro] of fotosEnMemoria) todas.set(id, registro); // La que no cupo en IndexedDB, si es más nueva.
+    return todas;
+  }
+
+  /** La foto grande como data: (base64), que es como viaja a la nube. */
+  function datosDeFoto(registro) {
+    return new Promise((resolver, rechazar) => {
+      const lector = new FileReader();
+      lector.onload = () => resolver(lector.result);
+      lector.onerror = () => rechazar(lector.error);
+      lector.readAsDataURL(new Blob([registro.bytes], { type: registro.tipo }));
+    });
+  }
+
+  /** La imagen de un archivo, ya girada como se hizo la foto. { imagen, ancho, alto, soltar }. */
+  async function abrirImagen(archivo) {
+    if (typeof window.createImageBitmap === 'function') {
+      try {
+        const mapa = await window.createImageBitmap(archivo, { imageOrientation: 'from-image' });
+        return { imagen: mapa, ancho: mapa.width, alto: mapa.height, soltar: () => mapa.close() };
+      } catch (error) { /* Con una <img>. */ }
+    }
+    const url = URL.createObjectURL(archivo);
+    const imagen = new Image();
+    imagen.src = url;
+    try {
+      await imagen.decode();
+    } catch (error) {
+      URL.revokeObjectURL(url);
+      throw error;
+    }
+    return { imagen, ancho: imagen.naturalWidth, alto: imagen.naturalHeight, soltar: () => URL.revokeObjectURL(url) };
+  }
+
+  /** La imagen en un lienzo de «lado» como mucho por su lado mayor (sin agrandarla), sobre blanco (un PNG transparente). */
+  function lienzoDe({ imagen, ancho, alto }, lado) {
+    const escala = Math.min(1, lado / Math.max(ancho, alto));
+    const lienzo = document.createElement('canvas');
+    lienzo.width = Math.max(1, Math.round(ancho * escala));
+    lienzo.height = Math.max(1, Math.round(alto * escala));
+    const contexto = lienzo.getContext('2d');
+    contexto.fillStyle = '#FFFFFF';
+    contexto.fillRect(0, 0, lienzo.width, lienzo.height);
+    contexto.imageSmoothingQuality = 'high';
+    contexto.drawImage(imagen, 0, 0, lienzo.width, lienzo.height);
+    return lienzo;
+  }
+
+  const comoJpeg = (lienzo, calidad) => new Promise((resolver) => lienzo.toBlob(resolver, 'image/jpeg', calidad));
+
+  /** De un archivo de imagen, la foto lista para una cosa: la grande (JPEG, que quepa en la nube) y la pequeña. */
+  async function prepararFoto(archivo) {
+    const abierta = await abrirImagen(archivo);
+    try {
+      if (!abierta.ancho || !abierta.alto) throw new Error('foto-vacia');
+      let grande = null;
+      for (const lado of LADOS_FOTO) {
+        const lienzo = lienzoDe(abierta, lado);
+        for (const calidad of CALIDADES_FOTO) {
+          const jpeg = await comoJpeg(lienzo, calidad);
+          if (jpeg && jpeg.size <= MAX_BYTES_FOTO) {
+            grande = { jpeg, ancho: lienzo.width, alto: lienzo.height };
+            break;
+          }
+        }
+        if (grande) break;
+      }
+      if (!grande) throw new Error('foto-grande');
+      let mini = '';
+      for (const [lado, calidad] of MINIS) {
+        mini = lienzoDe(abierta, lado).toDataURL('image/jpeg', calidad);
+        if (mini.length <= MAX_MINI) break;
+      }
+      if (!mini.startsWith('data:image/jpeg') || mini.length > MAX_MINI) throw new Error('foto-pequena');
+      return { v: nuevoId(), tipo: 'image/jpeg', bytes: await grande.jpeg.arrayBuffer(), ancho: grande.ancho, alto: grande.alto, mini };
+    } finally {
+      abierta.soltar();
+    }
+  }
+
+  /** Abre la cámara o la galería (lo decide el móvil) para una cosa ({ id }) o para lo que se va a apuntar ({ barra }). */
+  function elegirFoto(destino) {
+    destinoFoto = destino;
+    entradaFoto.value = '';
+    entradaFoto.click();
+  }
+
+  async function alElegirFoto() {
+    const archivo = entradaFoto.files && entradaFoto.files[0];
+    const destino = destinoFoto;
+    destinoFoto = null;
+    if (!archivo || !destino) return;
+    let foto;
+    try {
+      foto = await prepararFoto(archivo);
+    } catch (error) {
+      avisar('No se ha podido usar esa foto');
+      return;
+    } finally {
+      entradaFoto.value = '';
+    }
+    if (destino.barra) {
+      destino.barra.foto = foto;
+      pintarFotoDeBarra(destino.barra);
+    } else {
+      ponerFoto(destino.id, foto);
+    }
+  }
+
+  /** La foto de lo que se va a apuntar, en la cámara de la barra (con una puesta, tocarla la quita). */
+  function pintarFotoDeBarra(barra) {
+    const { camara, foto } = barra;
+    camara.classList.toggle('con-foto', Boolean(foto));
+    camara.setAttribute('aria-label', foto ? 'Quitar la foto' : 'Añadir foto');
+    const imagen = camara.querySelector('img');
+    imagen.hidden = !foto;
+    if (foto) imagen.src = foto.mini;
+    else imagen.removeAttribute('src');
+  }
+
+  function alPulsarCamaraDeBarra(barra) {
+    if (!barra.foto) {
+      elegirFoto({ barra });
+      return;
+    }
+    barra.foto = null;
+    pintarFotoDeBarra(barra);
+  }
+
+  function soltarFotoDeBarra(barra) {
+    if (!barra.foto) return;
+    barra.foto = null;
+    pintarFotoDeBarra(barra);
+  }
+
+  /** Lo que la cosa guarda de su foto: la pequeña y cómo es (la grande va aparte). */
+  const resumenDeFoto = (foto) => ({ v: foto.v, mini: foto.mini, ancho: foto.ancho, alto: foto.alto });
+
+  /** Guarda la grande de una cosa aquí y, con sesión, la sube. */
+  function guardarFotoGrande(id, foto) {
+    guardarFotoLocal(id, { v: foto.v, tipo: foto.tipo, bytes: foto.bytes, subida: false }).then(() => subirFoto(id));
+  }
+
+  /** Pone (o cambia) la foto de una cosa desde su fila o desde su hoja. */
+  function ponerFoto(id, foto) {
+    const cosa = estado.cosas.find((candidata) => candidata.id === id);
+    if (!cosa) return; // La han borrado mientras se elegía.
+    cosa.foto = resumenDeFoto(foto);
+    guardarFotoGrande(id, foto);
+    avisarGuardado(guardarEstado());
+    sincronizar();
+  }
+
+  /** La foto de una cosa puede volver con «Deshacer» un rato: hasta entonces, su grande no se limpia. */
+  function retenerFoto(id) {
+    fotosRetenidas.add(id);
+    setTimeout(() => fotosRetenidas.delete(id), DURACION_DESHACER * 3);
+  }
+
+  /** Quita la foto de una cosa, con «Deshacer». */
+  function quitarFoto(id) {
+    const cosa = estado.cosas.find((candidata) => candidata.id === id);
+    if (!cosa || !cosa.foto) return;
+    const previa = cosa.foto;
+    delete cosa.foto;
+    retenerFoto(id);
+    if (!guardarEstado()) avisarFallo();
+    sincronizar();
+    avisar('Foto quitada', {
+      accion: {
+        texto: 'Deshacer',
+        alPulsar: () => {
+          const ahora = estado.cosas.find((candidata) => candidata.id === id);
+          if (!ahora || ahora.foto) return;
+          ahora.foto = previa;
+          if (!guardarEstado()) avisarFallo();
+          sincronizar();
+        },
+      },
+      duracion: DURACION_DESHACER,
+    });
+  }
+
+  const subiendoFotos = new Set();
+
+  /** Lleva a la nube la foto grande de esa cosa, si aún no la tiene y sigue siendo la suya. Sin sesión, nada. */
+  async function subirFoto(id) {
+    if (!nube || typeof nube.subirFoto !== 'function' || subiendoFotos.has(id)) return;
+    subiendoFotos.add(id);
+    try {
+      const registro = await leerFotoLocal(id);
+      const cosa = estado.cosas.find((candidata) => candidata.id === id);
+      if (!registro || registro.subida || !cosa || !cosa.foto || cosa.foto.v !== registro.v) return;
+      await nube.subirFoto(id, { v: registro.v, datos: await datosDeFoto(registro) });
+      const ahora = await leerFotoLocal(id);
+      if (ahora && ahora.v === registro.v) await guardarFotoLocal(id, { ...ahora, subida: true });
+    } catch (error) {
+      /* Sin conexión, o sin sesión: se vuelve a intentar al ponerse al día con la nube. */
+    } finally {
+      subiendoFotos.delete(id);
+    }
+  }
+
+  /**
+   * Las grandes que ya no son la foto de ninguna cosa se borran. Si nadie la tiene (ni su cosa existe, ni lleva foto),
+   * también de la nube; si la cosa lleva otra (cambiada aquí o en otro dispositivo), la de la nube ya es esa y se queda.
+   */
+  async function limpiarFotos(locales) {
+    for (const [id, registro] of locales) {
+      if (fotosRetenidas.has(id)) continue;
+      const cosa = estado.cosas.find((candidata) => candidata.id === id);
+      if (cosa && cosa.foto && cosa.foto.v === registro.v) continue;
+      if (registro.subida && !(cosa && cosa.foto)) {
+        if (!nube || typeof nube.borrarFoto !== 'function') continue; // Sin sesión ahora: cuando la haya.
+        try {
+          await nube.borrarFoto(id);
+        } catch (error) {
+          continue;
+        }
+      }
+      await borrarFotoLocal(id);
+    }
+  }
+
+  let fotosLimpias = false;
+  let alDiaConLasFotos = false;
+
+  /** Cada vez que la nube se pone al día: se suben las grandes que faltan y, la primera vez, se limpia. */
+  async function alPonerseAlDia() {
+    if (alDiaConLasFotos) return;
+    alDiaConLasFotos = true;
+    try {
+      const locales = await fotosLocales();
+      for (const [id, registro] of locales) if (!registro.subida) await subirFoto(id);
+      if (!fotosLimpias) {
+        fotosLimpias = true;
+        await limpiarFotos(locales);
+      }
+    } finally {
+      alDiaConLasFotos = false;
+    }
+  }
+
+  /** La foto grande de una cosa: la de este dispositivo o, si no está, la de la nube (que se queda aquí). O null. */
+  async function fotoGrande(cosa) {
+    const registro = await leerFotoLocal(cosa.id);
+    if (registro && registro.v === cosa.foto.v) return registro;
+    if (!nube || typeof nube.bajarFoto !== 'function') return null;
+    try {
+      const traida = await nube.bajarFoto(cosa.id);
+      if (!traida || traida.v !== cosa.foto.v || !traida.datos.startsWith('data:image/')) return null;
+      const tipo = traida.datos.slice(5, traida.datos.indexOf(';'));
+      const bytes = await (await fetch(traida.datos)).arrayBuffer();
+      const nuevo = { v: traida.v, tipo, bytes, subida: true };
+      await guardarFotoLocal(cosa.id, nuevo);
+      return nuevo;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /** La hoja con la foto en grande: enseña la pequeña mientras llega la grande. */
+  async function abrirHojaFoto(id, abridor) {
+    const cosa = estado.cosas.find((candidata) => candidata.id === id);
+    if (!cosa || !cosa.foto || panelAbierto || performance.now() - cierreHoja < GUARDA_DOBLE_TOQUE) return;
+    const { v } = cosa.foto;
+    fotoEnHoja = { id, v, url: null, abridor };
+    tituloHojaFoto.textContent = cosa.texto;
+    imagenHojaFoto.alt = `Foto de «${cosa.texto}»`;
+    imagenHojaFoto.style.aspectRatio = `${cosa.foto.ancho} / ${cosa.foto.alto}`;
+    imagenHojaFoto.src = cosa.foto.mini;
+    imagenHojaFoto.dataset.tamano = 'pequena';
+    notaHojaFoto.hidden = true;
+    abrirPanel(hojaFoto, tituloHojaFoto);
+    const grande = await fotoGrande(cosa);
+    if (hojaFoto.hidden || !fotoEnHoja || fotoEnHoja.id !== id || fotoEnHoja.v !== v) return;
+    if (grande) {
+      fotoEnHoja.url = URL.createObjectURL(new Blob([grande.bytes], { type: grande.tipo }));
+      imagenHojaFoto.src = fotoEnHoja.url;
+      imagenHojaFoto.dataset.tamano = 'grande';
+    } else {
+      notaHojaFoto.textContent = nube ? 'La foto en grande aún no ha llegado. Prueba otra vez con conexión.' : 'La foto en grande no está en este dispositivo.';
+      notaHojaFoto.hidden = false;
+    }
+  }
+
+  function cerrarHojaFoto(devolverFoco = true) {
+    if (hojaFoto.hidden) return;
+    cerrarPanel(hojaFoto);
+    const { url, abridor } = fotoEnHoja || {};
+    fotoEnHoja = null;
+    if (url) URL.revokeObjectURL(url);
+    imagenHojaFoto.removeAttribute('src');
+    delete imagenHojaFoto.dataset.tamano;
+    cierreHoja = performance.now();
+    if (devolverFoco && abridor && abridor.isConnected && !abridor.hidden) abridor.focus({ preventScroll: true });
+  }
+
+  function alPulsarCambiarFoto() {
+    if (!fotoEnHoja) return;
+    const { id } = fotoEnHoja;
+    cerrarHojaFoto();
+    elegirFoto({ id });
+  }
+
+  function alPulsarQuitarFoto() {
+    if (!fotoEnHoja) return;
+    const { id } = fotoEnHoja;
+    cerrarHojaFoto(false);
+    quitarFoto(id);
+    // Su foto ya no está: el foco va al check de la fila (no al texto, que abriría el teclado).
+    const fila = filasPorId.get(id);
+    const check = fila && fila.querySelector('.hecho');
+    if (check) check.focus({ preventScroll: true });
+  }
+
+  /** La cámara de una fila (sale mientras se escribe en una cosa sin foto): lo escrito se guarda y se elige la foto. */
+  function elegirFotoParaCosa(id) {
+    const fila = filasPorId.get(id);
+    if (fila) fila.classList.remove('escribiendo');
+    acabarEdicion();
+    elegirFoto({ id });
+  }
+
+  /** Tocar la cámara de una fila no le quita el foco al texto: si se lo quitara, la cámara se escondería bajo el dedo. */
+  function alApretarEnLista(evento) {
+    if (evento.target.closest('.poner-foto')) evento.preventDefault();
   }
 
   // ---------- Lista ----------
@@ -1554,6 +2052,7 @@
 
     const [cosa] = estado.cosas.splice(indice, 1);
     ultimoBorrado = performance.now();
+    if (cosa.foto) retenerFoto(id);
     guardarEstado();
     if (cosa.grupo === ID_RECORDAR) cerrarAvisoDe(id); // Ya no hay de qué avisar.
     filasPorId.delete(id);
@@ -1709,7 +2208,9 @@
     // Al borrar, la fila vecina sube y su botón queda bajo el dedo: el segundo toque
     // de un doble toque (o un Intro repetido) no debe llevársela también.
     if (performance.now() - ultimoBorrado < GUARDA_DOBLE_TOQUE) return;
-    if (accion === 'eliminar-grupo') eliminarGrupo(fila.dataset.id);
+    if (accion === 'poner-foto') elegirFotoParaCosa(fila.dataset.id);
+    else if (accion === 'ver-foto') abrirHojaFoto(fila.dataset.id, boton);
+    else if (accion === 'eliminar-grupo') eliminarGrupo(fila.dataset.id);
     else eliminarCosa(fila.dataset.id);
   }
 
@@ -1938,6 +2439,14 @@
     if (ahora - ultimoMovimiento < GUARDA_DOBLE_TOQUE || ahora - ultimoBorrado < GUARDA_DOBLE_TOQUE) return;
     if (accion === 'recordatorio') {
       abrirHojaRecordar(fila.dataset.id);
+      return;
+    }
+    if (accion === 'poner-foto') {
+      elegirFotoParaCosa(fila.dataset.id);
+      return;
+    }
+    if (accion === 'ver-foto') {
+      abrirHojaFoto(fila.dataset.id, boton);
       return;
     }
     if (accion === 'anadir') moverCosa(fila.dataset.id, grupoEnPagina, botonAnadir);
@@ -2552,10 +3061,12 @@
       });
   }
 
-  /** Estado de la sincronización ('' sin sesión): solo para quien depure (data-nube en <html>). */
+  /** Estado de la sincronización ('' sin sesión): solo para quien depure (data-nube en <html>). Al ponerse al día, las fotos. */
   function marcarNube(texto) {
+    const antes = raiz.dataset.nube;
     if (texto) raiz.dataset.nube = texto;
     else raiz.removeAttribute('data-nube');
+    if (texto === 'al-dia' && antes !== 'al-dia') alPonerseAlDia();
   }
 
   /** Llegan cambios de otro dispositivo: se guardan y se repinta lo que se ve, sin perder el sitio. */
@@ -2772,6 +3283,7 @@
   function cerrarHojaAbierta() {
     if (panelAbierto === hoja) cerrarHoja();
     else if (panelAbierto === hojaGrupo) cerrarHojaGrupo();
+    else if (panelAbierto === hojaFoto) cerrarHojaFoto();
     else if (panelAbierto === hojaRecordar) cerrarHojaRecordar();
     else if (panelAbierto === hojaAvisada) cerrarHojaAvisada();
   }
@@ -3756,6 +4268,7 @@
 
     for (const barra of escrituras) {
       barra.micro.hidden = !Reconocimiento;
+      barra.camara.addEventListener('click', () => alPulsarCamaraDeBarra(barra));
       actualizarBarra(barra);
       barra.formulario.addEventListener('submit', (evento) => alEnviar(evento, barra));
       barra.campo.addEventListener('input', () => alEscribir(barra));
@@ -3764,6 +4277,7 @@
     listaEl.addEventListener('click', alPulsarLista);
     listaEl.addEventListener('keydown', alTeclearEnLista);
     for (const lista of [listaEl, listaGrupo]) {
+      lista.addEventListener('mousedown', alApretarEnLista);
       lista.addEventListener('focusin', alEntrarEnTexto);
       lista.addEventListener('focusout', alSalirDeTexto);
       lista.addEventListener('input', alEscribirTexto);
@@ -3785,6 +4299,11 @@
     campoGrupo.addEventListener('blur', alSalirDeCampoGrupo);
 
     botonEditarGrupo.addEventListener('click', abrirHojaGrupo);
+    entradaFoto.addEventListener('change', alElegirFoto);
+    botonCambiarFoto.addEventListener('click', alPulsarCambiarFoto);
+    botonQuitarFoto.addEventListener('click', alPulsarQuitarFoto);
+    botonCerrarHojaFoto.addEventListener('click', alPulsarCierreDeHoja);
+    veloHojaFoto.addEventListener('click', alPulsarCierreDeHoja);
     botonAnadir.addEventListener('click', alternarCandidatas);
     vistas.grupo.addEventListener('click', alPulsarEnGrupo); // Cuerpo y desplegable (que vive en la barra).
     vistas.grupo.addEventListener('keydown', alTeclearEnLista);
@@ -3851,6 +4370,8 @@
     reintentarAvisos();
     revisarAvisos(recordada);
     programarRecordatorios(true);
+    // Sin sesión, las fotos que ya no son de ninguna cosa se limpian ahora; con ella, al ponerse al día con la nube.
+    if (!leerCuenta()) fotosLocales().then(limpiarFotos);
   }
 
   iniciar();

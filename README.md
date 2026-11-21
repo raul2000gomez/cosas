@@ -8,7 +8,14 @@ Publicada en https://cosas-app.netlify.app
 
 - `app/` — la app. Es lo único que se publica. El texto de una cosa se cambia tocándolo, en la lista,
   en un grupo y en Recordar: Intro, o tocar fuera, lo guarda, y Escape (o dejarlo vacío) lo deja como
-  estaba. En Recordar, los avisos dicen ya lo nuevo. En la pantalla de inicio, deslizar el dedo abre el
+  estaba. En Recordar, los avisos dicen ya lo nuevo. Cada cosa puede llevar **una foto**: la cámara de la
+  barra de escribir se la pone a lo que se va a apuntar, y la de la fila (sale mientras se escribe en una
+  cosa sin foto) a una que ya está. La foto se ve en pequeño en la fila y, al tocarla, en grande en su
+  hoja, con «Cambiar foto» y «Quitar foto» (con «Deshacer»). Se reduce en el móvil a un JPEG de 1600px
+  como mucho y 600 KB. La pequeña va con la cosa (`localStorage` y la nube); la grande, en IndexedDB
+  (`cosas-fotos`) y, con sesión, en `personales/{uid}/fotos/{cosa}`, de donde la trae otro dispositivo al
+  verla en grande. La grande que ya no es de ninguna cosa se borra al abrir la app (con sesión, al
+  ponerse al día con la nube). En la pantalla de inicio, deslizar el dedo abre el
   botón de la esquina de la que se tira (hacia la derecha, la lista; hacia la izquierda, los
   ajustes), sin nada que se mueva ni se marque; en la lista y en los ajustes, el gesto de vuelta
   (hacia la izquierda en la lista, hacia la derecha en los ajustes) es «Volver». En esas vistas el

@@ -4,7 +4,8 @@
    llegan a cualquier dispositivo con la misma cuenta. El almacenamiento local sigue mandando: la app
    funciona igual sin conexión y esto solo reconcilia lo local con la nube cuando puede.
 
-   Cada cosa, cada grupo y los ajustes son un documento. Para saber quién ha cambiado qué se recuerda
+   Cada cosa, cada grupo y los ajustes son un documento (la foto de una cosa va en el suyo en pequeño; la grande,
+   en personales/{uid}/fotos, se sube, se trae y se borra aparte: subirFoto, bajarFoto y borrarFoto). Para saber quién ha cambiado qué se recuerda
    la última versión en la que los dos lados coincidían (la «base», en localStorage): lo que cambió
    solo en la nube se trae; lo que cambió solo aquí se sube; si cambió en los dos, gana este
    dispositivo, salvo los ajustes la primera vez que se entra con una cuenta (mandan los de la cuenta).
@@ -43,7 +44,12 @@ function idDeClave(clave) {
   }
 }
 
-const docCosa = (c) => ({ tipo: 'cosa', id: c.id, texto: c.texto, hecha: c.hecha, creada: c.creada, hechaEn: c.hechaEn, grupo: c.grupo });
+// La foto de una cosa ({ v, mini, ancho, alto }: la pequeña; la grande va aparte, en fotos/) solo viaja si la tiene: las
+// cosas sin foto quedan como antes, y una versión anterior de la app, que no la conoce, no la ve cambiar.
+const docCosa = (c) => ({
+  tipo: 'cosa', id: c.id, texto: c.texto, hecha: c.hecha, creada: c.creada, hechaEn: c.hechaEn, grupo: c.grupo,
+  ...(c.foto ? { foto: { v: c.foto.v, mini: c.foto.mini, ancho: c.foto.ancho, alto: c.foto.alto } } : {}),
+});
 // «abierto» (el ojo de la lista) es de cada dispositivo: no viaja.
 const docGrupo = (g) => ({ tipo: 'grupo', id: g.id, nombre: g.nombre, color: g.color, creada: g.creada });
 const docAjustes = (a) => ({ tipo: AJUSTES, colorFondo: a.colorFondo, nombre: a.nombre });
@@ -65,6 +71,16 @@ export function elementosDe(estado) {
 
 const esTexto = (v) => typeof v === 'string';
 const esNumero = (v) => typeof v === 'number' && Number.isFinite(v);
+const MAX_MINI = 30000;
+
+/** La foto de una cosa con la forma que espera la app, o null. */
+export function fotoDeLaNube(foto) {
+  if (!foto || typeof foto !== 'object') return null;
+  const { v, mini, ancho, alto } = foto;
+  const valida = esTexto(v) && v !== '' && v.length <= 40 && esTexto(mini) && mini.startsWith('data:image/') && mini.length <= MAX_MINI
+    && Number.isInteger(ancho) && ancho > 0 && Number.isInteger(alto) && alto > 0;
+  return valida ? { v, mini, ancho, alto } : null;
+}
 
 /** Un documento de la nube con la forma que espera la app, o null si no la tiene (o su id no casa). */
 export function deLaNube(clave, datos) {
@@ -79,7 +95,7 @@ export function deLaNube(clave, datos) {
     return docGrupo({ ...datos, color: esTexto(datos.color) ? datos.color : null });
   }
   if (!esTexto(datos.texto) || typeof datos.hecha !== 'boolean') return null;
-  return docCosa({ ...datos, hechaEn: esNumero(datos.hechaEn) ? datos.hechaEn : null, grupo: esTexto(datos.grupo) ? datos.grupo : null });
+  return docCosa({ ...datos, hechaEn: esNumero(datos.hechaEn) ? datos.hechaEn : null, grupo: esTexto(datos.grupo) ? datos.grupo : null, foto: fotoDeLaNube(datos.foto) });
 }
 
 const firma = (documento) => (documento ? JSON.stringify(documento) : '');
@@ -334,7 +350,32 @@ export async function conectar(app, intento = 0) {
     if (nuevo) empezar(nuevo);
   });
 
-  return { cambio: () => programar() };
+  // ---------- Fotos grandes: personales/{uid}/fotos/{cosa}, { v, datos } (datos: la foto, data: en base64) ----------
+
+  const referenciaDeFoto = (id) => {
+    const clave = claveDe('cosa', id);
+    if (!uid || !clave) throw new Error('sin-sesion');
+    return sdkFs.doc(db, 'personales', uid, 'fotos', clave);
+  };
+
+  /** Sube (o sustituye) la foto grande de una cosa. Falla sin sesión, sin conexión o si las reglas no la admiten. */
+  async function subirFoto(id, { v, datos }) {
+    await sdkFs.setDoc(referenciaDeFoto(id), { v, datos });
+  }
+
+  /** La foto grande de una cosa ({ v, datos }), o null si la nube no la tiene. */
+  async function bajarFoto(id) {
+    const instantanea = await sdkFs.getDoc(referenciaDeFoto(id));
+    if (!instantanea.exists()) return null;
+    const { v, datos } = instantanea.data();
+    return esTexto(v) && esTexto(datos) ? { v, datos } : null;
+  }
+
+  async function borrarFoto(id) {
+    await sdkFs.deleteDoc(referenciaDeFoto(id));
+  }
+
+  return { cambio: () => programar(), subirFoto, bajarFoto, borrarFoto };
 }
 
 // ---------- Novedades de Cosas con y Cosas de ----------

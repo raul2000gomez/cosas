@@ -1471,6 +1471,248 @@ def t_editar_texto_dos_pestanas(e):
     esperar(a, "() => [...document.querySelectorAll('#lista-cosas .texto')].map((t) => t.textContent).join() === 'Huevos camperos,Leche sin lactosa'", que="A ve lo escrito en B")
 
 
+# ----------------------------------------------------------------------------
+# Fotos: una en cada cosa
+# ----------------------------------------------------------------------------
+
+def imagen_png(ancho, alto, ruido=False):
+    """Un PNG de verdad, sin librerías: un degradado o, con «ruido», puntos al azar (lo que peor se comprime)."""
+    import random
+    azar = random.Random(7)
+    filas = bytearray()
+    for y in range(alto):
+        filas.append(0)
+        for x in range(ancho):
+            filas += bytes((azar.randrange(256), azar.randrange(256), azar.randrange(256)) if ruido else (x * 255 // ancho, y * 255 // alto, 120))
+    trozo = lambda tipo, datos: struct.pack(">I", len(datos)) + tipo + datos + struct.pack(">I", zlib.crc32(tipo + datos) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + trozo(b"IHDR", struct.pack(">IIBBBBB", ancho, alto, 8, 2, 0, 0, 0))
+            + trozo(b"IDAT", zlib.compress(bytes(filas))) + trozo(b"IEND", b""))
+
+
+# Una pequeña válida (un punto) para sembrar cosas que ya tienen foto.
+MINI_PRUEBA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+
+def poner_foto_con(pagina, boton, imagen, nombre="foto.png", tipo="image/png"):
+    """Toca ese botón (una cámara, «Cambiar foto»), que abre el selector de fotos, y elige la imagen."""
+    with pagina.expect_file_chooser() as selector:
+        boton.tap()
+    selector.value.set_files({"name": nombre, "mimeType": tipo, "buffer": imagen})
+
+
+# Las fotos grandes de este dispositivo (IndexedDB): id → { v, tipo, bytes, subida }. Abre la base como la app (versión 1,
+# con su almacén): si aún no existe, no la deja a medias.
+JS_FOTOS_LOCALES = r"""() => new Promise((ok) => {
+  const r = indexedDB.open('cosas-fotos', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('fotos');
+  r.onerror = () => ok(null);
+  r.onsuccess = () => {
+    const fuera = {};
+    const c = r.result.transaction('fotos').objectStore('fotos').openCursor();
+    c.onsuccess = () => {
+      const a = c.result;
+      if (!a) { r.result.close(); ok(fuera); return; }
+      fuera[a.key] = { v: a.value.v, tipo: a.value.tipo, bytes: a.value.bytes.byteLength, subida: a.value.subida };
+      a.continue();
+    };
+  };
+})"""
+
+
+def fotos_locales(pagina):
+    return pagina.evaluate(JS_FOTOS_LOCALES)
+
+
+def esperar_fotos_locales(pagina, condicion, que, ms=5000):
+    fin = time.monotonic() + ms / 1000
+    while not condicion(fotos_locales(pagina)):
+        if time.monotonic() > fin:
+            raise Fallo(f"No se cumplió en {ms} ms: {que} (en el dispositivo: {fotos_locales(pagina)})")
+        pagina.wait_for_timeout(50)
+
+
+JS_HOJA_FOTO = r"""() => {
+  const i = document.querySelector('#imagen-hoja-foto');
+  const n = document.querySelector('#nota-hoja-foto');
+  return { abierta: !document.querySelector('#hoja-foto').hidden, titulo: document.querySelector('#titulo-hoja-foto').textContent,
+           tamano: i.dataset.tamano || null, ancho: i.naturalWidth, alto: i.naturalHeight, alt: i.alt, nota: n.hidden ? null : n.textContent,
+           foco: document.activeElement.id || document.activeElement.className };
+}"""
+
+
+def hoja_foto(pagina):
+    return pagina.evaluate(JS_HOJA_FOTO)
+
+
+def esperar_hoja_grande(pagina, que):
+    esperar(pagina, f"() => {{ const h = ({JS_HOJA_FOTO})(); return h.tamano === 'grande' && h.ancho > 0; }}", que=f"{que}: la hoja enseña la foto grande")
+    return hoja_foto(pagina)
+
+
+def foto_de_la_cosa(pagina, id):
+    return next(c for c in leer_estado(pagina)["cosas"] if c["id"] == id).get("foto")
+
+
+def esperar_foto_en_fila(pagina, id, con=True, que=""):
+    selector = f'.vista:not([hidden]) li[data-id="{id}"] .foto-cosa'
+    if con:
+        esperar(pagina, f"() => {{ const b = document.querySelector('{selector}'); return !!b && !b.hidden && b.querySelector('img').getAttribute('src') === (JSON.parse(localStorage.getItem('cosas:v1')).cosas.find((c) => c.id === '{id}').foto || {{}}).mini; }}",
+                que=f"{que}: la fila de {id} enseña su foto")
+    else:
+        esperar(pagina, f"() => {{ const b = document.querySelector('{selector}'); return !!b && b.hidden; }}", que=f"{que}: la fila de {id} no enseña foto")
+
+
+@prueba("foto en una cosa: mientras se escribe en ella sale la cámara (y lo escrito se guarda al tocarla); la foto, girada y reducida (JPEG de 1600px como mucho y que quepa en la nube), se ve en pequeño en la fila y en grande en su hoja; «Cambiar foto» la cambia; «Quitar foto» la quita, con «Deshacer»; la grande se guarda en el dispositivo y, la que ya no es de ninguna cosa, se limpia al volver a abrir la app; lo que no es una imagen se avisa")
+def t_foto_en_una_cosa(e):
+    p = sembrar(e, estado_con([cosa(2, "Comprar pan"), cosa(1, "Llamar al fontanero")]), ruta="#lista")
+    esperar_filas(p, 2)
+    fila = p.locator('#lista-cosas li[data-id="id-2"]')
+    camara = fila.locator(".poner-foto")
+    igual((camara.is_visible(), fila.locator(".foto-cosa").is_visible()), (False, False), "Sin escribir en ella: ni cámara ni foto")
+    texto_de(fila).tap()
+    igual((camara.is_visible(), camara.get_attribute("aria-label")), (True, "Añadir foto"), "Mientras se escribe en ella, la cámara")
+    p.keyboard.press("End")
+    p.keyboard.type(" integral")
+    poner_foto_con(p, camara, imagen_png(2400, 1800, ruido=True))
+    esperar_foto_en_fila(p, "id-2", que="tras elegirla")
+    igual(next(c["texto"] for c in leer_estado(p)["cosas"] if c["id"] == "id-2"), "Comprar pan integral", "Lo escrito antes de tocar la cámara se guarda")
+    sin_editar(p, "Tras elegir la foto")
+    foto = foto_de_la_cosa(p, "id-2")
+    igual(sorted(foto), ["alto", "ancho", "mini", "v"], "Lo que guarda la cosa de su foto")
+    comprobar(max(foto["ancho"], foto["alto"]) <= 1600 and abs(foto["ancho"] * 3 - foto["alto"] * 4) <= 4, f"La grande no es de 1600px como mucho ni conserva la forma: {foto}")
+    comprobar(foto["mini"].startswith("data:image/jpeg;base64,") and len(foto["mini"]) <= 30000, f"La pequeña: {foto['mini'][:40]}… ({len(foto['mini'])})")
+    locales = fotos_locales(p)
+    igual((list(locales), locales["id-2"]["v"], locales["id-2"]["tipo"], locales["id-2"]["subida"]), (["id-2"], foto["v"], "image/jpeg", False),
+          "La grande, en este dispositivo y sin subir (no hay sesión)")
+    comprobar(locales["id-2"]["bytes"] <= 600 * 1024, f"La grande no cabe en la nube: {locales['id-2']['bytes']} bytes")
+    esperar_toast(p, "Guardado")
+    # Con foto, la cámara ya no sale al escribir: la foto se cambia desde su hoja.
+    texto_de(fila).tap()
+    igual((camara.is_visible(), fila.locator(".foto-cosa").is_visible()), (False, True), "Escribiendo en una cosa con foto: la foto y no la cámara")
+    p.keyboard.press("Escape")
+    # La hoja: la pequeña al momento y, enseguida, la grande.
+    p.wait_for_timeout(400)
+    fila.locator(".foto-cosa").tap()
+    h = esperar_hoja_grande(p, "al abrirla")
+    igual((h["titulo"], h["ancho"], h["alto"], h["alt"], h["foco"], h["nota"]), ("Comprar pan integral", foto["ancho"], foto["alto"], "Foto de «Comprar pan integral»", "titulo-hoja-foto", None),
+          "La hoja de la foto")
+    p.keyboard.press("Escape")
+    esperar(p, "() => document.querySelector('#hoja-foto').hidden", que="Escape cierra la hoja")
+    igual(p.evaluate("() => document.activeElement.className"), "foto-cosa", "Al cerrarla, el foco vuelve a la foto de la fila")
+    # Cambiar foto: otra v, del tamaño de la nueva (sin agrandarla).
+    p.wait_for_timeout(400)
+    fila.locator(".foto-cosa").tap()
+    esperar_hoja_grande(p, "otra vez")
+    poner_foto_con(p, p.locator("#cambiar-foto"), imagen_png(300, 600))
+    esperar(p, "(v) => (JSON.parse(localStorage.getItem('cosas:v1')).cosas.find((c) => c.id === 'id-2').foto || {}).v !== v", arg=foto["v"], que="la foto cambia")
+    nueva = foto_de_la_cosa(p, "id-2")
+    igual((nueva["ancho"], nueva["alto"], hoja_foto(p)["abierta"]), (300, 600, False), "La nueva, sin agrandar; y la hoja se ha cerrado")
+    esperar_foto_en_fila(p, "id-2", que="tras cambiarla")
+    esperar_fotos_locales(p, lambda f: f.get("id-2", {}).get("v") == nueva["v"], "la grande de este dispositivo es la nueva")
+    # Quitar foto, y «Deshacer».
+    p.wait_for_timeout(400)
+    fila.locator(".foto-cosa").tap()
+    esperar_hoja_grande(p, "antes de quitarla")
+    p.locator("#quitar-foto").tap()
+    esperar_toast(p, "Foto quitada")
+    igual((foto_de_la_cosa(p, "id-2"), hoja_foto(p)["abierta"], p.evaluate("() => document.activeElement.getAttribute('aria-label')")), (None, False, "Marcar como hecha"),
+          "Sin foto, la hoja cerrada y el foco en el check de la fila")
+    esperar_foto_en_fila(p, "id-2", con=False, que="tras quitarla")
+    p.locator("#toast button").tap()
+    esperar_foto_en_fila(p, "id-2", que="tras «Deshacer»")
+    igual(foto_de_la_cosa(p, "id-2"), nueva, "«Deshacer» devuelve la misma foto")
+    # Quitada de nuevo, al volver a abrir la app la grande se limpia; la de una cosa eliminada, también.
+    p.wait_for_timeout(400)
+    fila.locator(".foto-cosa").tap()
+    esperar_hoja_grande(p, "para quitarla del todo")
+    p.locator("#quitar-foto").tap()
+    esperar_toast(p, "Foto quitada")
+    p.wait_for_timeout(300)
+    texto_de(fila_de(p, "Llamar al fontanero")).tap()
+    poner_foto_con(p, fila_de(p, "Llamar al fontanero").locator(".poner-foto"), imagen_png(640, 480))
+    esperar_foto_en_fila(p, "id-1", que="en la otra cosa")
+    p.wait_for_timeout(400)
+    borrar_de(fila_de(p, "Llamar al fontanero")).tap()
+    esperar_toast(p, "Eliminado")
+    p.locator("#toast button").tap()
+    esperar_foto_en_fila(p, "id-1", que="la cosa eliminada vuelve con «Deshacer» y su foto")
+    p.wait_for_timeout(300)
+    fila_de(p, "Llamar al fontanero").locator(".foto-cosa").tap()
+    esperar_hoja_grande(p, "de la cosa devuelta")
+    p.keyboard.press("Escape")
+    p.wait_for_timeout(400)
+    borrar_de(fila_de(p, "Llamar al fontanero")).tap()
+    esperar_toast(p, "Eliminado")
+    igual(sorted(fotos_locales(p)), ["id-1", "id-2"], "Mientras se puede deshacer, las grandes siguen")
+    p.reload()
+    esperar_filas(p, 1)
+    esperar_fotos_locales(p, lambda f: f == {}, "al volver a abrir la app, las grandes que ya no son de ninguna cosa se limpian")
+    # Lo que no es una imagen.
+    texto_de(fila_de(p, "Comprar pan integral")).tap()
+    poner_foto_con(p, fila_de(p, "Comprar pan integral").locator(".poner-foto"), b"esto no es una foto", nombre="nota.png")
+    esperar_toast(p, "No se ha podido usar esa foto")
+    igual(foto_de_la_cosa(p, "id-2"), None, "Lo que no es una imagen no se pone")
+
+
+@prueba("foto al apuntar: la cámara de la barra (en la pantalla principal y en la página de un grupo) pone una foto a lo que se va a apuntar y la enseña; tocarla la quita; al guardar, la cosa nace con su foto y la cámara vuelve a estar libre; al salir de la página del grupo, la foto que se iba a apuntar allí se suelta")
+def t_foto_al_apuntar(e):
+    p = sembrar(e, estado_con([], grupos=[grupo(5, "Casa")]))
+    esperar_vista(p, "inicio")
+    camara = p.locator("#foto-nueva")
+    igual((camara.get_attribute("aria-label"), camara.is_visible()), ("Añadir foto", True), "La cámara de la barra")
+    poner_foto_con(p, camara, imagen_png(800, 600))
+    esperar(p, "() => document.querySelector('#foto-nueva').classList.contains('con-foto')", que="la cámara enseña la foto puesta")
+    igual((camara.get_attribute("aria-label"), camara.locator("img").is_visible()), ("Quitar la foto", True), "Con la foto puesta")
+    camara.tap()
+    igual((camara.get_attribute("aria-label"), camara.locator("img").is_visible()), ("Añadir foto", False), "Tocarla la quita")
+    poner_foto_con(p, camara, imagen_png(800, 600))
+    esperar(p, "() => document.querySelector('#foto-nueva').classList.contains('con-foto')", que="otra vez puesta")
+    igual(boton_guardar(p).is_disabled(), True, "Sin texto, la foto sola no se guarda")
+    anotar(p, "Regalo de Ana")
+    esperar_toast(p, "Guardado")
+    regalo = next(c for c in leer_estado(p)["cosas"] if c["texto"] == "Regalo de Ana")
+    igual(((regalo.get("foto") or {}).get("ancho"), (regalo.get("foto") or {}).get("alto"), camara.get_attribute("aria-label")), (800, 600, "Añadir foto"),
+          "La cosa nace con su foto y la cámara queda libre")
+    esperar_fotos_locales(p, lambda f: f.get(regalo["id"], {}).get("v") == regalo["foto"]["v"], "la grande de lo apuntado, en el dispositivo")
+    abrir_lista(p)
+    esperar_foto_en_fila(p, regalo["id"], que="en la lista")
+    p.wait_for_timeout(400)
+    abrir_grupo(p, "Casa")
+    camara_grupo = p.locator("#foto-nueva-en-grupo")
+    poner_foto_con(p, camara_grupo, imagen_png(600, 800))
+    esperar(p, "() => document.querySelector('#foto-nueva-en-grupo').classList.contains('con-foto')", que="la cámara del grupo enseña la foto")
+    campo_en_grupo(p).fill("Bombilla")
+    campo_en_grupo(p).press("Enter")
+    esperar_toast(p, "Guardado")
+    bombilla = next(c for c in leer_estado(p)["cosas"] if c["texto"] == "Bombilla")
+    igual((bombilla["grupo"], (bombilla.get("foto") or {}).get("alto")), ("g-5", 800), "Apuntada en el grupo, con su foto")
+    esperar_foto_en_fila(p, bombilla["id"], que="en la página del grupo")
+    poner_foto_con(p, camara_grupo, imagen_png(600, 800))
+    esperar(p, "() => document.querySelector('#foto-nueva-en-grupo').classList.contains('con-foto')", que="otra puesta")
+    p.get_by_role("button", name="Volver", exact=True).tap()
+    esperar_vista(p, "lista")
+    p.wait_for_timeout(400)
+    abrir_grupo(p, "Casa")
+    igual((camara_grupo.get_attribute("aria-label"), camara_grupo.locator("img").is_visible()), ("Añadir foto", False), "Al salir del grupo, la foto que se iba a apuntar se suelta")
+
+
+@prueba("foto en Recordar: con su foto la fila sigue con el check, el texto, la foto y «−» en la primera línea y el recordatorio debajo; y, escribiendo en una sin foto, la cámara también cabe en la primera línea")
+def t_foto_en_recordar(e):
+    datos = estado_recordar([dict(recordada(2, "Pagar la luz"), foto={"v": "f1", "mini": MINI_PRUEBA, "ancho": 4, "alto": 3}), recordada(1, "Sacar la basura")])
+    p = sembrar_recordar(e, datos)
+    esperar_vista(p, "grupo")
+    medir = """(texto) => { const f = [...document.querySelectorAll('#lista-grupo > li')].find((li) => li.querySelector('.texto').textContent === texto);
+      const caja = (s) => { const el = f.querySelector(s); if (!el || el.hidden || !el.getClientRects().length) return null; const r = el.getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom)]; };
+      return { check: caja('.hecho'), texto: caja('.texto'), foto: caja('.foto-cosa'), camara: caja('.poner-foto'), quitar: caja('[data-accion=\"quitar\"]'), cuando: caja('.cuando') }; }"""
+    m = p.evaluate(medir, "Pagar la luz")
+    comprobar(m["foto"] and m["quitar"] and abs(m["foto"][0] - m["check"][0]) <= 1 and abs(m["quitar"][0] - m["check"][0]) <= 1, f"La foto y «−» no van en la primera línea: {m}")
+    comprobar(m["cuando"][0] >= m["check"][1], f"El recordatorio no va debajo: {m}")
+    texto_de(fila_recordada(p, "Sacar la basura")).tap()
+    m = p.evaluate(medir, "Sacar la basura")
+    comprobar(m["camara"] and abs(m["camara"][0] - m["check"][0]) <= 1 and abs(m["quitar"][0] - m["check"][0]) <= 1 and m["cuando"][0] >= m["check"][1],
+              f"Escribiendo, la cámara no cabe en la primera línea: {m}")
+
+
 @prueba("estado vacío: «No tienes cosas apuntadas.» centrado y discreto")
 def t_lista_vacia(e):
     p = e.pagina()
@@ -2036,7 +2278,8 @@ def t_xss(e):
     anotar(p, XSS)
     abrir_lista(p)
     igual(textos_lista(p), [XSS], "Texto literal en la lista")
-    igual(p.evaluate("() => document.querySelectorAll('#lista-cosas img, #lista-cosas script, #lista-cosas b').length"), 0, "Elementos creados por el texto")
+    # (Las <img> de las fotos de las filas son de la app: no cuentan.)
+    igual(p.evaluate("() => document.querySelectorAll('#lista-cosas img:not(.foto-cosa > img), #lista-cosas script, #lista-cosas b').length"), 0, "Elementos creados por el texto")
     igual(p.evaluate("() => document.querySelector('#lista-cosas > li p').childElementCount"), 0, "Hijos elemento dentro del texto")
     volver(p)
     abrir_ajustes(p)
@@ -2612,8 +2855,8 @@ def cosas_guardadas(pagina):
 def t_dictado_hueco(e):
     p = pagina_con_dictado(e)
     esperar_barra(p, BARRA_EN_REPOSO, "Barra con el campo vacío")
-    # Orden de tabulación: lista, ajustes, campo y el botón del hueco.
-    for esperado in ("Ver lista de cosas", "Ajustes", "Escribe una cosa", "Dictar"):
+    # Orden de tabulación: lista, ajustes, campo, la cámara y el botón del hueco.
+    for esperado in ("Ver lista de cosas", "Ajustes", "Escribe una cosa", "Añadir foto", "Dictar"):
         p.keyboard.press("Tab")
         igual(p.evaluate("() => document.activeElement.getAttribute('aria-label')"), esperado, "Orden de tabulación en inicio")
     micro = boton_micro(p)
@@ -2753,11 +2996,11 @@ def t_dictado_foco(e):
         p.wait_for_timeout(400)  # Y pasa la guarda del micrófono recién aparecido: el toque siguiente vuelve a dictar.
         igual(p.evaluate("() => document.activeElement.tagName"), "BODY", "Foco tras un dictado empezado con el dedo")
         igual(p.evaluate(js_anillo), reposo, "La barra se queda resaltada tras un dictado empezado con el dedo")
-    # Con teclado: Tab hasta el micrófono, Intro para dictar, y al terminar Intro guarda.
+    # Con teclado: Tab hasta el micrófono (tras la cámara), Intro para dictar, y al terminar Intro guarda.
     p = pagina_con_dictado(e)
-    for _ in range(4):
+    for _ in range(5):
         p.keyboard.press("Tab")
-    igual(p.evaluate("() => document.activeElement.id"), "dictar", "Cuarto elemento al tabular")
+    igual(p.evaluate("() => document.activeElement.id"), "dictar", "Quinto elemento al tabular")
     p.keyboard.press("Enter")
     esperar_barra(p, BARRA_ESCUCHANDO, "Barra escuchando tras Intro en el micrófono")
     p.evaluate("() => window.__dictado.fin()")
@@ -5447,7 +5690,7 @@ def t_grupo_xss_y_largos(e):
     p = sembrar(e, estado_con([cosa(1, "Cosa")], grupos=[grupo(4, XSS[:60]), grupo(3, largo), grupo(2, sin_espacios)]), ruta="#lista")
     esperar_filas(p, 4)
     igual(textos_nivel(p)[:3], [XSS[:60], largo, sin_espacios], "Nombres literales en la lista")
-    igual(p.evaluate("() => document.querySelectorAll('#lista-cosas img, #lista-cosas script, #lista-cosas b, #lista-cosas a > *').length"), 0, "Elementos creados por el nombre del grupo")
+    igual(p.evaluate("() => document.querySelectorAll('#lista-cosas img:not(.foto-cosa > img), #lista-cosas script, #lista-cosas b, #lista-cosas a > *').length"), 0, "Elementos creados por el nombre del grupo")
     igual(p.evaluate("() => window.__xss"), None, "Se ejecutó código inyectado desde un nombre de grupo")
     comprobar_sin_desborde(p, "la lista con nombres de grupo largos")
     for nombre in (largo, sin_espacios):
@@ -5596,9 +5839,9 @@ def t_grupo_escribir(e):
     igual(p.evaluate(aspecto, "#formulario-en-grupo .pildora"), p.evaluate(aspecto, "#formulario .pildora"), "La barra de escribir del grupo no es como la de inicio")
     igual(campo_en_grupo(p).evaluate("(c) => [c.getAttribute('aria-label'), c.placeholder, c.maxLength, c.getAttribute('enterkeyhint'), c.closest('form').id]"),
           ["Escribe una cosa en este grupo", "Escribe una cosa…", 500, "done", "formulario-en-grupo"], "Atributos del campo del grupo")
-    # Tabulador: tras «Añadir cosas», el campo y el hueco.
+    # Tabulador: tras «Añadir cosas», el campo, la cámara y el hueco.
     boton_anadir(p).focus()
-    for esperado in ("Escribe una cosa en este grupo", "Dictar"):
+    for esperado in ("Escribe una cosa en este grupo", "Añadir foto", "Dictar"):
         p.keyboard.press("Tab")
         igual(p.evaluate("() => document.activeElement.getAttribute('aria-label')"), esperado, "Orden de tabulación tras «Añadir cosas»")
     # Solo espacios: no guarda nada.
@@ -5760,6 +6003,17 @@ export function onSnapshot(ref, ...resto) {
   setTimeout(() => { if (vivo) siguiente(instantanea(ref, [], true)); }, 0);
   setTimeout(mirar, 30);
   return () => { vivo = false; };
+}
+export async function getDoc(ref) {
+  const r = await llamar('leer', { ruta: ref.ruta });
+  if (r.error) throw new Error(r.error);
+  return instantanea(ref, r.docs, false);
+}
+export function deleteDoc(ref) {
+  return llamar('escribir', { operaciones: [{ ruta: ref.ruta, id: ref.id, datos: null }] }).then((r) => {
+    if (r.retener) return new Promise(() => {});
+    if (r.error) throw new Error(r.error);
+  });
 }
 export function setDoc(ref, datos, opciones) {
   return llamar('escribir', { operaciones: [{ ruta: ref.ruta, id: ref.id, datos, fundir: Boolean(opciones && opciones.merge) }] }).then((r) => {
@@ -7055,15 +7309,15 @@ def t_recordar_pagina(e):
                   f"El recordatorio no ocupa su propia línea bajo el texto, alineado con él y dentro de la fila: {d}")
         igual((d["ultimo"], d["tipo"], d["pildora"], d["dedo"], d["desborde"] <= 0), (True, "button", True, [True, True], True), "El recordatorio: el último de la fila, un botón en píldora con 44 px de alto para el dedo, sin desbordar")
         comprobar(cuando["alto"] >= 32 and d["fuente"] >= 14, f"El recordatorio es demasiado pequeño para leerse: {d}")
-    # El orden del tabulador sigue al de la vista: check, texto (se cambia escribiendo en él), «−» y, el último, el
-    # recordatorio; después, la fila siguiente.
+    # El orden del tabulador sigue al de la vista: check, texto (se cambia escribiendo en él; mientras, al lado sale la
+    # cámara para ponerle foto), «−» y, el último, el recordatorio; después, la fila siguiente.
     check_de(fila_recordada(p, "Llamar al dentista")).focus()
     orden = []
-    for _ in range(5):
+    for _ in range(6):
         p.keyboard.press("Tab")
         orden.append(p.evaluate("() => { const a = document.activeElement; return [a.matches('.texto') ? 'texto' : a.getAttribute('aria-label'), a.closest('li').querySelector('.texto').textContent]; }"))
-    igual(orden, [["texto", "Llamar al dentista"], ["Quitar de Recordar", "Llamar al dentista"], ["Recordatorio: cada día a las 9:00. Cambiar", "Llamar al dentista"],
-                  ["Marcar como hecha", "Sacar la basura"], ["texto", "Sacar la basura"]],
+    igual(orden, [["texto", "Llamar al dentista"], ["Añadir foto", "Llamar al dentista"], ["Quitar de Recordar", "Llamar al dentista"],
+                  ["Recordatorio: cada día a las 9:00. Cambiar", "Llamar al dentista"], ["Marcar como hecha", "Sacar la basura"], ["texto", "Sacar la basura"]],
           "Orden de tabulación en las filas de Recordar")
     # Un grupo cualquiera abierto después: su lápiz, su nota y sus filas de siempre; y de vuelta en Recordar, otra vez la campana.
     p2 = sembrar_recordar(e, estado_recordar([recordada(3, "Recordada"), cosa(2, "En Casa", grupo="g-5")], grupos=[grupo(5, "Casa"), grupo(4, "Vacío")]), ruta="#lista")
@@ -9741,6 +9995,74 @@ def t_editar_texto_en_la_nube(e):
     esperar_en_la_nube(b, nube, lambda d: d["c-id-1"]["texto"] == "Sacar la basura y el vidrio", "lo de la tableta llega a la nube")
     esperar_recordadas(a, "el móvil ve lo de la tableta", textos=["Llamar al dentista para la revisión", "Sacar la basura y el vidrio"], cuandos=["9:00 · Cada día", "Poner recordatorio"])
     sin_editar(b, "La tableta, tras Intro")
+
+
+def fotos_en_la_nube(nube, uid="u1"):
+    return dict(nube.colecciones.get(f"personales/{uid}/fotos", {}))
+
+
+def esperar_fotos_en_la_nube(pagina, nube, condicion, que, ms=5000):
+    fin = time.monotonic() + ms / 1000
+    while not condicion(fotos_en_la_nube(nube)):
+        if time.monotonic() > fin:
+            raise Fallo(f"No se cumplió en {ms} ms: {que} (fotos en la nube: {sorted(fotos_en_la_nube(nube))})")
+        pagina.wait_for_timeout(50)
+
+
+@prueba("fotos con sesión: la pequeña viaja con la cosa (las cosas sin foto, como siempre) y la grande a su propio documento (personales/{uid}/fotos); la puesta antes de entrar con la cuenta se sube al entrar; otro dispositivo enseña la pequeña y trae la grande al abrirla; quitada en un dispositivo, el otro la deja de enseñar y la limpieza la borra de la nube; la de una cosa eliminada, también")
+def t_fotos_en_la_nube(e):
+    nube = NubeFalsa()
+    contexto_a = dispositivo(e, nube)
+    # Sin la cuenta aún: la foto se queda en el dispositivo, sin subir.
+    a = abrir_en_la_nube(contexto_a, e, estado_con([cosa(2, "Pan"), cosa(1, "Leche")]), ruta="#lista", cuenta=False)
+    esperar_filas(a, 2)
+    texto_de(fila_de(a, "Pan")).tap()
+    poner_foto_con(a, fila_de(a, "Pan").locator(".poner-foto"), imagen_png(1200, 900))
+    esperar_foto_en_fila(a, "id-2", que="sin cuenta")
+    foto = foto_de_la_cosa(a, "id-2")
+    esperar_fotos_locales(a, lambda f: f.get("id-2", {}).get("subida") is False, "la grande, sin subir")
+    # Entra con la cuenta: la cosa sube con su pequeña y la grande, a su documento.
+    a.evaluate("([clave, valor]) => localStorage.setItem(clave, valor)", [CLAVE_CUENTA, json.dumps({"nombre": "Raúl", "correo": "raul@example.com"})])
+    a.reload()
+    esperar_nube(a, "al-dia")
+    esperar_en_la_nube(a, nube, lambda d: d.get("c-id-2", {}).get("foto") == foto, "la pequeña viaja con la cosa")
+    igual("foto" in nube.documentos()["c-id-1"], False, "Una cosa sin foto, en la nube como siempre (sin el campo)")
+    esperar_fotos_en_la_nube(a, nube, lambda f: "c-id-2" in f, "la grande sube a su documento")
+    grande = fotos_en_la_nube(nube)["c-id-2"]
+    igual((sorted(grande), grande["v"], grande["datos"][:23]), (["datos", "v"], foto["v"], "data:image/jpeg;base64,"), "El documento de la grande")
+    comprobar(len(grande["datos"]) <= 900_000, f"La grande no cabe en un documento: {len(grande['datos'])} caracteres")
+    esperar_fotos_locales(a, lambda f: f.get("id-2", {}).get("subida") is True, "subida, queda apuntado")
+    # Otro dispositivo de la cuenta: la pequeña llega con la cosa; la grande, al abrirla.
+    b = abrir_en_la_nube(dispositivo(e, nube), e, ruta="#lista")
+    esperar_nube(b, "al-dia")
+    esperar_filas(b, 2)
+    esperar_foto_en_fila(b, "id-2", que="en el otro dispositivo")
+    igual(fotos_locales(b), {}, "La grande no se trae hasta que se quiere ver")
+    fila_de(b, "Pan").locator(".foto-cosa").tap()
+    h = esperar_hoja_grande(b, "en el otro dispositivo")
+    igual((h["ancho"], h["alto"], h["nota"]), (1200, 900, None), "La grande, traída de la nube")
+    igual(fotos_locales(b).get("id-2", {}).get("subida"), True, "Y se queda en ese dispositivo")
+    # Se quita en el otro: el primero la deja de enseñar y, al volver a abrirlo, la limpieza la borra de la nube.
+    b.locator("#quitar-foto").tap()
+    esperar_toast(b, "Foto quitada")
+    esperar_en_la_nube(b, nube, lambda d: "foto" not in d.get("c-id-2", {"foto": 1}), "la cosa sin foto en la nube")
+    esperar_foto_en_fila(a, "id-2", con=False, que="el primero la deja de enseñar")
+    a.reload()
+    esperar_nube(a, "al-dia")
+    esperar_fotos_en_la_nube(a, nube, lambda f: "c-id-2" not in f, "la limpieza la borra de la nube")
+    esperar_fotos_locales(a, lambda f: f == {}, "y del dispositivo")
+    # La de una cosa eliminada, también.
+    texto_de(fila_de(a, "Leche")).tap()
+    poner_foto_con(a, fila_de(a, "Leche").locator(".poner-foto"), imagen_png(500, 500))
+    esperar_fotos_en_la_nube(a, nube, lambda f: "c-id-1" in f, "la grande de «Leche» sube")
+    a.wait_for_timeout(400)
+    borrar_de(fila_de(a, "Leche")).tap()
+    esperar_en_la_nube(a, nube, lambda d: "c-id-1" not in d, "«Leche» se borra de la nube")
+    igual("c-id-1" in fotos_en_la_nube(nube), True, "Mientras se puede deshacer, su grande sigue")
+    a.wait_for_timeout(300)
+    a.reload()
+    esperar_nube(a, "al-dia")
+    esperar_fotos_en_la_nube(a, nube, lambda f: f == {}, "al volver a abrir la app, la de la cosa eliminada se borra de la nube")
 
 
 @prueba("recordatorios entre dos dispositivos de la misma cuenta: las cosas viajan por la nube y sus recordatorios por la función de avisos; el que se pone en uno aparece en la fila del otro, y al revés; el de todas puesto en uno pasa a ser el de todas en el otro; el que se quita en uno se quita en el otro; y un «Hecho» pulsado en un aviso marca el check en los dos")

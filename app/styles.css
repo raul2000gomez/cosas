@@ -605,6 +605,107 @@ button {
 
 :root[data-editando] .barra { visibility: hidden; }
 
+/* La foto de una cosa: redonda, a la derecha del texto; al tocarla se ve en grande (app.js). Mientras se escribe en
+   una cosa sin foto, en su sitio aparece la cámara para ponérsela (la fila va marcada, «escribiendo», también mientras
+   la cámara tiene el foco: adonde lleva el tabulador desde el texto). */
+.foto-cosa,
+.poner-foto {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+}
+
+.foto-cosa {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: var(--superficie-activa);
+}
+
+.foto-cosa[hidden] { display: none; }
+
+.foto-cosa img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Un filete sobre la foto: se distingue del fondo aunque sea del mismo color. */
+.foto-cosa::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--filete);
+}
+
+.foto-cosa:active { transform: scale(.94); }
+
+.poner-foto {
+  display: none;
+  place-items: center;
+  color: var(--tinta);
+}
+
+.poner-foto svg,
+.foto-barra svg { width: 24px; height: 24px; stroke-width: 1.9; }
+
+.fila.escribiendo:not(.con-foto) > .poner-foto { display: grid; }
+
+/* La cámara de las barras de escribir. Con una foto puesta para lo que se va a apuntar, la enseña (y una aspa: al
+   tocarla se quita). */
+.foto-barra {
+  flex: none;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  color: var(--tinta);
+}
+
+.foto-barra img {
+  position: absolute;
+  inset: 4px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.foto-barra.con-foto svg { visibility: hidden; }
+
+.foto-barra.con-foto::after {
+  content: "×";
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--tinta);
+  color: var(--fondo);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* El selector de fotos no se ve, pero no está oculto del todo (display: none): algunos navegadores no lo abrirían. */
+.elegir-foto {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* Check pendiente: gris neutro sobre superficie clara, se lee gris en cualquier fondo. */
 .hecho {
   flex: none;
@@ -818,6 +919,10 @@ button {
 }
 
 .fila-recordada .texto { flex-basis: calc(100% - 113px); }
+
+/* Con su foto (o la cámara, mientras se escribe), en la primera línea hay un botón más de 44px y su hueco. */
+.fila-recordada.con-foto .texto,
+.fila-recordada.escribiendo:not(.con-foto) .texto { flex-basis: calc(100% - 169px); }
 
 .cuando {
   position: relative;
@@ -1116,6 +1221,24 @@ button {
 }
 
 #quitar-recordar { margin-top: 18px; }
+
+/* La foto en grande: entera, sin recortar, y sin pasar de la altura que deja la hoja para sus botones. */
+.imagen-foto {
+  display: block;
+  width: 100%;
+  max-height: min(60vh, 560px);
+  object-fit: contain;
+  border-radius: 18px;
+  background: var(--superficie);
+}
+
+#nota-hoja-foto { margin: 12px 2px 0; }
+
+.acciones-foto {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
 
 /* La ayuda de la hoja es letra pequeña siempre, se vea o no el botón «Quitar recordatorio» que tiene encima. */
 #ayuda-recordar {
