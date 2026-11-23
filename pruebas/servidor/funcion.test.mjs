@@ -205,7 +205,7 @@ test('POST recordar: un cambio sobre la versión que la app vio; 200 con nacido,
     // Repetido (la respuesta se perdió): lo mismo, sin versión nueva.
     assert.deepEqual(await guardar('u1', 1, { poner: { a: cosa('Leche'), b: cosa('Pan') }, general: DIARIO }), [200, primero]);
     // Un cambio: lo que no se nombra no se toca, y lo que no vale vuelve en «rechazadas» sin tumbar lo demás.
-    const cambio = { poner: { c: cosa('Sal'), mala: { texto: '', hecha: false, r: DIARIO }, una: cosa('Cita', { hora: '09:00', frec: 'una', fecha: '2026-11-12' }) }, quitar: ['a'] };
+    const cambio = { poner: { c: cosa('Sal'), mala: { texto: '', hecha: false, r: DIARIO }, una: cosa('Cita', { hora: '09:00', frec: 'una', fecha: '2026-02-30' }) }, quitar: ['a'] };
     assert.deepEqual(await guardar('u1', 1, cambio), [200, { nacido: primero.nacido, v: 2, rechazadas: ['mala', 'una'] }]);
     const hay = { nacido: primero.nacido, v: 2, zona: MADRID, general: DIARIO, cosas: { b: cosa('Pan'), c: cosa('Sal') } };
     assert.deepEqual(await leer('u1'), [200, hay]);
@@ -234,7 +234,7 @@ test('POST recordar: lo que no se entiende, 400; lo que no cabe, 413 (por lo que
     await guardar('u1', 0, { poner: { a: cosa('Leche') } });
     const de = (cuantas) => Object.fromEntries(Array.from({ length: cuantas }, (_, i) => [`c${i}`, cosa('x')]));
     for (const malo of [{ zona: MADRID }, { siV: 1 }, { siV: 1, zona: 'Marte/Olimpo' }, { siV: '1', zona: MADRID }, { siV: 1, zona: MADRID, general: { hora: '25:00', frec: 'dia' } },
-      { siV: 1, zona: MADRID, general: { hora: '09:00', frec: 'una', fecha: '2026-11-12' } }, { siV: 1, zona: MADRID, poner: [] }, { siV: 1, zona: MADRID, quitar: 'a' },
+      { siV: 1, zona: MADRID, general: { hora: '09:00', frec: 'una', fecha: '2026-02-30' } }, { siV: 1, zona: MADRID, poner: [] }, { siV: 1, zona: MADRID, quitar: 'a' },
       { siV: 1, zona: MADRID, poner: de(401) }, { siV: 1, zona: MADRID, quitar: Array.from({ length: 401 }, (_, i) => `c${i}`) }]) {
       assert.deepEqual((await llamar('POST', 'recordar', { uid: 'u1', cuerpo: malo })).slice(0, 2), [400, { error: 'recordatorios' }], JSON.stringify(malo).slice(0, 80));
     }
@@ -338,6 +338,36 @@ test('de punta a punta: a su hora, un mensaje por dispositivo con todas las cosa
     await programada();
     assert.deepEqual(salidas(), ['movil-1:b']);
     assert.equal(store.claves('dispositivos/u1/').length, 1);
+  } finally {
+    acabar();
+  }
+});
+
+test('de punta a punta: un recordatorio de una vez avisa a su hora y ya no vuelve; «Hecho» sigue valiendo después', async () => {
+  empezar('2026-11-23T10:00');
+  try {
+    assert.equal((await alta('u1', MOVIL))[0], 200);
+    const CITA = { hora: '18:30', frec: 'una', fecha: '2026-12-05' }; // El sábado 5 a las 18:30 de Madrid (17:30 UTC).
+    assert.deepEqual((await guardar('u1', 0, { poner: { a: cosa('Recoger el traje', CITA), b: cosa('Pan') } }))[0], 200);
+    assert.deepEqual((await leer('u1'))[1].cosas.a, cosa('Recoger el traje', CITA));
+    aLas('2026-12-05T17:25:03');
+    await programada();
+    assert.ok(!salidas().some((salida) => salida.includes('a'))); // Aún no.
+    enviados.length = 0;
+    aLas('2026-12-05T17:30:03');
+    await programada();
+    assert.deepEqual(salidas(), ['movil-1:a']);
+    const { ficha } = enviados[0].aviso.cosas[0];
+    // Ni al día siguiente ni nunca más: solo lo diario.
+    for (const cuando of ['2026-12-06T08:00:03', '2026-12-06T17:30:03', '2026-12-12T17:30:03']) {
+      enviados.length = 0;
+      aLas(cuando);
+      await programada();
+      assert.ok(!salidas().some((salida) => salida.includes(':a')), cuando);
+    }
+    // Una semana después, «Hecho» desde la notificación aún vale.
+    assert.deepEqual(await hecho({ uid: 'u1', id: 'a', ficha }), [200, { ok: true }]);
+    assert.equal((await leer('u1'))[1].cosas.a.hecha, true);
   } finally {
     acabar();
   }

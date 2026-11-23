@@ -4,7 +4,7 @@
 'use strict';
 
 // Sello de versión: lo actualiza herramientas/sellar_version.py; ejecútalo antes de publicar cualquier cambio.
-const VERSION_CACHE = 'cosas-v1.2.0-67abb6ac';
+const VERSION_CACHE = 'cosas-v1.2.0-45b6c796';
 const PREFIJO_CACHE = 'cosas-';
 const PORTADA = './index.html';
 // Rutas propias del alojamiento (Netlify), no de la app: ni se sirven ni se guardan desde aquí. /api/ es la

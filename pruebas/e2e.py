@@ -7655,7 +7655,7 @@ def cerrar_hoja_recordar(pagina):
     pagina.wait_for_timeout(400)  # Lo que hay bajo la hoja acaba de aparecer: pasa su guarda.
 
 
-@prueba("hoja del recordatorio de una cosa: se abre desde su fila con el texto de la cosa, la hora en dos desplegables (minutos de cinco en cinco) y cuatro frecuencias (ya no hay «Una vez»); «Cada semana» pide los días (por defecto, hoy; se pueden marcar varios y siempre queda alguno) y «Cada mes» el día del mes (hoy; del 29 al 31, «En los meses más cortos, el último día.»); la frase dice en vivo lo que pasará («a la 1:05»); «Guardar» deja exactamente ese recordatorio y la fila lo dice; al reabrir están sus valores y «Quitar recordatorio»; cerrar sin guardar no cambia nada; la hoja de una cosa hecha no promete un aviso: dice que no lo habrá hasta que se desmarque")
+@prueba("hoja del recordatorio de una cosa: se abre desde su fila con el texto de la cosa, la hora en dos desplegables (minutos de cinco en cinco) y cinco frecuencias (la última, «Una vez»: ver su prueba); «Cada semana» pide los días (por defecto, hoy; se pueden marcar varios y siempre queda alguno) y «Cada mes» el día del mes (hoy; del 29 al 31, «En los meses más cortos, el último día.»); la frase dice en vivo lo que pasará («a la 1:05»); «Guardar» deja exactamente ese recordatorio y la fila lo dice; al reabrir están sus valores y «Quitar recordatorio»; cerrar sin guardar no cambia nada; la hoja de una cosa hecha no promete un aviso: dice que no lo habrá hasta que se desmarque")
 def t_hoja_recordar_una(e):
     martes = recordatorio("21:30", "semana", dia=2)
     datos = estado_recordar([recordada(3, "Llamar al dentista"), recordada(2, "Sacar la basura"), recordada(1, "Regar las plantas", hecha=True)])
@@ -7680,7 +7680,7 @@ def t_hoja_recordar_una(e):
     frecuencias = p.evaluate("""() => [...document.querySelectorAll('#frecuencia-recordar label')].map((l) => { const r = l.getBoundingClientRect();
         return [l.textContent.trim(), l.querySelector('input').value, l.querySelector('input').type, l.querySelector('input').name, r.height >= 44 && r.width >= 44]; })""")
     igual(frecuencias, [["Cada día", "dia", "radio", "frecuencia", True], ["De lunes a viernes", "laborables", "radio", "frecuencia", True], ["Cada semana", "semana", "radio", "frecuencia", True],
-                        ["Cada mes", "mes", "radio", "frecuencia", True]], "Las cuatro frecuencias (sin «Una vez»), en pastillas de 44 px o más")
+                        ["Cada mes", "mes", "radio", "frecuencia", True], ["Una vez", "una", "radio", "frecuencia", True]], "Las cinco frecuencias, en pastillas de 44 px o más")
     igual(p.locator("#hoja-recordar legend").evaluate_all("(ls) => ls.filter((l) => l.checkVisibility()).map((l) => l.textContent)"), ["Hora", "Frecuencia"], "Apartados de la hoja de una cosa")
     igual((p.locator("#resumen-recordar").get_attribute("aria-live"), p.locator("#hoja-recordar").get_by_text(PRIVACIDAD_HOJA, exact=True).count()), ("polite", 1), "La frase se anuncia al cambiar, y la hoja dice dónde se guarda lo que se recuerda")
     # Cada frecuencia, y lo que pide: la frase lo va diciendo.
@@ -7792,6 +7792,144 @@ def recordar_variado():
              recordada(2, "Regar las plantas", hecha=True), recordada(1, "Hecha sin recordatorio", hecha=True)]
     propios = {"id-5": recordatorio("21:30", "semana", dia=2), "id-3": recordatorio("09:00", "dia"), "id-2": recordatorio("08:00", "mes", diaMes=1)}
     return estado_recordar(cosas), recordar_guardado(cosas=propios)
+
+
+JS_FECHA_HOJA = r"""
+() => { const f = document.querySelector('#fecha-recordar'), c = document.querySelector('#dia-una-vez');
+  return { visible: f.checkVisibility(), leyenda: f.querySelector('legend').textContent, tipo: c.type, nombre: c.getAttribute('aria-label'), valor: c.value, min: c.min }; }
+"""
+
+
+def fecha_hoja(pagina):
+    """El día de «Una vez» en la hoja: si se ve, su apartado, el campo (tipo y nombre), lo elegido y desde cuándo se puede elegir."""
+    return pagina.evaluate(JS_FECHA_HOJA)
+
+
+def elegir_fecha(pagina, fecha):
+    """Elige el día de «Una vez» como lo hace el calendario del sistema: el campo cambia de valor y lo avisa ('' lo vacía)."""
+    pagina.locator("#dia-una-vez").fill(fecha)
+
+
+@prueba("hoja del recordatorio, «Una vez»: un día concreto a una hora; el día se elige en el calendario del sistema (por defecto hoy, o mañana si a esa hora ya es tarde; nunca antes de hoy) y sigue a la hora mientras no se elige; la frase lo dice con el día de la semana («el viernes 5 de febrero a las 18:30»; el año, si no es este); sin día, o en un momento que ya pasó, «Guardar» no se puede pulsar y la frase dice por qué; guardado, la fila lo dice en corto («18:30 · Vie 5 feb») y al reabrir está; el que ya pasó dice «Ya pasó» (también a un lector de pantalla), va atenuado, y con otro día vuelve a estar puesto")
+def t_hoja_recordar_una_vez(e):
+    datos = estado_recordar([recordada(3, "Llamar al dentista"), recordada(2, "Sacar la basura"), recordada(1, "Regar las plantas", hecha=True)])
+    pasado = recordatorio("09:00", "una", fecha="2027-01-20")
+    contexto = contexto_con_reloj(e)
+    contexto.add_init_script(JS_AVISOS_FALSOS + CON_PERMISO)
+    p = sembrar_recordar(e, datos, recordar_guardado(cosas={"id-2": pasado}), contexto=contexto, avisos=AVISOS_ACTIVOS)
+    esperar_vista(p, "grupo")
+    # El que ya pasó: el miércoles 20 de enero (ahora es el domingo 31 a las 0:30 en Madrid).
+    fila = {f["texto"]: f for f in recordadas(p)}["Sacar la basura"]
+    igual((fila["cuando"], fila["dicho"], p.locator("#lista-grupo .cuando.pasado").count()),
+          ("Ya pasó · 9:00 · Mié 20 ene", "Recordatorio: el miércoles 20 de enero a las 9:00, ya pasó. Cambiar", 1), "La fila del recordatorio de una vez que ya pasó")
+    comprobar(p.locator("#lista-grupo .cuando.pasado").evaluate("(c) => parseFloat(getComputedStyle(c).opacity) < 1"), "El que ya pasó no va atenuado")
+    abrir_hoja_recordar(p, "Llamar al dentista")
+    igual(fecha_hoja(p)["visible"], False, "Sin «Una vez», no se pide el día")
+    pastilla(p, "Una vez")
+    igual(fecha_hoja(p), {"visible": True, "leyenda": "Día", "tipo": "date", "nombre": "Día", "valor": "2027-01-31", "min": "2027-01-31"}, "«Una vez» pide el día: por defecto hoy, y nunca antes")
+    esperar_hoja_recordar(p, "una vez, hoy", frecuencia="una", dia=None, diaMes=None, resumen="Te lo recordaré el domingo 31 de enero a las 9:00.", guardar=True)
+    igual(p.locator("#hoja-recordar legend").evaluate_all("(ls) => ls.filter((l) => l.checkVisibility()).map((l) => l.textContent)"), ["Hora", "Frecuencia", "Día"], "Apartados de la hoja con «Una vez»")
+    caja = p.locator("#dia-una-vez").bounding_box()
+    comprobar(caja["height"] >= 44 and caja["width"] >= 200 and p.locator("#dia-una-vez").evaluate("(c) => parseFloat(getComputedStyle(c).fontSize) >= 16"), f"El campo del día no es cómodo de tocar: {caja}")
+    # Mientras no se elige el día, sigue a la hora: a las 0:00 de hoy ya es tarde, y pasa a mañana.
+    elegir_hora(p, "00", "00")
+    esperar_hoja_recordar(p, "a las 0:00, mañana", resumen="Te lo recordaré el lunes 1 de febrero a las 0:00.", guardar=True)
+    igual(fecha_hoja(p)["valor"], "2027-02-01", "El día sigue a la hora mientras no se elige")
+    # Elegido el día, ya no se mueve solo: hoy a las 0:00 ya pasó.
+    elegir_fecha(p, "2027-01-31")
+    esperar_hoja_recordar(p, "hoy a las 0:00", resumen="Ese día a esa hora ya ha pasado: elige otro momento.", guardar=False)
+    elegir_hora(p, "00", "35")
+    esperar_hoja_recordar(p, "hoy a las 0:35", resumen="Te lo recordaré el domingo 31 de enero a las 0:35.", guardar=True)
+    elegir_hora(p, "00", "30")
+    esperar_hoja_recordar(p, "justo ahora ya es tarde", resumen="Ese día a esa hora ya ha pasado: elige otro momento.", guardar=False)
+    igual(fecha_hoja(p)["valor"], "2027-01-31", "El día elegido no sigue a la hora")
+    elegir_fecha(p, "")
+    esperar_hoja_recordar(p, "sin día", resumen="Elige el día.", guardar=False)
+    # El año, solo si no es este.
+    elegir_fecha(p, "2028-03-01")
+    esperar_hoja_recordar(p, "otro año", resumen="Te lo recordaré el miércoles 1 de marzo de 2028 a las 0:30.", guardar=True)
+    elegir_hora(p, "18", "30")
+    elegir_fecha(p, "2027-02-05")
+    esperar_hoja_recordar(p, "el viernes 5", resumen="Te lo recordaré el viernes 5 de febrero a las 18:30.", guardar=True)
+    guardar_hoja_recordar(p)
+    esperar_toast(p, "Recordatorio guardado")
+    cinco = recordatorio("18:30", "una", fecha="2027-02-05")
+    igual(recordar_en_bruto(p), en_bruto(recordar_guardado(cosas={"id-2": pasado, "id-3": cinco})), "Lo guardado: hora, frecuencia y fecha, en ese orden (letra a letra)")
+    fila = {f["texto"]: f for f in recordadas(p)}["Llamar al dentista"]
+    igual((fila["cuando"], fila["dicho"], p.locator("#lista-grupo .cuando.pasado").count()),
+          ("18:30 · Vie 5 feb", "Recordatorio: el viernes 5 de febrero a las 18:30. Cambiar", 1), "La fila con el de una vez (y solo el que ya pasó, atenuado)")
+    p.wait_for_timeout(400)
+    h = abrir_hoja_recordar(p, "Llamar al dentista")
+    igual((h["hora"], h["minuto"], h["frecuencia"], h["resumen"], h["guardar"], h["quitar"], fecha_hoja(p)["valor"]),
+          ("18", "30", "una", "Te lo recordaré el viernes 5 de febrero a las 18:30.", True, "Quitar recordatorio", "2027-02-05"), "Al reabrir el de una vez")
+    # A cada semana (el día de la semana, por hoy) y de vuelta a «Una vez»: el día que tenía.
+    pastilla(p, "Cada semana")
+    esperar_hoja_recordar(p, "cada semana", dia="0", resumen="Te lo recordaré cada domingo a las 18:30.")
+    pastilla(p, "Una vez")
+    esperar_hoja_recordar(p, "de vuelta a una vez", resumen="Te lo recordaré el viernes 5 de febrero a las 18:30.")
+    cerrar_hoja_recordar(p)
+    # La hoja del que ya pasó lo dice; con otro día vuelve a estar puesto.
+    h = abrir_hoja_recordar(p, "Sacar la basura")
+    igual((h["frecuencia"], h["resumen"], h["guardar"], h["quitar"], fecha_hoja(p)["valor"]),
+          ("una", "Ese día a esa hora ya ha pasado: elige otro momento.", False, "Quitar recordatorio", "2027-01-20"), "La hoja del que ya pasó")
+    elegir_fecha(p, "2027-02-01")
+    esperar_hoja_recordar(p, "otro día", resumen="Te lo recordaré el lunes 1 de febrero a las 9:00.", guardar=True)
+    guardar_hoja_recordar(p)
+    esperar_toast(p, "Recordatorio guardado")
+    igual((cuandos(p)["Sacar la basura"], p.locator("#lista-grupo .cuando.pasado").count()), ("9:00 · Lun 1 feb", 0), "Con otro día, vuelve a estar puesto")
+
+
+@prueba("Recordar y el de una vez que ya pasó: ya no avisará, así que no cuenta para la nota de arriba (la de que este dispositivo no avisará); uno que aún no ha llegado, sí")
+def t_recordar_una_vez_nota(e):
+    datos = estado_recordar([recordada(2, "Llamar al dentista"), recordada(1, "Sacar la basura")])
+    for fecha, nota in (("2027-01-20", False), ("2027-02-05", True)):
+        p = sembrar_recordar(e, datos, recordar_guardado(cosas={"id-1": recordatorio("09:00", "una", fecha=fecha)}), contexto=contexto_con_reloj(e))
+        esperar_vista(p, "grupo")
+        p.wait_for_timeout(300)
+        igual(p.locator("#nota-recordar").is_visible(), nota, f"La nota de Recordar con un recordatorio de una vez para el {fecha}")
+        p.close()
+
+
+@prueba("hoja desde la campana con «Una vez»: es para las cosas pendientes que ya están (todas, o las elegidas), nunca el de todas: lo que se apunte después sigue con el de todas que hubiera; la frase dice para cuántas («las 2 cosas pendientes») y a cuántas les cambia el que tenían; «Deshacer» lo devuelve todo; sin nada pendiente, «Guardar» no se puede pulsar y la frase dice que primero hay que apuntar algo")
+def t_hoja_recordar_una_vez_campana(e):
+    datos = estado_recordar([recordada(3, "Llamar al dentista"), recordada(2, "Sacar la basura"), recordada(1, "Regar las plantas", hecha=True)])
+    diario = recordatorio("09:00", "dia")
+    contexto = contexto_con_reloj(e)
+    contexto.add_init_script(JS_AVISOS_FALSOS + CON_PERMISO)
+    p = sembrar_recordar(e, datos, recordar_guardado(general=diario), contexto=contexto, avisos=AVISOS_ACTIVOS)
+    esperar_vista(p, "grupo")
+    abrir_hoja_recordar(p)
+    pastilla(p, "Una vez")
+    elegir_hora(p, "18", "30")
+    elegir_fecha(p, "2027-02-05")
+    esperar_hoja_recordar(p, "una vez, para todas", alcance="todas", resumen="Te recordaré el viernes 5 de febrero a las 18:30 las 2 cosas pendientes. Cambiará el recordatorio de 2 cosas que tenían otro.", guardar=True)
+    guardar_hoja_recordar(p)
+    esperar_toast(p, "Recordatorio puesto a 2 cosas")
+    cinco = recordatorio("18:30", "una", fecha="2027-02-05")
+    igual(recordar_en_bruto(p), en_bruto(recordar_guardado(general=diario, cosas={"id-3": cinco, "id-2": cinco})), "El de todas sigue siendo el diario; las pendientes llevan el de una vez")
+    igual(cuandos(p), {"Llamar al dentista": "18:30 · Vie 5 feb", "Sacar la basura": "18:30 · Vie 5 feb", "Regar las plantas": "9:00 · Cada día"}, "Las filas tras «Una vez» para todas")
+    p.get_by_role("button", name="Deshacer", exact=True).tap()
+    esperar(p, "(antes) => localStorage.getItem('cosas:recordar') === antes", arg=en_bruto(recordar_guardado(general=diario)), que="«Deshacer» devuelve los recordatorios de antes")
+    p.wait_for_timeout(400)
+    # «Elegir»: solo la marcada.
+    abrir_hoja_recordar(p)
+    pastilla(p, "Elegir")
+    pastilla(p, "Una vez")
+    elegir_fecha(p, "2027-02-05")
+    esperar_hoja_recordar(p, "sin nada elegido", resumen="Elige al menos una cosa.", guardar=False)
+    casilla(p, "Sacar la basura").locator("xpath=ancestor::label").tap()
+    esperar_hoja_recordar(p, "una elegida", resumen="Te lo recordaré el viernes 5 de febrero a las 9:00.", guardar=True)
+    guardar_hoja_recordar(p)
+    esperar_toast(p, "Recordatorio puesto a 1 cosa")
+    igual(recordar_en_bruto(p), en_bruto(recordar_guardado(general=diario, cosas={"id-2": recordatorio("09:00", "una", fecha="2027-02-05")})), "Con «Elegir», solo la marcada")
+    # Sin nada pendiente: el de una vez no tiene a quién ponerse.
+    vacia = sembrar_recordar(e, estado_recordar([recordada(1, "Regar las plantas", hecha=True)]), recordar_guardado(general=diario), contexto=contexto, avisos=AVISOS_ACTIVOS)
+    esperar_vista(vacia, "grupo")
+    h = abrir_hoja_recordar(vacia)
+    igual(h["alcance"], None, "Sin nada pendiente no se pregunta para qué cosas")
+    pastilla(vacia, "Una vez")
+    esperar_hoja_recordar(vacia, "una vez sin nada pendiente",
+                          resumen="Primero apunta aquí lo que quieres que te recuerde: un recordatorio de una vez no es para lo que se apunte después.", guardar=False)
 
 
 @prueba("hoja desde la campana, «Todas»: el recordatorio es para todas las pendientes y para lo que se apunte después (la frase lo dice, y a cuántas les cambia el que tenían); «Guardar» lo deja como el de todas sin tocar las hechas, avisa «Recordatorio puesto a N cosas» y «Deshacer» devuelve exactamente lo de antes; «Quitar todos los recordatorios», también con «Deshacer»; sin nada pendiente no pregunta para qué cosas")
@@ -8801,7 +8939,7 @@ def t_hoja_avisada_con_la_app_abierta(e):
 RECORDAR_ILEGIBLES = ["{{{esto no es json", "", "null", "[]", "42", '"hola"', "true", '{"general": 5, "cosas": "x", "base": 7, "activar": 1}', '{"cosas": [1, 2]}', '{"general": [], "cosas": {"id-2": []}}']
 
 
-@prueba("Recordar guardado: en un perfil nuevo nada se guarda hasta apuntar algo, y la clave de los recordatorios nace con el primero; tras recargar sigue todo (cosas, recordatorios, el de todas) y otra pestaña lo ve al momento; un perfil de antes de Recordar (versión 1 o 2) carga tal cual, sin tocar lo guardado; los recordatorios de una frecuencia que ya no existe («una vez»), mal formados o ilegibles se descartan sin romper nada")
+@prueba("Recordar guardado: en un perfil nuevo nada se guarda hasta apuntar algo, y la clave de los recordatorios nace con el primero; tras recargar sigue todo (cosas, recordatorios, el de todas) y otra pestaña lo ve al momento; un perfil de antes de Recordar (versión 1 o 2) carga tal cual, sin tocar lo guardado; los recordatorios mal formados (también «una vez» sin un día que exista) o ilegibles se descartan sin romper nada")
 def t_recordar_persistencia(e):
     contexto = contexto_con_reloj(e)
     p = e.pagina(ruta="#lista", contexto=contexto)
@@ -8886,9 +9024,9 @@ def t_recordar_persistencia(e):
     igual((guardado["version"], guardado["grupos"], [(c["texto"], c["grupo"]) for c in guardado["cosas"]]), (2, [GRUPO_RECORDAR], [("De la 1.0", ID_RECORDAR), ("Hecha en la 1.0", None)]), "El perfil de la versión 1, ya con algo en Recordar")
     p.context.close()
 
-    # Recordatorios que ya no valen: «una vez» (con su fecha), horas y días imposibles, cosas que no son un recordatorio. Vale el que vale.
-    raros = {"general": {"hora": "09:00", "frec": "una", "fecha": "2026-12-01"},
-             "cosas": {"id-9": {"hora": "10:00", "frec": "una", "fecha": "2026-11-30"}, "id-8": {"hora": "25:99", "frec": "dia"}, "id-7": {"hora": "08:00", "frec": "semana", "dia": 9},
+    # Recordatorios que no valen: «una vez» sin un día que exista, horas y días imposibles, cosas que no son un recordatorio. Vale el que vale.
+    raros = {"general": {"hora": "09:00", "frec": "una", "fecha": "2026-02-30"},
+             "cosas": {"id-9": {"hora": "10:00", "frec": "una"}, "id-8": {"hora": "25:99", "frec": "dia"}, "id-7": {"hora": "08:00", "frec": "semana", "dia": 9},
                        "id-6": {"hora": "07:00", "frec": "mes", "diaMes": 0}, "id-5": {"hora": "06:30", "frec": "dia", "sobra": 1}, "id-4": "texto", "id-3": None,
                        "id-2": {"hora": "9:00", "frec": "dia"}, "id-1": {"hora": "12:00", "frec": "semana"}},
              "base": "no", "activar": "sí"}
@@ -8898,8 +9036,8 @@ def t_recordar_persistencia(e):
     igual(cuandos(p), {f"Cosa {i}": ("6:30 · Cada día" if i == 5 else "Poner recordatorio") for i in range(9, 0, -1)}, "De unos recordatorios con de todo, solo vale el que está bien")
     h = abrir_hoja_recordar(p)
     igual((h["hora"], h["minuto"], h["frecuencia"], h["resumen"]), ("09", "00", "dia", "Te lo recordaré cada día a las 9:00. También lo que apuntes después. Cambiará el recordatorio de 1 cosa que tenía otro."),
-          "La hoja de la campana con un «para todas» de una frecuencia que ya no existe: como si no hubiera ninguno")
-    igual(p.evaluate("() => [...document.querySelectorAll('#frecuencia-recordar input')].map((r) => r.value)"), ["dia", "laborables", "semana", "mes"], "Frecuencias que ofrece la hoja")
+          "La hoja de la campana con un «para todas» que no vale: como si no hubiera ninguno")
+    igual(p.evaluate("() => [...document.querySelectorAll('#frecuencia-recordar input')].map((r) => r.value)"), ["dia", "laborables", "semana", "mes", "una"], "Frecuencias que ofrece la hoja")
     cerrar_hoja_recordar(p)
     abrir_hoja_recordar(p, "Cosa 9")
     guardar_hoja_recordar(p)
@@ -9049,17 +9187,17 @@ def t_recordar_disposicion(e):
         p.context.close()
 
 
-@prueba("estático de Recordar: styles.css no tacha nada (ni rastro de «line-through») y de «Una vez» no queda nada en la app (ni la pastilla, ni la frecuencia, ni su fecha)", una_vez=True)
+@prueba("estático de Recordar: styles.css no tacha nada (ni rastro de «line-through»); la hoja ofrece cinco frecuencias, la última «Una vez» con su campo de fecha; y app.js declara las mismas que la función de avisos (netlify/lib/horario.mjs), con los mismos años para el día de una vez", una_vez=True)
 def t_recordar_estatico(e):
     css = (APP / "styles.css").read_text(encoding="utf-8")
     comprobar("line-through" not in css, "styles.css sigue tachando algo («line-through»)")
     html = (APP / "index.html").read_text(encoding="utf-8")
-    comprobar("una vez" not in html.lower(), "index.html sigue hablando de «Una vez»")
-    igual(re.findall(r'name="frecuencia" value="([^"]+)"', html), ["dia", "laborables", "semana", "mes"], "Frecuencias de la hoja en index.html")
-    for nombre in ("app.js", "nube.js", "sw.js"):
-        fuente = (APP / nombre).read_text(encoding="utf-8")
-        comprobar(not re.search(r"['\"]una['\"]", fuente) and not re.search(r"(\.|['\"])fecha\b|\bfecha\s*:", fuente), f"{nombre} conserva algo de la frecuencia «una vez» ('una' o su campo fecha)")
-    comprobar("const FRECUENCIAS = ['dia', 'laborables', 'semana', 'mes'];" in (APP / "app.js").read_text(encoding="utf-8"), "app.js no declara las cuatro frecuencias de un recordatorio")
+    igual(re.findall(r'name="frecuencia" value="([^"]+)"', html), ["dia", "laborables", "semana", "mes", "una"], "Frecuencias de la hoja en index.html")
+    igual(re.findall(r'<input type="date" id="([^"]+)"', html), ["dia-una-vez"], "El campo del día de «Una vez»")
+    app, servidor = (APP / "app.js").read_text(encoding="utf-8"), (APP.parent / "netlify" / "lib" / "horario.mjs").read_text(encoding="utf-8")
+    for nombre, fuente in (("app.js", app), ("horario.mjs", servidor)):
+        comprobar("const FRECUENCIAS = ['dia', 'laborables', 'semana', 'mes', 'una'];" in fuente, f"{nombre} no declara las cinco frecuencias de un recordatorio")
+        comprobar("const PRIMER_ANIO = 2000;" in fuente and "const ULTIMO_ANIO = 2199;" in fuente, f"{nombre} no admite los mismos años para el de una vez")
 
 
 # ----------------------------------------------------------------------------
@@ -9959,6 +10097,35 @@ def t_recordar_nube_varios_dias(e):
               ({"id-1": lunes}, {"id-1": recordada_enviada("Llamar al taller", lunes)}, {"id-1": recordada_enviada("Llamar al taller", lunes)}, {"id-1": instante("2027-02-08T16:00")}, "17:00 · Cada lunes"),
               "Con un solo día, la forma de siempre («dia»): la función agenda el lunes")
         sin_mas_llamadas(p, funcion, "Tras el cambio, nada más que enviar")
+    finally:
+        funcion.cerrar()
+
+
+@prueba("recordatorios en la función, una vez: el de un día concreto viaja tal cual (hora, «una» y su fecha) y la función de verdad lo admite y lo agenda ese día a esa hora de Madrid; sin nada más que enviar después", una_vez=True)
+def t_recordar_nube_una_vez(e):
+    funcion = FuncionDeVerdad()
+    try:
+        funcion.reloj("2027-02-02T10:00")  # Martes 2 de febrero de 2027, las 11:00 en Madrid.
+        p = abrir_con_recordar(dispositivo_con_recordar(e, funcion, usuario="u1"), e, estado_recordar([recordada(1, "Recoger el traje")]), sesion="u1")
+        esperar_vista(p, "grupo")
+        p.wait_for_timeout(1000)
+        abrir_hoja_recordar(p, "Recoger el traje")
+        pastilla(p, "Una vez")
+        elegir_hora(p, "18", "30")
+        elegir_fecha(p, "2027-02-05")
+        # El navegador va con el reloj de verdad: el año se dice si no es el suyo.
+        otro_anio = p.evaluate("() => new Date().getFullYear()") != 2027
+        esperar_hoja_recordar(p, "el viernes 5", frecuencia="una", resumen=f"Te lo recordaré el viernes 5 de febrero{' de 2027' if otro_anio else ''} a las 18:30.")
+        guardar_hoja_recordar(p)
+        cinco = recordatorio("18:30", "una", fecha="2027-02-05")
+        esperar_envios(p, funcion, 1)
+        esperar_base(p, "la función de verdad acepta el de una vez", v=1)
+        envio, documento = funcion.envios()[0], funcion.documento("u1")
+        igual((leer_recordar(p)["cosas"], envio["cuerpo"]["poner"], envio["estado"], envio["respuesta"]["rechazadas"], documento["cosas"], documento["prox"]),
+              ({"id-1": cinco}, {"id-1": recordada_enviada("Recoger el traje", cinco)}, 200, [], {"id-1": recordada_enviada("Recoger el traje", cinco)}, {"id-1": instante("2027-02-05T17:30")}),
+              "Lo guardado, lo enviado y lo que la función guarda y agenda: el viernes 5 a las 18:30 de Madrid")
+        igual(cuandos(p)["Recoger el traje"], f"18:30 · Vie 5 feb{' 2027' if otro_anio else ''}", "La fila dice el día")
+        sin_mas_llamadas(p, funcion, "La app y la función dicen lo mismo: no hay nada más que enviar")
     finally:
         funcion.cerrar()
 

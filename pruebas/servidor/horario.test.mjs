@@ -19,10 +19,16 @@ test('recordatorioDe: solo lo válido, con sus campos justos y en orden', () => 
   }
 });
 
-test('recordatorioDe: «una vez» ya no existe (un recordatorio siempre se repite)', () => {
-  assert.equal(recordatorioDe({ hora: '09:00', frec: 'una', fecha: '2026-11-12' }), null);
-  assert.equal(recordatorioDe({ hora: '09:00', frec: 'una' }), null);
-  // Y una fecha que venga de más no convierte en otra cosa a uno que sí vale.
+test('recordatorioDe, una vez: con su fecha («AAAA-MM-DD», un día que existe), en su orden y nada más', () => {
+  assert.equal(JSON.stringify(recordatorioDe({ fecha: '2026-12-05', frec: 'una', hora: '18:30', dia: 3, diaMes: 4 })), '{"hora":"18:30","frec":"una","fecha":"2026-12-05"}');
+  assert.deepEqual(recordatorioDe({ hora: '09:00', frec: 'una', fecha: '2028-02-29' }), { hora: '09:00', frec: 'una', fecha: '2028-02-29' }); // Bisiesto.
+  // Una que ya pasó también vale (es la de una cosa de la que ya se avisó): lo que no hay es próximo aviso.
+  assert.deepEqual(recordatorioDe({ hora: '09:00', frec: 'una', fecha: '2020-01-01' }), { hora: '09:00', frec: 'una', fecha: '2020-01-01' });
+  for (const fecha of [undefined, null, '', '2026-11-12T09:00', '2026-1-12', '2026/11/12', '20261112', '2026-02-29', '2026-02-30', '2026-04-31', '2026-13-01',
+    '2026-00-10', '2026-11-00', '1999-12-31', '2200-01-01', ' 2026-11-12', 20261112, { anio: 2026 }]) {
+    assert.equal(recordatorioDe({ hora: '09:00', frec: 'una', fecha }), null, String(fecha));
+  }
+  // Y una fecha que venga de más no convierte en otra cosa a uno que se repite.
   assert.deepEqual(recordatorioDe({ hora: '09:00', frec: 'dia', fecha: '2026-11-12' }), { hora: '09:00', frec: 'dia' });
 });
 
@@ -193,6 +199,23 @@ test('cambios de hora y frecuencias: la hora que no existe y la que existe dos v
   // De lunes a viernes y cada semana cruzan el cambio sin moverse de su hora de reloj.
   assert.equal(iso(proximoAviso({ hora: '08:00', frec: 'laborables' }, MADRID, utc('2026-03-27T07:00'))), '2026-03-30T06:00');
   assert.equal(iso(proximoAviso({ hora: '08:00', frec: 'semana', dia: 0 }, MADRID, utc('2026-10-18T06:00'))), '2026-10-25T07:00');
+});
+
+test('una vez: su día y su hora mientras no hayan llegado; después, ninguno', () => {
+  const r = { hora: '18:30', frec: 'una', fecha: '2026-12-05' };
+  assert.equal(iso(proximoAviso(r, MADRID, utc('2026-11-23T10:00'))), '2026-12-05T17:30');
+  assert.equal(iso(proximoAviso(r, MADRID, utc('2026-12-05T17:29:59'))), '2026-12-05T17:30');
+  // Estrictamente después: en su mismo instante (ya avisado) y luego, nada más.
+  assert.equal(proximoAviso(r, MADRID, utc('2026-12-05T17:30')), null);
+  assert.equal(proximoAviso(r, MADRID, utc('2027-01-01T00:00')), null);
+  // El día es el del calendario de quien lo puso: en Auckland, las 8:00 del 1 de enero son aún el 31 de diciembre en UTC.
+  assert.equal(iso(proximoAviso({ hora: '08:00', frec: 'una', fecha: '2027-01-01' }, 'Pacific/Auckland', utc('2026-12-01T00:00'))), '2026-12-31T19:00');
+  // Aunque falte más de un año (lo que se repite busca, como mucho, un año por delante).
+  assert.equal(iso(proximoAviso({ hora: '09:00', frec: 'una', fecha: '2029-06-15' }, MADRID, utc('2026-11-23T10:00'))), '2029-06-15T07:00');
+  // Con los cambios de hora: la que no existe llega tras el salto; la que existe dos veces, en la primera.
+  assert.equal(iso(proximoAviso({ hora: '02:30', frec: 'una', fecha: '2026-03-29' }, MADRID, utc('2026-03-01T00:00'))), '2026-03-29T01:30');
+  assert.equal(iso(proximoAviso({ hora: '02:30', frec: 'una', fecha: '2026-10-25' }, MADRID, utc('2026-10-01T00:00'))), '2026-10-25T00:30');
+  assert.equal(proximoAviso({ hora: '02:30', frec: 'una', fecha: '2026-10-25' }, MADRID, utc('2026-10-25T00:30')), null);
 });
 
 test('otras zonas: el día y la hora son los de quien puso el recordatorio', () => {

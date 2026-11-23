@@ -17,11 +17,14 @@
    un aviso puede llegar dos veces, pero no se pierde). «agenda»: el minuto de su clave en agenda/, que es lo único
    que mira la función programada. «pausado»: desde cuándo no tiene dispositivos a los que avisar (no gasta
    ejecuciones y, si sigue así, se acaba borrando). «enviados»: cuántos avisos lleva hoy. «actualizado»: la última
-   vez que lo cambió su dueño (la app al guardar, o un «Hecho» en un aviso).
+   vez que lo cambió su dueño (la app al guardar, o un «Hecho» en un aviso) o, si lo último que esperaba era un
+   recordatorio de una vez, la de ese aviso (o la de cuando se saltó por caducado).
 
    Nada se guarda para siempre. El documento que espera algún aviso y tiene a quién dárselo sigue mientras sea así.
-   El que está en pausa, y el que no espera ninguno (todo hecho, o ya sin cosas), se borran a los treinta días de
-   seguir igual (limpiezaDe, caducado): si su dueño vuelve, la app lo sube otra vez («nacido» le dice que es otro).
+   El que está en pausa, y el que no espera ninguno (todo hecho, ya sin cosas o ya avisado lo que era de una vez), se
+   borran a los treinta días de seguir igual (limpiezaDe, caducado): si su dueño vuelve, la app lo sube otra vez
+   («nacido» le dice que es otro). Para el de una vez cuenta desde su aviso: quien lo recibe tiene un mes para
+   contestarlo con «Hecho» desde la notificación.
 
    Aquí no se lee ni se escribe nada: solo se calcula, para poder probarlo sin almacén ni reloj. */
 
@@ -209,6 +212,7 @@ export function reclamarAvisos(doc, ahora, maximo = MAX_POR_TANDA) {
   let enviadosHoy = doc.enviados.dia === hoy ? doc.enviados.n : 0;
   const avisar = [];
   let cambia = false;
+  let acaba = false; // Se ha saltado el de alguna cosa que no tiene otro (el de una vez).
   const vencidas = Object.entries(doc.prox).sort((a, b) => a[1] - b[1]); // Lo más atrasado, primero.
   for (const [id, instante] of vencidas) {
     const cosa = tiene(doc.cosas, id) ? doc.cosas[id] : null;
@@ -229,8 +233,10 @@ export function reclamarAvisos(doc, ahora, maximo = MAX_POR_TANDA) {
       const siguiente = ahora - instante > CADUCA
         ? proximoAviso(cosa.r, doc.zona, ahora - CADUCA)
         : siguienteAviso(cosa.r, doc.zona, ahora, instante);
-      if (siguiente === null) delete prox[id];
-      else prox[id] = siguiente;
+      if (siguiente === null) {
+        delete prox[id];
+        acaba = true;
+      } else prox[id] = siguiente;
       delete turno[id];
       cambia = true;
       continue;
@@ -241,18 +247,22 @@ export function reclamarAvisos(doc, ahora, maximo = MAX_POR_TANDA) {
     if (!tomado) enviadosHoy += 1;
     cambia = true;
   }
-  return cambia ? { doc: { ...doc, prox, turno, enviados: { dia: hoy, n: enviadosHoy } }, avisar } : null;
+  if (!cambia) return null;
+  return { doc: { ...doc, prox, turno, enviados: { dia: hoy, n: enviadosHoy }, actualizado: acaba ? Math.max(doc.actualizado, ahora) : doc.actualizado }, avisar };
 }
 
 /**
  * El documento tras enviar esos avisos ([{ id, de }]): a cada cosa se le apunta su siguiente aviso (si entretanto no
  * ha cambiado: una hora nueva, o hecha) y se suelta su turno. null si no hay nada que cambiar. De los que no se
- * pudieron enviar no se dice nada aquí: su turno caduca solo y la siguiente ejecución los repite.
+ * pudieron enviar no se dice nada aquí: su turno caduca solo y la siguiente ejecución los repite. La que no tiene
+ * siguiente (el de una vez) deja de esperar aviso, y la retención del documento cuenta desde ahora: si era lo último
+ * pendiente, quien lo recibe tiene un mes para contestar «Hecho» desde la notificación.
  */
 export function confirmarAvisos(doc, enviados, ahora) {
   const prox = { ...doc.prox };
   const turno = { ...doc.turno };
   let cambia = false;
+  let acaba = false;
   for (const { id, de } of enviados) {
     const tomado = tiene(doc.turno, id) ? doc.turno[id] : null;
     if (tomado && tomado.de === de) {
@@ -262,11 +272,14 @@ export function confirmarAvisos(doc, enviados, ahora) {
     const cosa = tiene(doc.cosas, id) ? doc.cosas[id] : null;
     if (!cosa || cosa.hecha || !tiene(doc.prox, id) || doc.prox[id] !== de) continue;
     const siguiente = siguienteAviso(cosa.r, doc.zona, ahora, de);
-    if (siguiente === null) delete prox[id];
-    else prox[id] = siguiente;
+    if (siguiente === null) {
+      delete prox[id];
+      acaba = true;
+    } else prox[id] = siguiente;
     cambia = true;
   }
-  return cambia ? { ...doc, prox, turno } : null;
+  if (!cambia) return null;
+  return { ...doc, prox, turno, actualizado: acaba ? Math.max(doc.actualizado, ahora) : doc.actualizado };
 }
 
 /** ¿Le toca ya algún aviso? (Con la misma tolerancia con la que se toman.) */

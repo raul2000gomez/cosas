@@ -1,23 +1,38 @@
 /* Cosas · recordatorios: cuándo toca avisar.
 
-   Un recordatorio dice una hora de reloj y cada cuánto (siempre se repite, hasta que la cosa se da por hecha):
+   Un recordatorio dice una hora de reloj y cada cuánto (se repite hasta que la cosa se da por hecha), o que es una
+   sola vez:
      { hora: 'HH:MM', frec: 'dia' }                  cada día
      { hora: 'HH:MM', frec: 'laborables' }           de lunes a viernes
      { hora: 'HH:MM', frec: 'semana', dia: 0..6 }    cada semana, ese día (0 = domingo, como Date)
      { hora: 'HH:MM', frec: 'semana', dias: [0..6] } cada semana, esos días (dos o más, sin repetir, de menor a mayor)
      { hora: 'HH:MM', frec: 'mes', diaMes: 1..31 }   cada mes, ese día (o el último, si el mes no llega)
+     { hora: 'HH:MM', frec: 'una', fecha: 'AAAA-MM-DD' }  una vez, ese día del calendario; después ya no toca nunca
 
    La hora es la del reloj de quien lo puso: su zona horaria (IANA, «Europe/Madrid») viaja con sus recordatorios y
    aquí se calcula el instante, con los cambios de hora incluidos. Sin dependencias: Intl hace las cuentas. */
 
 const HORA = /^([01]\d|2[0-3]):([0-5]\d)$/;
-const FRECUENCIAS = ['dia', 'laborables', 'semana', 'mes'];
+const FRECUENCIAS = ['dia', 'laborables', 'semana', 'mes', 'una'];
+const FECHA = /^(\d{4})-(\d{2})-(\d{2})$/;
+// Los años de un recordatorio de una vez: de sobra a los dos lados (la app no deja elegir un día que ya pasó).
+const PRIMER_ANIO = 2000;
+const ULTIMO_ANIO = 2199;
 const DIAS_DE_BUSQUEDA = 370; // Un año largo: de sobra para dar con el siguiente día que toca.
 
 const esEntero = (v, minimo, maximo) => Number.isInteger(v) && v >= minimo && v <= maximo;
 
 /** Los días que tiene ese mes (mes de 1 a 12). */
 export const diasDelMes = (anio, mes) => new Date(Date.UTC(anio, mes, 0)).getUTCDate();
+
+/** El día de una fecha «AAAA-MM-DD» que existe en el calendario: { anio, mes (1-12), dia }; null si no. */
+export function fechaDe(texto) {
+  const partes = typeof texto === 'string' ? FECHA.exec(texto) : null;
+  if (!partes) return null;
+  const [anio, mes, dia] = partes.slice(1).map(Number);
+  const existe = anio >= PRIMER_ANIO && anio <= ULTIMO_ANIO && mes >= 1 && mes <= 12 && dia >= 1 && dia <= diasDelMes(anio, mes);
+  return existe ? { anio, mes, dia } : null;
+}
 
 /**
  * Los días de un recordatorio semanal, sin repetir y de menor a mayor: los de «dias» (una lista) o, sin ella, el de
@@ -43,6 +58,7 @@ export function recordatorioDe(bruto) {
     return dias.length === 1 ? { hora, frec, dia: dias[0] } : { hora, frec, dias };
   }
   if (frec === 'mes') return esEntero(bruto.diaMes, 1, 31) ? { hora, frec, diaMes: bruto.diaMes } : null;
+  if (frec === 'una') return fechaDe(bruto.fecha) ? { hora, frec, fecha: bruto.fecha } : null;
   return { hora, frec };
 }
 
@@ -116,10 +132,16 @@ function tocaEseDia(r, anio, mes, dia, diaSemana) {
 
 /**
  * El próximo instante, estrictamente posterior a «desde», en que toca ese recordatorio (ya validado) en esa zona.
- * Siempre hay uno (null solo si en más de un año no apareciera, que no pasa con un recordatorio válido).
+ * Uno que se repite siempre tiene uno (null solo si en más de un año no apareciera, que no pasa con uno válido). El
+ * de una vez, el de su día y su hora si aún no ha llegado (aunque falten años); si ya pasó, null: no toca más.
  */
 export function proximoAviso(r, zona, desde) {
   const [hora, minuto] = r.hora.split(':').map(Number);
+  if (r.frec === 'una') {
+    const { anio, mes, dia } = fechaDe(r.fecha);
+    const instante = instanteDe(zona, anio, mes, dia, hora, minuto);
+    return instante > desde ? instante : null;
+  }
   const hoy = relojEn(zona, desde);
   for (let i = 0; i <= DIAS_DE_BUSQUEDA; i += 1) {
     const fecha = new Date(Date.UTC(hoy.anio, hoy.mes - 1, hoy.dia + i)); // Solo calendario: días enteros, sin horas.

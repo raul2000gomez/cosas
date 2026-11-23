@@ -364,11 +364,12 @@
     </section>
   </div>
 
-  <!-- Hoja del recordatorio: a qué hora y cada cuánto (se repite hasta que la cosa está hecha). Se abre desde la
-       fila de una cosa (solo para ella) o desde la campana de Recordar (para todas sus cosas pendientes y las que
-       se apunten después, o para las que se elijan). app.js rellena las horas, los minutos (de cinco en cinco: es
-       cada cuánto mira la función de avisos), los días del mes y las cosas que se pueden elegir. «Guardar» va en
-       un pie que no se desplaza: siempre a la vista, por larga que sea la hoja. -->
+  <!-- Hoja del recordatorio: a qué hora y cada cuánto (se repite hasta que la cosa está hecha), o una sola vez, un
+       día concreto. Se abre desde la fila de una cosa (solo para ella) o desde la campana de Recordar (para todas sus
+       cosas pendientes y las que se apunten después, o para las que se elijan; el de una vez, solo para las que ya
+       están). app.js rellena las horas, los minutos (de cinco en cinco: es cada cuánto mira la función de avisos),
+       los días del mes y las cosas que se pueden elegir. «Guardar» va en un pie que no se desplaza: siempre a la
+       vista, por larga que sea la hoja. -->
   <div id="hoja-recordar" class="hoja" hidden>
     <div class="hoja-velo" id="velo-hoja-recordar"></div>
     <section class="hoja-panel" role="dialog" aria-modal="true" aria-labelledby="titulo-hoja-recordar">
@@ -403,7 +404,13 @@
             <label class="pastilla"><input type="radio" name="frecuencia" value="laborables"><span>De lunes a viernes</span></label>
             <label class="pastilla"><input type="radio" name="frecuencia" value="semana"><span>Cada semana</span></label>
             <label class="pastilla"><input type="radio" name="frecuencia" value="mes"><span>Cada mes</span></label>
+            <label class="pastilla"><input type="radio" name="frecuencia" value="una"><span>Una vez</span></label>
           </div>
+        </fieldset>
+        <!-- Una vez: qué día (el calendario del móvil). Desde hoy: app.js pone el mínimo. -->
+        <fieldset id="fecha-recordar" class="opciones" hidden>
+          <legend class="etiqueta">Día</legend>
+          <input type="date" id="dia-una-vez" class="selector selector-fecha" aria-label="Día" required>
         </fieldset>
         <fieldset id="dia-recordar" class="opciones" hidden>
           <legend class="etiqueta">Días</legend>

@@ -38,13 +38,18 @@
   // guarda desde que tiene algo: mientras tanto, la app lo da por puesto (grupoPorId).
   const ID_RECORDAR = 'recordar';
   const GRUPO_RECORDAR = Object.freeze({ id: ID_RECORDAR, nombre: 'Recordar', color: null, creada: 1, abierto: false });
-  const FRECUENCIAS = ['dia', 'laborables', 'semana', 'mes'];
+  const FRECUENCIAS = ['dia', 'laborables', 'semana', 'mes', 'una'];
   const HORA_POR_DEFECTO = '09:00';
   // La función de avisos mira cada cinco minutos a quién le toca: las horas se eligen de cinco en cinco.
   const PASO_MINUTOS = 5;
   const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
   const DIAS_CORTOS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']; // En la fila de una cosa, cuando son tres o más.
   const ULTIMO_DIA_DE_TODOS = 28; // Del 29 en adelante no todos los meses llegan: avisa el último día.
+  const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  const MESES_CORTOS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sept', 'oct', 'nov', 'dic']; // En la fila de una cosa.
+  // Los años de un recordatorio de una vez (los mismos que admite la función de avisos: netlify/lib/horario.mjs).
+  const PRIMER_ANIO = 2000;
+  const ULTIMO_ANIO = 2199;
   // Lo que admite la función de avisos de una sesión (netlify/lib/recordar.mjs).
   const MAX_RECORDADAS = 100;
   const MAX_ID_RECORDADA = 100;
@@ -185,6 +190,8 @@
   const mesRecordar = $('#mes-recordar');
   const selectorDiaMes = $('#dia-mes-recordar');
   const ayudaDiaMes = $('#ayuda-dia-mes');
+  const fechaRecordar = $('#fecha-recordar');
+  const selectorFecha = $('#dia-una-vez');
   const resumenRecordar = $('#resumen-recordar');
   const botonGuardarRecordar = $('#guardar-recordar');
   const botonQuitarRecordar = $('#quitar-recordar');
@@ -512,11 +519,12 @@
   // ---------- Recordatorios (el grupo fijo Recordar) ----------
 
   /*
-   * Lo que se apunta en Recordar puede llevar un recordatorio: a qué hora y cada cuánto avisar. Se repite siempre,
-   * hasta que la cosa está hecha:
+   * Lo que se apunta en Recordar puede llevar un recordatorio: a qué hora y cada cuánto avisar (se repite hasta que la
+   * cosa está hecha) o un día concreto, una sola vez:
    *   { hora: 'HH:MM', frec: 'dia' } | { …, frec: 'laborables' } | { …, frec: 'semana', dia: 0..6 } (0 = domingo)
    *   | { …, frec: 'semana', dias: [0..6] } (dos días o más, sin repetir y de menor a mayor)
    *   | { …, frec: 'mes', diaMes: 1..31 } (en los meses más cortos, el último día)
+   *   | { …, frec: 'una', fecha: 'AAAA-MM-DD' } (ese día, en el reloj de quien lo pone; después ya no avisa: «Ya pasó»)
    * Avisa la función de avisos (netlify/functions), con una notificación por cosa: nube.js le lleva los
    * recordatorios (y trae los que se pusieron en otro dispositivo con la misma sesión) y sw.js enseña cada aviso
    * con sus botones «Hecho» y «Mantener».
@@ -526,6 +534,27 @@
    * si no lo tiene aunque haya uno para todas (se le quitó a ella sola, o llegó de otro dispositivo y la función de
    * avisos aún no ha dicho cuál tiene: ver aplicarDeLaNube).
    */
+
+  /** El día de una fecha «AAAA-MM-DD» que existe en el calendario: { anio, mes (1-12), dia }; null si no (como horario.mjs). */
+  function fechaDe(texto) {
+    const partes = typeof texto === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(texto) : null;
+    if (!partes) return null;
+    const [anio, mes, dia] = partes.slice(1).map(Number);
+    const existe = anio >= PRIMER_ANIO && anio <= ULTIMO_ANIO && mes >= 1 && mes <= 12 && dia >= 1 && dia <= new Date(Date.UTC(anio, mes, 0)).getUTCDate();
+    return existe ? { anio, mes, dia } : null;
+  }
+
+  /** «AAAA-MM-DD» de ese día en el calendario de aquí (el valor de un campo de fecha). */
+  const fechaComoTexto = (dia) => `${dia.getFullYear()}-${dosCifras(dia.getMonth() + 1)}-${dosCifras(dia.getDate())}`;
+
+  /** El instante de un recordatorio de una vez: su día y su hora en el reloj de este dispositivo (como la función de avisos, en su zona). */
+  function instanteDeUnaVez(r) {
+    const { anio, mes, dia } = fechaDe(r.fecha);
+    return new Date(anio, mes - 1, dia, Number(r.hora.slice(0, 2)), Number(r.hora.slice(3))).getTime();
+  }
+
+  /** ¿Es uno de una vez cuyo momento ya ha pasado? (Ya no avisará: los que se repiten siempre tienen otro.) */
+  const yaPaso = (r) => Boolean(r) && r.frec === 'una' && instanteDeUnaVez(r) <= Date.now();
 
   /**
    * Un recordatorio con su forma exacta (la misma que en la función de avisos, netlify/lib/horario.mjs: mismos campos,
@@ -542,6 +571,7 @@
       return dias.length === 1 ? { hora, frec, dia: dias[0] } : { hora, frec, dias };
     }
     if (frec === 'mes') return Number.isInteger(bruto.diaMes) && bruto.diaMes >= 1 && bruto.diaMes <= 31 ? { hora, frec, diaMes: bruto.diaMes } : null;
+    if (frec === 'una') return fechaDe(bruto.fecha) ? { hora, frec, fecha: bruto.fecha } : null;
     return { hora, frec };
   }
 
@@ -614,8 +644,11 @@
   /** Las que siguen pendientes: de las hechas no se avisa, y lo que se diga para varias cosas no las toca. */
   const recordadasPendientes = () => recordadas().filter((cosa) => !cosa.hecha);
 
-  /** ¿Queda en Recordar algo pendiente de lo que haya que avisar? */
-  const hayRecordatoriosPendientes = () => cosasDe(ID_RECORDAR).some((cosa) => !cosa.hecha && recordatorioDeCosa(cosa.id) !== null);
+  /** ¿Queda en Recordar algo pendiente de lo que haya que avisar? (Lo de una vez que ya pasó, no: ya no avisará.) */
+  const hayRecordatoriosPendientes = () => cosasDe(ID_RECORDAR).some((cosa) => {
+    const r = cosa.hecha ? null : recordatorioDeCosa(cosa.id);
+    return r !== null && !yaPaso(r);
+  });
 
   /**
    * Olvida lo propio de las cosas que ya no existen. Solo al arrancar: mientras tanto se conserva (lo que sale de
@@ -641,10 +674,24 @@
   const enLista = (palabras) => (palabras.length < 2 ? palabras.join('') : `${palabras.slice(0, -1).join(', ')} y ${palabras[palabras.length - 1]}`);
 
   /**
+   * El día de uno de una vez: «el sábado 5 de diciembre» (y el año, si no es este: «… de 2027»). Con «cortos», para la
+   * fila: «sáb 5 dic» («sáb 5 dic 2027»).
+   */
+  function fechaLegible(r, cortos = false) {
+    const { anio, mes, dia } = fechaDe(r.fecha);
+    const semana = new Date(anio, mes - 1, dia).getDay();
+    const otroAnio = anio !== new Date().getFullYear();
+    if (cortos) return `${DIAS_CORTOS[semana]} ${dia} ${MESES_CORTOS[mes - 1]}${otroAnio ? ` ${anio}` : ''}`;
+    return `el ${DIAS[semana]} ${dia} de ${MESES[mes - 1]}${otroAnio ? ` de ${anio}` : ''}`;
+  }
+
+  /**
    * Cada cuánto avisa: «cada día», «de lunes a viernes», «cada lunes», «cada lunes y jueves», «el día 1 de cada
-   * mes». Con «cortos», los días de la semana abreviados cuando son tres o más («cada lun, mié y vie»).
+   * mes»; o qué día, si es una vez: «el sábado 5 de diciembre». Con «cortos», los días de la semana abreviados
+   * cuando son tres o más («cada lun, mié y vie»).
    */
   function cadaCuanto(r, cortos = false) {
+    if (r.frec === 'una') return fechaLegible(r, cortos);
     if (r.frec === 'laborables') return 'de lunes a viernes';
     if (r.frec === 'semana') {
       const dias = diasDe(r);
@@ -659,10 +706,14 @@
   /** Cuándo avisa, dicho de corrido: «cada día a las 9:05» («a la 1:00»). */
   const cuandoDe = (r) => `${cadaCuanto(r)} ${Number(r.hora.slice(0, 2)) === 1 ? 'a la' : 'a las'} ${horaLegible(r.hora)}`;
 
-  /** Y en corto, para la fila de la cosa: «9:00 · Cada día», «9:00 · Día 1 de cada mes», «9:00 · Cada lun, mié y vie». */
+  /**
+   * Y en corto, para la fila de la cosa: «9:00 · Cada día», «9:00 · Día 1 de cada mes», «9:00 · Cada lun, mié y vie»,
+   * «18:30 · Sáb 5 dic»; el de una vez que ya pasó, «Ya pasó · 18:30 · Sáb 5 dic».
+   */
   function resumenDe(r) {
     const cada = r.frec === 'mes' ? `día ${r.diaMes} de cada mes` : cadaCuanto(r, true);
-    return `${horaLegible(r.hora)} · ${cada.charAt(0).toLocaleUpperCase('es-ES')}${cada.slice(1)}`;
+    const resumen = `${horaLegible(r.hora)} · ${cada.charAt(0).toLocaleUpperCase('es-ES')}${cada.slice(1)}`;
+    return yaPaso(r) ? `Ya pasó · ${resumen}` : resumen;
   }
 
   // ---------- Aviso (toast) ----------
@@ -2508,9 +2559,11 @@
     if (!fila) return;
     const r = recordatorioDeCosa(cosa.id);
     const cuando = fila.querySelector('.cuando');
+    const pasado = yaPaso(r);
     cuando.classList.toggle('sin', !r);
+    cuando.classList.toggle('pasado', pasado);
     cuando.querySelector('.cuando-texto').textContent = r ? resumenDe(r) : 'Poner recordatorio';
-    cuando.setAttribute('aria-label', r ? `Recordatorio: ${cuandoDe(r)}. Cambiar` : 'Poner recordatorio');
+    cuando.setAttribute('aria-label', r ? `Recordatorio: ${cuandoDe(r)}${pasado ? ', ya pasó' : ''}. Cambiar` : 'Poner recordatorio');
     const quitar = fila.querySelector('[data-accion="quitar"]');
     const eliminar = fila.querySelector('[data-accion="eliminar"]');
     const conFoco = document.activeElement === quitar || document.activeElement === eliminar;
@@ -2565,6 +2618,27 @@
     if (!arreglo && document.activeElement === botonNotaRecordar) titulos.grupo.focus({ preventScroll: true });
     botonNotaRecordar.hidden = !arreglo;
     if (!cambiandoAvisos) botonNotaRecordar.textContent = arreglo; // Mientras se activan, el botón dice lo que está haciendo.
+    vigilarRecordatoriosDeUnaVez();
+  }
+
+  let temporizadorDeUnaVez = 0;
+
+  /**
+   * Mientras se ve Recordar, cuando llega el momento de un recordatorio de una vez su fila pasa a decir «Ya pasó» (y la
+   * nota deja de contar con él): se repinta justo entonces. Si falta más de un día, se vuelve a mirar al cabo de uno.
+   */
+  function vigilarRecordatoriosDeUnaVez() {
+    clearTimeout(temporizadorDeUnaVez);
+    if (vistaActual !== 'grupo' || !esRecordar(grupoMostrado())) return;
+    const ahora = Date.now();
+    const proximos = cosasDe(ID_RECORDAR).map((cosa) => recordatorioDeCosa(cosa.id)).filter((r) => r && r.frec === 'una')
+      .map(instanteDeUnaVez).filter((instante) => instante > ahora);
+    if (proximos.length === 0) return;
+    temporizadorDeUnaVez = setTimeout(() => {
+      if (vistaActual !== 'grupo' || !esRecordar(grupoMostrado())) return;
+      for (const cosa of cosasDe(ID_RECORDAR)) pintarRecordada(filasPorId.get(cosa.id), cosa);
+      pintarNotaRecordar();
+    }, Math.min(Math.min(...proximos) - ahora + 500, 24 * 60 * 60 * 1000));
   }
 
   function alPulsarNotaRecordar() {
@@ -2600,23 +2674,53 @@
     for (const casilla of formularioRecordar.querySelectorAll('input[name="dia"]')) casilla.checked = dias.includes(Number(casilla.value));
   }
 
+  // El día de uno de una vez, ¿lo ha elegido quien usa la hoja? Mientras no, sigue a la hora: hoy, o mañana si ya es tarde.
+  let fechaElegida = false;
+
   /** Al cambiar algo en la hoja. Los días se marcan y desmarcan, pero siempre queda alguno: el último no se desmarca. */
   function alCambiarLaHoja(evento) {
     if (evento.target.name === 'dia' && diasElegidos().length === 0) evento.target.checked = true;
+    if (evento.target === selectorFecha) fechaElegida = true;
+    else if (!fechaElegida) selectorFecha.value = fechaPorDefecto(`${selectorHora.value}:${selectorMinuto.value}`);
     pintarHojaRecordar();
   }
 
   /** ¿Se están eligiendo las cosas una a una? (Solo desde la campana: desde una fila, la cosa ya está dicha.) */
   const eligiendo = () => recordandoA === null && radioElegido('alcance') === 'elegir';
 
-  /** El recordatorio que dice la hoja ahora mismo. */
+  /** El recordatorio que dice la hoja ahora mismo (null si falta algo: el día de uno de una vez). */
   function recordatorioDeLaHoja() {
     return recordatorioDe({
       hora: `${selectorHora.value}:${selectorMinuto.value}`,
       frec: radioElegido('frecuencia'),
       dias: diasElegidos(),
       diaMes: Number(selectorDiaMes.value),
+      fecha: selectorFecha.value,
     });
+  }
+
+  /**
+   * El día que la hoja propone para uno de una vez: hoy, si a esa hora aún no ha pasado; si no, mañana. (Desde la hoja
+   * no se puede elegir un momento que ya pasó: ver lo que falta.)
+   */
+  function fechaPorDefecto(hora) {
+    const dia = new Date();
+    const yaEsTarde = dia.getHours() * 60 + dia.getMinutes() >= Number(hora.slice(0, 2)) * 60 + Number(hora.slice(3));
+    if (yaEsTarde) dia.setDate(dia.getDate() + 1);
+    return fechaComoTexto(dia);
+  }
+
+  /**
+   * Lo que le falta a la hoja para poder guardar, dicho para quien la usa; '' si nada. Solo el de una vez puede quedarse
+   * a medias: sin día, en un momento que ya pasó o, desde la campana, sin ninguna cosa a la que ponérselo (no es el de
+   * todas: lo que se apunte después no lo hereda, que su día podría haber pasado ya).
+   */
+  function faltaEnLaHoja(r, ids) {
+    if (radioElegido('frecuencia') !== 'una') return '';
+    if (!r) return 'Elige el día.';
+    if (yaPaso(r)) return 'Ese día a esa hora ya ha pasado: elige otro momento.';
+    if (ids.length === 0 && !eligiendo()) return 'Primero apunta aquí lo que quieres que te recuerde: un recordatorio de una vez no es para lo que se apunte después.';
+    return '';
   }
 
   /** Las cosas a las que se aplica lo que diga la hoja: esa, las elegidas o todas las pendientes de Recordar (las hechas no se tocan). */
@@ -2640,6 +2744,8 @@
 
   /** La frase de la hoja: lo que va a pasar al guardar. Para todas, también a quién más alcanza y a cuántas les cambia el que tenían. */
   function resumenDeLaHoja(r, ids) {
+    const falta = faltaEnLaHoja(r, ids);
+    if (falta) return falta;
     if (!r) return '';
     const frase = `Te lo recordaré ${cuandoDe(r)}.`;
     if (recordandoA !== null) {
@@ -2652,6 +2758,8 @@
     const firma = JSON.stringify(r);
     const pisadas = ids.map(recordatorioDeCosa).filter((suyo) => suyo !== null && JSON.stringify(suyo) !== firma).length;
     const cambio = pisadas === 0 ? '' : ` Cambiará el recordatorio de ${pisadas === 1 ? '1 cosa que tenía' : `${pisadas} cosas que tenían`} otro.`;
+    // El de una vez es para las que ya están (todas las pendientes), no para lo que se apunte después.
+    if (r.frec === 'una') return `Te recordaré ${cuandoDe(r)} ${ids.length === 1 ? 'la cosa pendiente' : `las ${ids.length} cosas pendientes`}.${cambio}`;
     return `${frase} También lo que apuntes después.${cambio}`;
   }
 
@@ -2673,6 +2781,8 @@
     const frecuencia = radioElegido('frecuencia');
     diaRecordar.hidden = frecuencia !== 'semana';
     mesRecordar.hidden = frecuencia !== 'mes';
+    fechaRecordar.hidden = frecuencia !== 'una';
+    selectorFecha.min = fechaComoTexto(new Date()); // Desde hoy (la hoja puede llevar abierta desde ayer).
     // Del 29 al 31 se avisa de lo que pasa en los meses cortos; la nota solo describe al desplegable mientras se ve
     // (una descripción escondida, un lector de pantalla la leería igual).
     const hastaElFinal = Number(selectorDiaMes.value) > ULTIMO_DIA_DE_TODOS;
@@ -2684,9 +2794,10 @@
     else if (!eligen) elegirRecordar.replaceChildren();
     elegirRecordar.hidden = !eligen;
     const ids = cosasDeLaHoja();
-    decir(resumenRecordar, resumenDeLaHoja(recordatorioDeLaHoja(), ids));
-    // Sin ninguna cosa elegida no hay nada que guardar.
-    botonGuardarRecordar.disabled = eligen && ids.length === 0;
+    const r = recordatorioDeLaHoja();
+    decir(resumenRecordar, resumenDeLaHoja(r, ids));
+    // Sin ninguna cosa elegida no hay nada que guardar; ni con el de una vez a medias.
+    botonGuardarRecordar.disabled = (eligen && ids.length === 0) || faltaEnLaHoja(r, ids) !== '';
     // Quitar: el de esa cosa, si lo tiene; desde la campana, todos de una vez (el de todas y el de cada cosa pendiente).
     const deTodas = recordandoA === null;
     botonQuitarRecordar.textContent = deTodas ? 'Quitar todos los recordatorios' : 'Quitar recordatorio';
@@ -2716,6 +2827,8 @@
     // Lo que no dice el recordatorio que se edita, por hoy: el día de la semana y el del mes.
     elegirDias(r.frec === 'semana' ? diasDe(r) : [hoy.getDay()]);
     selectorDiaMes.value = String(r.frec === 'mes' ? r.diaMes : hoy.getDate());
+    selectorFecha.value = r.frec === 'una' ? r.fecha : fechaPorDefecto(r.hora);
+    fechaElegida = r.frec === 'una';
     pintarHojaRecordar();
     abrirPanel(hojaRecordar, tituloHojaRecordar);
     hojaRecordar.querySelector('.hoja-panel').scrollTop = 0; // Siempre por el principio.
@@ -2761,10 +2874,15 @@
     const ids = cosasDeLaHoja();
     const deVarias = recordandoA === null;
     const todas = deVarias && !eligiendo();
+    // La hoja ya lo dice y no deja guardar; pero el momento elegido puede pasar con ella abierta.
+    if (faltaEnLaHoja(r, ids)) {
+      pintarHojaRecordar();
+      return;
+    }
     if (!r || (!todas && ids.length === 0)) return;
     const previo = { general: recordar.general, cosas: { ...recordar.cosas } };
     const sinNota = notaRecordar.hidden;
-    if (todas) {
+    if (todas && r.frec !== 'una') {
       // El de todas: lo siguen las pendientes y las que se apunten después. Las hechas se quedan como están.
       for (const cosa of cosasDe(ID_RECORDAR)) if (cosa.hecha) fijarRecordatorioDe(cosa.id);
       recordar.general = { ...r };
@@ -4316,6 +4434,7 @@
     botonNotaRecordar.addEventListener('click', alPulsarNotaRecordar);
     formularioRecordar.addEventListener('submit', guardarHojaRecordar);
     formularioRecordar.addEventListener('change', alCambiarLaHoja);
+    selectorFecha.addEventListener('input', alCambiarLaHoja); // Mientras se elige: la frase y «Guardar», al momento.
     botonQuitarRecordar.addEventListener('click', quitarDesdeLaHoja);
     botonCerrarHojaRecordar.addEventListener('click', alPulsarCierreDeHoja);
     veloHojaRecordar.addEventListener('click', alPulsarCierreDeHoja);

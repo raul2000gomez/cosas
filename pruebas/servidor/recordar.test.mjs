@@ -23,7 +23,7 @@ test('cosaDe: texto, hecha y un recordatorio válido; nada más', () => {
   assert.deepEqual(cosaDe({ texto: '  Leche ', hecha: false, r: { frec: 'dia', hora: '09:00' }, sobra: 1 }), { texto: 'Leche', hecha: false, r: DIARIO });
   for (const mala of [null, {}, { texto: '', hecha: false, r: DIARIO }, { texto: '   ', hecha: false, r: DIARIO }, { texto: 'x'.repeat(501), hecha: false, r: DIARIO },
     { texto: 'Leche', hecha: 'no', r: DIARIO }, { texto: 'Leche', hecha: false }, { texto: 'Leche', hecha: false, r: { hora: '9', frec: 'dia' } }, { texto: 7, hecha: false, r: DIARIO },
-    { texto: 'Cita', hecha: false, r: { hora: '09:00', frec: 'una', fecha: '2026-11-12' } }]) {
+    { texto: 'Cita', hecha: false, r: { hora: '09:00', frec: 'una', fecha: '2026-02-30' } }]) {
     assert.equal(cosaDe(mala), null, JSON.stringify(mala));
   }
 });
@@ -48,7 +48,7 @@ test('envioDe: una cosa que no vale no tumba el envío: su id, tal cual, va en �
   const largo = 'x'.repeat(101);
   const resultado = envio(0, { poner: {
     a: cosa('Leche'), vacia: cosa('   '), larga: cosa('x'.repeat(501)), sinHora: { texto: 'Pan', hecha: false }, hora: cosa('Sal', { hora: '25:00', frec: 'dia' }),
-    una: cosa('Cita', { hora: '09:00', frec: 'una', fecha: '2026-11-12' }), '': cosa('Sin id'), [largo]: cosa('Id largo'), b: cosa('Pan'),
+    una: cosa('Cita', { hora: '09:00', frec: 'una', fecha: '2026-02-30' }), '': cosa('Sin id'), [largo]: cosa('Id largo'), b: cosa('Pan'),
   } });
   assert.deepEqual(resultado.poner, { a: cosa('Leche'), b: cosa('Pan') });
   assert.deepEqual(resultado.rechazadas.sort(), ['', 'hora', 'larga', largo, 'sinHora', 'una', 'vacia'].sort());
@@ -62,7 +62,7 @@ test('envioDe: lo que no se entiende es null (el sobre, no las cosas)', () => {
   const de = (cuantas) => Object.fromEntries(Array.from({ length: cuantas }, (_, i) => [`c${i}`, cosa('x')]));
   for (const malo of [null, 'x', [], {}, { zona: MADRID }, { siV: -1, zona: MADRID }, { siV: 1.5, zona: MADRID }, { siV: '0', zona: MADRID }, { siV: 0 },
     { siV: 0, zona: 'Marte/Olimpo' }, { siV: 0, zona: MADRID, general: { hora: 'x' } }, { siV: 0, zona: MADRID, general: 'dia' },
-    { siV: 0, zona: MADRID, general: { hora: '09:00', frec: 'una', fecha: '2026-11-12' } }, { siV: 0, zona: MADRID, poner: [] }, { siV: 0, zona: MADRID, poner: 'x' },
+    { siV: 0, zona: MADRID, general: { hora: '09:00', frec: 'una', fecha: '2026-02-30' } }, { siV: 0, zona: MADRID, poner: [] }, { siV: 0, zona: MADRID, poner: 'x' },
     { siV: 0, zona: MADRID, poner: null }, { siV: 0, zona: MADRID, quitar: {} }, { siV: 0, zona: MADRID, quitar: 'a' }, { siV: 0, zona: MADRID, quitar: null },
     { siV: 0, zona: MADRID, poner: de(401) }, { siV: 0, zona: MADRID, quitar: Array.from({ length: 401 }, (_, i) => `c${i}`) }]) {
     assert.equal(envioDe(malo), null, JSON.stringify(malo).slice(0, 90));
@@ -255,6 +255,54 @@ test('reclamarAvisos: con retraso se avisa igual; con más de seis horas, se sal
   assert.deepEqual([viejo.avisar, viejo.doc.turno, viejo.doc.prox], [[], {}, { a: utc('2026-11-11T08:00') }]);
 });
 
+test('una vez: toca a su hora, se avisa una sola vez y la retención cuenta desde el aviso', () => {
+  const CITA = { hora: '09:00', frec: 'una', fecha: '2026-11-12' }; // El jueves a las 9:00 de Madrid (08:00 UTC).
+  const DE_LA_CITA = utc('2026-11-12T08:00');
+  const doc = documento({ a: cosa('Dentista', CITA), b: cosa('Leche', { hora: '09:00', frec: 'semana', dia: 4 }) }); // «b», los jueves.
+  assert.deepEqual(doc.prox, { a: DE_LA_CITA, b: DE_LA_CITA });
+  assert.equal(doc.actualizado, LAS_8);
+  assert.equal(reclamarAvisos(doc, DE_LA_CITA - 60000), null);
+  // Llega su hora: se toma como cualquier otro, y confirmado ya no espera ninguno más.
+  const reclamo = reclamarAvisos(doc, DE_LA_CITA + 1000);
+  assert.deepEqual(reclamo.avisar, [{ id: 'a', texto: 'Dentista', de: DE_LA_CITA }, { id: 'b', texto: 'Leche', de: DE_LA_CITA }]);
+  const confirmado = confirmarAvisos(reclamo.doc, reclamo.avisar, DE_LA_CITA + 2000);
+  assert.deepEqual([confirmado.prox, confirmado.turno, confirmado.v], [{ b: utc('2026-11-19T08:00') }, {}, doc.v]);
+  assert.equal(confirmado.cosas.a.hecha, false); // Sigue pendiente (y en Recordar): solo deja de avisar.
+  assert.equal(confirmado.actualizado, DE_LA_CITA + 2000);
+  // Una semana después, solo «b»: de «a», nunca más.
+  assert.deepEqual(reclamarAvisos(confirmado, utc('2026-11-19T08:00')).avisar.map((c) => c.id), ['b']);
+  // Guardar otra vez lo mismo no lo vuelve a poner: ya pasó.
+  assert.deepEqual(documentoCon(confirmado, envio(confirmado.v), DE_LA_CITA + 60000).doc.prox, { b: utc('2026-11-19T08:00') });
+  // Si era lo último pendiente, el documento se guarda un mes desde el aviso (no desde que se puso, días antes).
+  const solo = documento({ a: cosa('Dentista', CITA) });
+  const avisado = confirmarAvisos(reclamarAvisos(solo, DE_LA_CITA).doc, [{ id: 'a', de: DE_LA_CITA }], DE_LA_CITA + 2000);
+  assert.deepEqual([avisado.prox, limpiezaDe(avisado), limpiezaDe(solo)], [{}, '20261212', null]);
+  assert.equal(diaDeLimpieza(LAS_8), '20261210'); // Lo que habría sido contando desde que se puso.
+  // Y con «Hecho» en el aviso, igual que siempre.
+  assert.deepEqual(documentoConHecha(avisado, 'a', DE_LA_CITA + 60000).cosas.a, cosa('Dentista', CITA, true));
+});
+
+test('una vez: la que ya pasó no espera aviso; la que se pierde más de seis horas se salta, y la retención empieza ahí', () => {
+  const CITA = { hora: '09:00', frec: 'una', fecha: '2026-11-12' };
+  const DE_LA_CITA = utc('2026-11-12T08:00');
+  // Puesta cuando ya había pasado (otro dispositivo con la hora mal, o una versión vieja): se guarda, sin aviso.
+  const pasada = documentoCon(documentoVacio(), envio(0, { poner: { a: cosa('Dentista', CITA) } }), DE_LA_CITA + 1000).doc;
+  assert.deepEqual([pasada.cosas.a, pasada.prox, agendaDe(pasada, DE_LA_CITA + 1000)], [cosa('Dentista', CITA), {}, null]);
+  // Con retraso, se avisa igual mientras no pasen seis horas…
+  const doc = documento({ a: cosa('Dentista', CITA) });
+  assert.deepEqual(reclamarAvisos(doc, DE_LA_CITA + CADUCA).avisar, [{ id: 'a', texto: 'Dentista', de: DE_LA_CITA }]);
+  // …y después se salta: no queda otro, y el mes empieza a contar entonces.
+  const tarde = DE_LA_CITA + CADUCA + 1000;
+  const saltado = reclamarAvisos(doc, tarde);
+  assert.deepEqual([saltado.avisar, saltado.doc.prox, saltado.doc.enviados.n, saltado.doc.actualizado], [[], {}, 0, tarde]);
+  // Lo que se repite y se salta no cambia «actualizado»: sigue esperando avisos.
+  assert.equal(reclamarAvisos(documento({ b: cosa('Leche') }), LAS_9 + CADUCA + 1000).doc.actualizado, LAS_8);
+  // Cambiar la fecha de una que ya avisó la vuelve a poner.
+  const avisado = confirmarAvisos(reclamarAvisos(doc, DE_LA_CITA).doc, [{ id: 'a', de: DE_LA_CITA }], DE_LA_CITA);
+  const nueva = documentoCon(avisado, envio(avisado.v, { poner: { a: cosa('Dentista', { ...CITA, fecha: '2026-11-19' }) } }), DE_LA_CITA + 60000).doc;
+  assert.deepEqual(nueva.prox, { a: utc('2026-11-19T08:00') });
+});
+
 test('reclamarAvisos: como mucho 40 de una vez, lo más atrasado primero; el resto sigue pendiente', () => {
   const doc = documento({ ...muchas(MAX_POR_TANDA + 15), antes: cosa('La primera', { hora: '08:55', frec: 'dia' }) });
   const reclamo = reclamarAvisos(doc, LAS_9);
@@ -385,8 +433,8 @@ test('documentoDe: lo guardado, saneado; lo raro no rompe', () => {
   assert.deepEqual(documentoDe(JSON.parse(JSON.stringify(doc))), doc); // Ida y vuelta por el almacén: igual.
   assert.deepEqual(documentoDe(JSON.parse(JSON.stringify({ ...doc, pausado: LAS_9 }))).pausado, LAS_9);
   const raro = documentoDe({
-    nacido: 7, v: -3, zona: 'Marte/Olimpo', general: { hora: '09:00', frec: 'una', fecha: '2026-11-12' },
-    cosas: { a: cosa('Leche'), mala: { texto: 3 }, b: cosa('Pan', DIARIO, true), una: cosa('Cita', { hora: '09:00', frec: 'una', fecha: '2026-11-12' }), ['x'.repeat(101)]: cosa('Id largo') },
+    nacido: 7, v: -3, zona: 'Marte/Olimpo', general: { hora: '09:00', frec: 'una', fecha: '2026-02-30' },
+    cosas: { a: cosa('Leche'), mala: { texto: 3 }, b: cosa('Pan', DIARIO, true), una: cosa('Cita', { hora: '09:00', frec: 'una', fecha: '2026-02-30' }), ['x'.repeat(101)]: cosa('Id largo') },
     prox: { a: 'ayer', b: 5, c: 7, una: 9 }, turno: { a: { de: 1, hasta: 2 }, b: 'x' }, agenda: 9, pausado: 'ayer', enviados: { dia: 3, n: -1 }, actualizado: 'x',
   });
   assert.deepEqual(raro, { ...documentoVacio(), cosas: { a: cosa('Leche'), b: cosa('Pan', DIARIO, true) } });
